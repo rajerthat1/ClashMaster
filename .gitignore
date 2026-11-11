@@ -1,4 +1,10 @@
-# Python
+# Local clones of other projects (simulators, forks, live-client tools)
+.resource/
+resource/
+
+# Python environments and caches
+.venv/
+.venv-*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -6,49 +12,50 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
-.venv/
-venv/
-/runs/
-/training_replays/
-/wandb/
-/evaluations/
-/.runtime/
-/.audit/
-/builds/
-/build/
-/user-provided/
 
-# Local deployment configuration; publish only the blank template.
+# Secrets and machine-local config
 .env
 .env.*
 !.env.example
+
+# Runtime outputs and build artifacts
+runs/
+training_replays/
+wandb/
+evaluations/
+.runtime/
+.audit/
+builds/
+build/
+user-provided/
+artifacts/
+/native_runner/artifacts/
+*.log
 
 # Generated native binaries
 /native_runner/probe/out/
 *.apk
 *.so
 
-# Model and dataset outputs
+# Large local datasets / generated models
+/datasets/
+*.parquet
 *.pt
 *.safetensors
 *.sqlite
 *.sqlite3
 *.sqlite3-*
-*.parquet
 
 # Local signing keys
 *.keystore
 *.jks
 *.keystore.pass
 
-# Generated machine-specific reports and evidence
-/artifacts/
-/native_runner/artifacts/
-
-# OS/editor
+# OS / editor
 Thumbs.db
 .DS_Store
 .idea/
+.vscode/
 
 # Curated public checkpoints (listed in checkpoints/manifest.json).
 !/checkpoints/2_6hog_expert/hog26-specialist1.pt
