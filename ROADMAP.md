@@ -200,8 +200,8 @@ cp .env.example .env
 
 **Smoke test:** all five V4 checkpoints load and hashes verify; tests pass/skip cleanly.
 
-- [ ] `Ready: 5 models`.
-- [ ] `.env` created.
+- [x] `Ready: 5 models`.
+- [x] `.env` created.
 
 ---
 
@@ -508,7 +508,7 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 
 ## 9. Immediate next actions
 
-1. [ ] Phase 1: env + `check_install.py` → `Ready: 5 models`.
+1. [x] Phase 1: env + `check_install.py` → `Ready: 5 models`.
 2. [ ] Phase 2: engine + demo replay + evaluator smoke test.
 3. [ ] Phase 3: General vs IL (and Hog vs General with a MatchConfig).
 4. [ ] Phase 4: 2–5k replay cache + one-group IL smoke test.
