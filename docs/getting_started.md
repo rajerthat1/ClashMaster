@@ -61,8 +61,10 @@ The scripts use the index, name, and ADB address to select the same instance. Le
 ## 3. Update the original game, then build
 
 1. Put the unmodified original APK at `user-provided/nulls-royale.apk`, or pass its path with `-InputApk`.
-2. Install it in the selected MuMu instance. Open the game, let it download its update naturally, and wait until you can enter the normal game lobby. Then close the game.
+2. Install it in the selected MuMu instance and open it once, so the client writes its `update/` folder. The pinned `15.535.86` content is no longer served: the current client only writes `update/fingerprint.json` for the base `15.535.3` pack, so the normal lobby is not reachable. Close the game after that file appears.
 3. Run the commands below in order. `check_original_game.ps1` checks the local and installed APKs, Android 12, and the downloaded resources before the probe is built. A mismatch stops the process.
+
+The installer accepts either the pinned `15.535.86` update or the content bundled in the APK itself (`content_mode: apk-base`). Base content keeps every match usable but cannot satisfy `production_ready`, so attested training and evaluation still need the pinned update. Select a location that base content contains, for example `CR_NATIVE_LOCATION=15000002`; the default `15000199` exists only in `15.535.86`.
 
 ```powershell
 ./check_original_game.ps1 -InputApk ./user-provided/nulls-royale.apk
@@ -72,6 +74,6 @@ The scripts use the index, name, and ADB address to select the same instance. Le
 ./install_offline_engine.ps1 -Apk ./build/cr-ai-offline.apk
 ```
 
-The check isolates that MuMu instance from external network access after the game has updated. The build compiles the probe, patches and signs the APK, and may download Apktool. The installer checks the resources again before replacing the game.
+The check isolates that MuMu instance from external network access after the game has updated. The build compiles the probe, patches and signs the APK, and may download Apktool. The installer checks the resources again before replacing the game: a device that only carries the APK's own base pack is accepted and reported as `content_mode: apk-base`.
 
 After installation, open the interface with `./launch_interface.cmd` from the repository root.

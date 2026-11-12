@@ -111,7 +111,7 @@ Copy-Item .env.example .env
 
 Fill the Python, VM, and build-tool settings in `.env` using the [installation guide](docs/getting_started.md). The supported engine is **Null’s Royale 15.535.13 / arm64-v8a with content update 15.535.86**.
 
-**First, install and open the unmodified original APK in the selected MuMu instance. Let it update naturally until you can enter the normal game lobby, then exit.** Keep the original APK as `user-provided/nulls-royale.apk`. Check the original APK and downloaded resources before building or injecting the probe:
+**First, install and open the unmodified original APK in the selected MuMu instance so it writes its `update/` folder, then exit.** The pinned `15.535.86` update is no longer served, so the client only writes `update/fingerprint.json` for the base `15.535.3` pack and never reaches the lobby; that base pack is enough to play matches but not to satisfy `production_ready`. Keep the original APK as `user-provided/nulls-royale.apk`. Check the original APK and downloaded resources before building or injecting the probe:
 
 ```powershell
 ./check_original_game.ps1 -InputApk ./user-provided/nulls-royale.apk

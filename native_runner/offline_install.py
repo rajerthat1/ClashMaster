@@ -65,14 +65,73 @@ def resource_hashes(device, directory=DATA + "/update"):
     return hashes
 
 
-def validate_resources(hashes):
+def baseline_content(apk):
+    """Return the content version and manifest digest bundled in ``apk``."""
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            payload = archive.read("assets/fingerprint.json")
+    except (KeyError, OSError, zipfile.BadZipFile):
+        return None
+    try:
+        manifest = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    version, digest = manifest.get("version"), manifest.get("sha")
+    if not isinstance(version, str) or not isinstance(digest, str) or not version or not digest:
+        return None
+    return {"version": version, "sha": digest}
+
+
+def device_content_identity(device):
+    """Read the content identity the client wrote into its own update folder."""
+    try:
+        manifest = json.loads(device.shell(f"cat {DATA}/update/fingerprint.json"))
+    except json.JSONDecodeError as error:
+        raise ValueError("Device update/fingerprint.json is not valid JSON") from error
+    if not isinstance(manifest, dict):
+        raise ValueError("Device update/fingerprint.json is not an object")
+    return {"version": manifest.get("version"), "sha": manifest.get("sha")}
+
+
+def validate_resources(device, hashes, baseline=None):
+    """Accept the pinned 15.535.86 update, or the base pack the APK carries.
+
+    The pinned update is no longer served, so a device may instead run on the
+    content bundled in the input APK.  That mode still fails closed: the
+    client-written fingerprint must match the supplied APK exactly, and any
+    pinned file the device does carry must match its pinned hash.  The runner
+    attestation remains the authority on whether that content is pinned enough
+    for ``production_ready``.
+    """
     release = supported_engine()
-    if hashes.get("fingerprint.json") != release["runtime_fingerprint_sha256"]:
+    fingerprint = hashes.get("fingerprint.json")
+    if fingerprint is None:
         raise ValueError("First open the unmodified game yourself and finish the supported resource update")
     manifest = json.loads((PACKAGE / "data/competitive/manifest.json").read_text(encoding="utf-8"))
-    for name, digest in manifest["source_files"].items():
-        if name.startswith("runtime-update/") and hashes.get(name.removeprefix("runtime-update/")) != digest:
-            raise ValueError(f"Device update is incomplete or unsupported: {name}")
+    pinned = {
+        name.removeprefix("runtime-update/"): digest
+        for name, digest in manifest["source_files"].items()
+        if name.startswith("runtime-update/")
+    }
+    if fingerprint == release["runtime_fingerprint_sha256"]:
+        for name, digest in pinned.items():
+            if hashes.get(name) != digest:
+                raise ValueError(f"Device update is incomplete or unsupported: {name}")
+        return {"content_mode": "pinned", "content_version": release["runtime_content_version"]}
+    if baseline is not None:
+        identity = device_content_identity(device)
+        if identity["version"] == baseline["version"] and identity["sha"] == baseline["sha"]:
+            for name, digest in pinned.items():
+                present = hashes.get(name)
+                if name != "fingerprint.json" and present is not None and present != digest:
+                    raise ValueError(f"Device update is incomplete or unsupported: {name}")
+            return {"content_mode": "apk-base", "content_version": baseline["version"]}
+    raise ValueError(
+        "Device update is incomplete or unsupported: content is neither the pinned "
+        "15.535.86 update nor the base pack bundled in the supplied APK"
+    )
 
 
 def check_apk(apk):
@@ -88,7 +147,7 @@ def check_apk(apk):
             raise ValueError("APK must not bundle downloaded resources")
 
 
-def check_prepared_device(device):
+def check_prepared_device(device, baseline=None):
     """Check the stock installation and its downloaded content before replacement."""
     info = device.shell(f"dumpsys package {APP}")
     if not re.search(r"\bversionName=" + re.escape(supported_engine()["apk_version"]) + r"(?:\s|$)", info):
@@ -100,8 +159,8 @@ def check_prepared_device(device):
     if len(paths) != 1 or not paths[0].startswith("package:/data/app/"):
         raise ValueError("Expected the supported single-APK installation")
     hashes = resource_hashes(device)
-    validate_resources(hashes)
-    return paths[0].removeprefix("package:"), hashes
+    content = validate_resources(device, hashes, baseline)
+    return paths[0].removeprefix("package:"), hashes, content
 
 
 def check_original_game(device, apk):
@@ -109,7 +168,7 @@ def check_original_game(device, apk):
     release = supported_engine()
     if not apk_matches_release(apk):
         raise ValueError("Input APK does not carry the supported engine; supply the unmodified supported APK")
-    installed_path, hashes = check_prepared_device(device)
+    installed_path, hashes, content = check_prepared_device(device, baseline_content(apk))
     installed_sha256 = device.shell(f"sha256sum {shlex.quote(installed_path)}").split()[0]
     if installed_sha256 != sha256(apk):
         raise ValueError("Installed game APK differs from the supplied original APK")
@@ -117,6 +176,8 @@ def check_original_game(device, apk):
         "original_apk_verified": True,
         "apk_version": release["apk_version"],
         "runtime_content_version": release["runtime_content_version"],
+        "content_mode": content["content_mode"],
+        "installed_content_version": content["content_version"],
         "resource_files_verified": len(hashes),
     }
 
@@ -155,7 +216,7 @@ def restore(device, backup):
 
 def install(device, apk, receipt_path):
     check_apk(apk)
-    old_path, before = check_prepared_device(device)
+    old_path, before, content = check_prepared_device(device, baseline_content(apk))
     old_apk = shlex.quote(old_path)
     device.shell(f"am force-stop {APP}")
     backup = BACKUP_PREFIX + uuid.uuid4().hex
@@ -176,6 +237,8 @@ def install(device, apk, receipt_path):
         "previous_apk_sha256": device.shell(f"sha256sum {backup}/previous.apk").split()[0],
         "apk_sha256": sha256(apk),
         "installed": False,
+        "content_mode": content["content_mode"],
+        "installed_content_version": content["content_version"],
     }
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -204,7 +267,14 @@ def install(device, apk, receipt_path):
         raise
     state.update(installed=True, resource_files_verified=len(before))
     receipt_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    return {"installed": True, "backup": backup, "resource_files_verified": len(before), "receipt": str(receipt_path)}
+    return {
+        "installed": True,
+        "backup": backup,
+        "resource_files_verified": len(before),
+        "content_mode": content["content_mode"],
+        "installed_content_version": content["content_version"],
+        "receipt": str(receipt_path),
+    }
 
 
 def main(argv=None):

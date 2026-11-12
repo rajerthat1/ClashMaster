@@ -1,6 +1,7 @@
 """Installation must retain resource data across signing changes and failures."""
 
 import json
+import zipfile
 
 import pytest
 
@@ -43,7 +44,9 @@ def setup_install(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "check_apk", lambda apk: None)
     monkeypatch.setattr(install, "sha256", lambda apk: "a" * 64)
     monkeypatch.setattr(install, "resource_hashes", lambda *args: hashes.copy())
-    monkeypatch.setattr(install, "validate_resources", lambda value: None)
+    monkeypatch.setattr(
+        install, "validate_resources", lambda *args: {"content_mode": "pinned", "content_version": "15.535.86"}
+    )
     return tmp_path / "local.apk", tmp_path / "install.json", hashes
 
 
@@ -100,7 +103,7 @@ def test_changed_resources_trigger_rollback(setup_install, monkeypatch):
 
 def test_incomplete_original_update_stops_before_device_changes(setup_install, monkeypatch):
     apk, receipt, _ = setup_install
-    def incomplete(hashes):
+    def incomplete(*args):
         raise ValueError("incomplete update")
     monkeypatch.setattr(install, "validate_resources", incomplete)
     device = Device([])
@@ -121,7 +124,9 @@ def test_check_original_game_reads_apk_and_resources_without_replacing_app(monke
     monkeypatch.setattr(install, "apk_matches_release", lambda path: True)
     monkeypatch.setattr(install, "sha256", lambda path: release["apk_sha256"])
     monkeypatch.setattr(install, "resource_hashes", lambda device: {"fingerprint.json": "verified"})
-    monkeypatch.setattr(install, "validate_resources", lambda hashes: None)
+    monkeypatch.setattr(
+        install, "validate_resources", lambda *args: {"content_mode": "pinned", "content_version": "15.535.86"}
+    )
 
     class OriginalDevice(Device):
         def shell(self, command):
@@ -143,3 +148,77 @@ def test_check_original_game_rejects_wrong_apk_before_device_access(monkeypatch,
     with pytest.raises(ValueError, match="does not carry the supported engine"):
         install.check_original_game(device, tmp_path / "wrong.apk")
     assert device.calls == []
+
+
+class FingerprintDevice:
+    """Device stub that answers the update/fingerprint.json read."""
+
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.calls = []
+
+    def shell(self, command):
+        self.calls.append(command)
+        assert command.startswith("cat ")
+        return json.dumps(self.manifest)
+
+
+def _pinned_files():
+    manifest = json.loads((install.PACKAGE / "data/competitive/manifest.json").read_text(encoding="utf-8"))
+    return {
+        name.removeprefix("runtime-update/"): digest
+        for name, digest in manifest["source_files"].items()
+        if name.startswith("runtime-update/")
+    }
+
+
+def test_baseline_content_reads_bundled_fingerprint(tmp_path):
+    apk = tmp_path / "client.apk"
+    payload = json.dumps({"version": "15.535.3", "sha": "d" * 40})
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("assets/fingerprint.json", payload)
+    assert install.baseline_content(apk) == {"version": "15.535.3", "sha": "d" * 40}
+
+
+def test_baseline_content_requires_a_bundled_fingerprint(tmp_path):
+    apk = tmp_path / "client.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("AndroidManifest.xml", b"")
+    assert install.baseline_content(apk) is None
+
+
+def test_pinned_update_is_still_verified_strictly():
+    release = install.supported_engine()
+    pinned = _pinned_files()
+    hashes = {**pinned, "fingerprint.json": release["runtime_fingerprint_sha256"]}
+    device = FingerprintDevice({})
+    content = install.validate_resources(device, hashes, None)
+    assert content == {"content_mode": "pinned", "content_version": release["runtime_content_version"]}
+    assert device.calls == []
+    broken = {**hashes, next(iter(pinned)): "0" * 64}
+    with pytest.raises(ValueError, match="incomplete or unsupported"):
+        install.validate_resources(device, broken, None)
+
+
+def test_base_content_is_accepted_when_it_matches_the_supplied_apk():
+    baseline = {"version": "15.535.3", "sha": "d" * 40}
+    content = install.validate_resources(FingerprintDevice(baseline), {"fingerprint.json": "e" * 64}, baseline)
+    assert content == {"content_mode": "apk-base", "content_version": "15.535.3"}
+
+
+def test_base_content_rejects_a_pinned_file_that_does_not_match():
+    baseline = {"version": "15.535.3", "sha": "d" * 40}
+    hashes = {"fingerprint.json": "e" * 64, next(iter(_pinned_files())): "0" * 64}
+    with pytest.raises(ValueError, match="incomplete or unsupported"):
+        install.validate_resources(FingerprintDevice(baseline), hashes, baseline)
+
+
+def test_empty_update_folder_still_requires_the_first_open():
+    with pytest.raises(ValueError, match="First open the unmodified game"):
+        install.validate_resources(FingerprintDevice({}), {}, {"version": "15.535.3", "sha": "d" * 40})
+
+
+def test_content_from_an_unknown_client_is_rejected():
+    device = FingerprintDevice({"version": "16.635.1", "sha": "d" * 40})
+    with pytest.raises(ValueError, match="neither the pinned"):
+        install.validate_resources(device, {"fingerprint.json": "e" * 64}, {"version": "15.535.3", "sha": "d" * 40})
