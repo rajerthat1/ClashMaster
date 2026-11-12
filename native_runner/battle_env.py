@@ -79,6 +79,7 @@ from .match_factory import (
     NATIVE_MATCH_END_TICK,
     PRINCESS_TOWER_TROOP_ID,
     MatchConfig,
+    default_location_id,
 )
 from .normal_form_evidence import NORMAL_MODE_HERO_FORM_TO_BASE_CARD
 from .phase_runtime import PhaseHookEvent
@@ -731,7 +732,7 @@ class BattleEnvV1:
                 seed=chosen_seed,
                 game_mode=config.game_mode,
                 arena=config.arena,
-                location=int(config.tags.get("location", 15000199)),
+                location=int(config.tags.get("location", default_location_id())),
                 level_cap=int(config.tags.get("level_cap", 0)),
                 minimum_card_level=int(config.tags.get("minimum_card_level", 0)),
                 deck0_form_availability=tuple(

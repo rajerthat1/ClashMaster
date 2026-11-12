@@ -23,7 +23,12 @@ from ..cr_native_env import (
     ResidentNativeClashEnv,
     RunnerError,
 )
-from ..match_factory import MatchConfig, NATIVE_FINALIZATION_DEADLINE_TICK, PRINCESS_TOWER_TROOP_ID
+from ..match_factory import (
+    MatchConfig,
+    NATIVE_FINALIZATION_DEADLINE_TICK,
+    PRINCESS_TOWER_TROOP_ID,
+    default_location_id,
+)
 from ..resident_batch_vector import ResidentBatchCoordinatorV1, ResidentBatchNativeProxyV1
 from .replay_archive import TrainingReplayError, TrainingReplayV1
 
@@ -319,7 +324,7 @@ def _match_config_from_replay(replay: TrainingReplayV1) -> MatchConfig:
         seed=config.seed,
         game_mode=config.game_mode,
         arena=config.arena,
-        location=int(tags.get("location", 15000199)),
+        location=int(tags.get("location", default_location_id())),
         level_cap=int(tags.get("level_cap", 0)),
         minimum_card_level=int(tags.get("minimum_card_level", 0)),
         deck0_form_availability=tuple(int(value) for value in tags.get("deck0_form_availability", (0,) * 8)),

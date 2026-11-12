@@ -58,7 +58,6 @@ POLICY_ACTION_STREAM_VERSION = "royaleapi-policy-action-stream.v1"
 POLICY_EPISODE_CONFIG_VERSION = "royaleapi-policy-episode-config.v1"
 DEFAULT_NATIVE_GAME_MODE_ID = 72_000_006
 DEFAULT_NATIVE_ARENA_ID = 54_000_001
-DEFAULT_NATIVE_LOCATION_ID = 15_000_199
 # Verified in the v15.535.13 stock renderer against the Classic Challenge
 # capture: Arena_Legendary resolves to the legacy gray-stone PvP_champion scene.
 CLASSIC_CHALLENGE_GAME_MODE_ID = 72_000_009
@@ -118,7 +117,14 @@ def _native_battle_presentation(source_game_mode: object) -> tuple[int, int, int
             CLASSIC_CHALLENGE_LOCATION_ID,
             "classic-legendary-arena.v1",
         )
-    return (DEFAULT_NATIVE_GAME_MODE_ID, DEFAULT_NATIVE_ARENA_ID, DEFAULT_NATIVE_LOCATION_ID, "default-ladder-arena.v1")
+    from .match_factory import default_location_id
+
+    return (
+        DEFAULT_NATIVE_GAME_MODE_ID,
+        DEFAULT_NATIVE_ARENA_ID,
+        default_location_id(),
+        "default-ladder-arena.v1",
+    )
 
 
 class RoyaleAPIReplayError(RuntimeError):
@@ -401,7 +407,7 @@ def _observed_deal_layout(
 
 
 def _episode_match_config(episode: EpisodeConfigV1) -> Any:
-    from .match_factory import MatchConfig, PRINCESS_TOWER_TROOP_ID
+    from .match_factory import MatchConfig, PRINCESS_TOWER_TROOP_ID, default_location_id
 
     tags = episode.tags
     return MatchConfig(
@@ -410,7 +416,7 @@ def _episode_match_config(episode: EpisodeConfigV1) -> Any:
         seed=episode.seed,
         game_mode=episode.game_mode,
         arena=episode.arena,
-        location=int(tags.get("location", DEFAULT_NATIVE_LOCATION_ID)),
+        location=int(tags.get("location", default_location_id())),
         level_cap=int(tags.get("level_cap", 0)),
         minimum_card_level=int(tags.get("minimum_card_level", 0)),
         deck0_form_availability=tuple(int(value) for value in tags.get("deck0_form_availability", (0,) * 8)),

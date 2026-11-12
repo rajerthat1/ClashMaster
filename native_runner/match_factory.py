@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,6 +31,27 @@ NATIVE_FINALIZATION_DEADLINE_TICK = 7200
 # scene/deadline boundary, not to the policy decision horizon.
 NATIVE_MATCH_END_TICK = NATIVE_FINALIZATION_DEADLINE_TICK
 PRINCESS_TOWER_TROOP_ID = 159_000_000
+# Overrides the battle location for every caller that does not set one.
+# Content 15.535.86 ships locations 15000000..15000198; the pinned ladder
+# scene (15000199) only exists there, so a base-content install must select an
+# arena that the bundled 15.535.3 pack actually contains (e.g. 15000002).
+NATIVE_LOCATION_ENV = "CR_NATIVE_LOCATION"
+PINNED_DEFAULT_LOCATION_ID = 15_000_199
+
+
+def default_location_id() -> int:
+    """Return the location used when a caller does not choose one."""
+    raw = os.environ.get(NATIVE_LOCATION_ENV, "").strip()
+    if not raw:
+        return PINNED_DEFAULT_LOCATION_ID
+    try:
+        value = int(raw, 0)
+    except ValueError:
+        raise ValueError(f"{NATIVE_LOCATION_ENV} must be a positive integer location id") from None
+    if value <= 0:
+        raise ValueError(f"{NATIVE_LOCATION_ENV} must be a positive integer location id")
+    return value
+
 
 STANDARD_DECK = (
     26000000,  # Knight
@@ -102,7 +124,7 @@ class MatchConfig:
     seed: int = 1
     game_mode: int = 72000006
     arena: int = 54000001
-    location: int = 15000199
+    location: int = field(default_factory=default_location_id)
     level_cap: int = 0
     minimum_card_level: int = 0
     # King Tower level is an independent native replay input. ``lvlcap`` and
