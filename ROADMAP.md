@@ -105,6 +105,35 @@ problem. Null's gives you a strong V4 policy and a working loop before you pay t
 **The other hard truth:** the HF dataset alone does not start training. The cache builder replays every
 match through the native engine. Phase 2 is a prerequisite for dataset training.
 
+### Content reality: three versions, three different unlocks (measured Nov 12, 2026)
+
+Null's now forces 16.x, so the pinned `15.535.86` update is no longer delivered. The current client
+opened on a clean install writes exactly one file — `update/fingerprint.json`
+(`df97d9ec…`, content `15.535.3`) — and never reaches the lobby. What each content state actually buys:
+
+| Content | Simulator + render | Training / eval | Live play vs real players |
+| --- | --- | --- | --- |
+| `15.535.3` (APK base pack) | **yes** | no | no |
+| `15.535.86` (pinned) | yes | yes | no |
+| `16.635.1` (current client) | needs the port | needs the port | **only this one** |
+
+- **Base pack works today.** Matches run, state and render agree on the tick, screenshots are normal.
+  The probe's own content gate is satisfiable without any update download: copy the APK's
+  `assets/assets.scdb` into `update/assets.scdb` and the runner reports
+  `content_assets_sha256: 5c99be07…`, `content_assets_mapped: true`, `production_ready: true`.
+  The installer does this automatically in `apk-base` mode.
+- **Training still refuses on base content, and this is not a flag.** `build_ruleset_manifest` pins
+  `runtime` facts from the compiled competitive data (`15.535.86`, manifest `41d8df30…`, fingerprint
+  `e0cb2fb9…`), and `verify_runner_attestation` compares the live runner against them exactly.
+- **A base-content ruleset is not a small patch.** The pinned delta is 83 files: 72 changed, 4 identical,
+  and 7 that do not exist in the base pack at all (`ronin`, `ronin_spell`, `berserker_hero`,
+  `berserker_hero_spell`, `valkyrie_hero`, `valkyrie_hero_spell`, `angry_barbarian_evo`). Recompiling
+  competitive data needs loose `csv_logic/*` from the server update; the APK only carries the binary
+  `assets.scdb`, so the dataset cannot be regenerated locally.
+- **`.86 would not help the live goal anyway.** Live play on Null's requires the 16.x hook port and a
+  reader (`.resource/daybreak-cr/play.py`); see `ROADMAP_NULLS16_PROBE.md`. Training on `.86` and
+  playing on 16.x are separate tracks that must both happen.
+
 ---
 
 ## 2. What you already have
@@ -122,7 +151,7 @@ match through the native engine. Phase 2 is a prerequisite for dataset training.
 | Local machine | Linux, 12 vCPU, 14 GB RAM, no CUDA GPU, 90 GB free |
 | Windows machine | MuMu host for engine build/run |
 | Budget | ~$500 cloud credits; no HPC |
-| Missing | Null's APK, GPU for training, official-client reader (Phase 8) |
+| Missing | Content `15.535.86` update (no longer served); GPU for training; official-client reader (Phase 8) |
 
 ---
 

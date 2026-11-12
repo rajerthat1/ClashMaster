@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import uuid
 import zipfile
 import hashlib
@@ -66,10 +67,14 @@ def resource_hashes(device, directory=DATA + "/update"):
 
 
 def baseline_content(apk):
-    """Return the content version and manifest digest bundled in ``apk``."""
+    """Return the content version, manifest digest and asset pack in ``apk``."""
     try:
         with zipfile.ZipFile(apk) as archive:
             payload = archive.read("assets/fingerprint.json")
+            try:
+                assets = hashlib.sha256(archive.read("assets/assets.scdb")).hexdigest()
+            except KeyError:
+                assets = ""
     except (KeyError, OSError, zipfile.BadZipFile):
         return None
     try:
@@ -81,7 +86,7 @@ def baseline_content(apk):
     version, digest = manifest.get("version"), manifest.get("sha")
     if not isinstance(version, str) or not isinstance(digest, str) or not version or not digest:
         return None
-    return {"version": version, "sha": digest}
+    return {"version": version, "sha": digest, "assets_sha256": assets}
 
 
 def device_content_identity(device):
@@ -127,7 +132,11 @@ def validate_resources(device, hashes, baseline=None):
                 present = hashes.get(name)
                 if name != "fingerprint.json" and present is not None and present != digest:
                     raise ValueError(f"Device update is incomplete or unsupported: {name}")
-            return {"content_mode": "apk-base", "content_version": baseline["version"]}
+            return {
+                "content_mode": "apk-base",
+                "content_version": baseline["version"],
+                "content_assets_sha256": baseline.get("assets_sha256", ""),
+            }
     raise ValueError(
         "Device update is incomplete or unsupported: content is neither the pinned "
         "15.535.86 update nor the base pack bundled in the supplied APK"
@@ -214,9 +223,46 @@ def restore(device, backup):
     return {"restored": True, "backup": backup}
 
 
+def seed_base_assets(device, apk):
+    """Copy the APK's bundled ``assets.scdb`` into the device update folder.
+
+    The probe only hashes and maps ``update/assets.scdb``.  A client that never
+    finishes an update leaves that file absent, which keeps
+    ``content_assets_mapped`` and ``production_ready`` false even though the
+    game is reading the identical pack from inside the APK.  Seeding it makes
+    the runner report the content it is actually using.
+    """
+    with zipfile.ZipFile(apk) as archive:
+        payload = archive.read("assets/assets.scdb")
+    digest = hashlib.sha256(payload).hexdigest()
+    uid = device.shell(f"stat -c %u {DATA}")
+    if not uid.isdecimal() or int(uid) < 10000:
+        raise ValueError("Invalid installed app UID")
+    staged = f"/data/local/tmp/firstlight-assets-{uuid.uuid4().hex}.scdb"
+    with tempfile.NamedTemporaryFile(suffix=".scdb", delete=False) as handle:
+        handle.write(payload)
+        local = handle.name
+    try:
+        device.run("push", local, staged)
+        if device.shell(f"sha256sum {staged}").split()[0] != digest:
+            raise ValueError("Uploaded base content checksum mismatch")
+        device.shell(f"mkdir -p {DATA}/update && cp {staged} {DATA}/update/assets.scdb")
+        device.shell(f"chown {uid}:{uid} {DATA}/update/assets.scdb && chmod 600 {DATA}/update/assets.scdb")
+        device.shell(f"restorecon -RF {DATA}/update")
+    finally:
+        Path(local).unlink(missing_ok=True)
+        device.shell(f"rm -f {staged}")
+    return digest
+
+
 def install(device, apk, receipt_path):
     check_apk(apk)
     old_path, before, content = check_prepared_device(device, baseline_content(apk))
+    if content["content_mode"] == "apk-base" and "assets.scdb" not in before:
+        # The runner can only hash and map update/assets.scdb, so give it the
+        # byte-identical pack the APK already serves the game.
+        content["content_assets_sha256"] = seed_base_assets(device, apk)
+        before = resource_hashes(device)
     old_apk = shlex.quote(old_path)
     device.shell(f"am force-stop {APP}")
     backup = BACKUP_PREFIX + uuid.uuid4().hex
@@ -239,6 +285,7 @@ def install(device, apk, receipt_path):
         "installed": False,
         "content_mode": content["content_mode"],
         "installed_content_version": content["content_version"],
+        "content_assets_sha256": content.get("content_assets_sha256", ""),
     }
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -273,6 +320,7 @@ def install(device, apk, receipt_path):
         "resource_files_verified": len(before),
         "content_mode": content["content_mode"],
         "installed_content_version": content["content_version"],
+        "content_assets_sha256": content.get("content_assets_sha256", ""),
         "receipt": str(receipt_path),
     }
 

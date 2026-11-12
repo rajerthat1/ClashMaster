@@ -1,5 +1,6 @@
 """Installation must retain resource data across signing changes and failures."""
 
+import hashlib
 import json
 import zipfile
 
@@ -177,7 +178,7 @@ def test_baseline_content_reads_bundled_fingerprint(tmp_path):
     payload = json.dumps({"version": "15.535.3", "sha": "d" * 40})
     with zipfile.ZipFile(apk, "w") as archive:
         archive.writestr("assets/fingerprint.json", payload)
-    assert install.baseline_content(apk) == {"version": "15.535.3", "sha": "d" * 40}
+    assert install.baseline_content(apk) == {"version": "15.535.3", "sha": "d" * 40, "assets_sha256": ""}
 
 
 def test_baseline_content_requires_a_bundled_fingerprint(tmp_path):
@@ -203,7 +204,7 @@ def test_pinned_update_is_still_verified_strictly():
 def test_base_content_is_accepted_when_it_matches_the_supplied_apk():
     baseline = {"version": "15.535.3", "sha": "d" * 40}
     content = install.validate_resources(FingerprintDevice(baseline), {"fingerprint.json": "e" * 64}, baseline)
-    assert content == {"content_mode": "apk-base", "content_version": "15.535.3"}
+    assert content == {"content_mode": "apk-base", "content_version": "15.535.3", "content_assets_sha256": ""}
 
 
 def test_base_content_rejects_a_pinned_file_that_does_not_match():
@@ -222,3 +223,51 @@ def test_content_from_an_unknown_client_is_rejected():
     device = FingerprintDevice({"version": "16.635.1", "sha": "d" * 40})
     with pytest.raises(ValueError, match="neither the pinned"):
         install.validate_resources(device, {"fingerprint.json": "e" * 64}, {"version": "15.535.3", "sha": "d" * 40})
+
+
+def test_seed_base_assets_copies_the_apk_pack_with_the_app_uid(tmp_path):
+    apk = tmp_path / "client.apk"
+    payload = b"base-pack"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("assets/assets.scdb", payload)
+    digest = hashlib.sha256(payload).hexdigest()
+
+    class SeedDevice:
+        def __init__(self):
+            self.calls = []
+
+        def shell(self, command):
+            self.calls.append(command)
+            if command.startswith("stat -c %u"):
+                return "10099"
+            if command.startswith("sha256sum "):
+                return digest + "  staged"
+            return ""
+
+        def run(self, *args):
+            self.calls.append(args)
+            return ""
+
+    device = SeedDevice()
+    assert install.seed_base_assets(device, apk) == digest
+    assert any(isinstance(c, str) and "cp " in c and c.endswith("/update/assets.scdb") for c in device.calls)
+    assert any(isinstance(c, str) and "chown 10099:10099" in c for c in device.calls)
+    assert any(isinstance(c, str) and c.startswith("rm -f ") for c in device.calls)
+
+
+def test_install_seeds_base_assets_before_taking_the_backup(setup_install, monkeypatch):
+    apk, receipt, _ = setup_install
+    seeded = {"fingerprint.json": "b" * 64, "assets.scdb": "c" * 64}
+    monkeypatch.setattr(
+        install,
+        "validate_resources",
+        lambda *args: {"content_mode": "apk-base", "content_version": "15.535.3", "content_assets_sha256": "c" * 64},
+    )
+    reads = iter([{"fingerprint.json": "b" * 64}, seeded, seeded, seeded])
+    monkeypatch.setattr(install, "resource_hashes", lambda *args: next(reads))
+    monkeypatch.setattr(install, "seed_base_assets", lambda device, apk: "c" * 64)
+    device = Device(["Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]", "Success"])
+    result = install.install(device, apk, receipt)
+    assert result["content_mode"] == "apk-base"
+    assert result["content_assets_sha256"] == "c" * 64
+    assert json.loads(receipt.read_text())["resource_hashes"] == seeded

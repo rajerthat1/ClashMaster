@@ -64,7 +64,7 @@ The scripts use the index, name, and ADB address to select the same instance. Le
 2. Install it in the selected MuMu instance and open it once, so the client writes its `update/` folder. The pinned `15.535.86` content is no longer served: the current client only writes `update/fingerprint.json` for the base `15.535.3` pack, so the normal lobby is not reachable. Close the game after that file appears.
 3. Run the commands below in order. `check_original_game.ps1` checks the local and installed APKs, Android 12, and the downloaded resources before the probe is built. A mismatch stops the process.
 
-The installer accepts either the pinned `15.535.86` update or the content bundled in the APK itself (`content_mode: apk-base`). Base content keeps every match usable but cannot satisfy `production_ready`, so attested training and evaluation still need the pinned update. Select a location that base content contains, for example `CR_NATIVE_LOCATION=15000002`; the default `15000199` exists only in `15.535.86`.
+The installer accepts either the pinned `15.535.86` update or the content bundled in the APK itself (`content_mode: apk-base`). In base mode it also copies the APK's `assets/assets.scdb` into `update/assets.scdb`, because the probe only hashes and maps that path — without it the runner reports `content_assets_mapped: false` and `production_ready: false`. Base content keeps every match usable but cannot satisfy the ruleset manifest, so attested training and evaluation still need the pinned update. Select a location that base content contains, for example `CR_NATIVE_LOCATION=15000002`; the default `15000199` exists only in `15.535.86`.
 
 ```powershell
 ./check_original_game.ps1 -InputApk ./user-provided/nulls-royale.apk

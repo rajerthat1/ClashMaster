@@ -124,3 +124,9 @@ Goal: get the bot working on Null's 16.635.1 with the least work.
 - Linux-only: use a rooted ARM64 phone or a Windows VM for MuMu; port the `.ps1` scripts.
 - REA speeds up Phase 2, but every offset still needs a prologue and runtime check.
 - Do not port all 33 hooks for the first battle. P0 is enough to get it playing.
+- Base content (`15.535.3`) is enough to exercise the simulator and the renderer, and even to make the
+  runner report `production_ready`, but it is **not** a training substitute: the ruleset stays pinned to
+  the `15.535.86` compiled data, and a base ruleset cannot be regenerated because the loose `csv_logic`
+  files only arrive through the server update. See `ROADMAP.md`.
+- If the goal is a bot that plays real players on Null's, this port is the only route: the pinned
+  `15.535.86` content would not help there either.
