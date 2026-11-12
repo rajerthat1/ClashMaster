@@ -367,7 +367,92 @@ change. Frida only for RE; passive native reads for live play.
 
 ---
 
-## 4. Fast-simulator track (optional, parallel)
+## 4. Learning loop and anti-reward-hacking
+
+The model improves by stacking cheap supervision before expensive games. Use each source for what it is
+cheap at.
+
+| Source | What it buys | Cost | Failure mode |
+| --- | --- | --- | --- |
+| **IL on 252k human games** | Human prior, stable behavior | Cache build + GPU | Ceiling at human data; clones passive play |
+| **Fast sim self-play** (RoyaleSim/ClashAI) | Volume, exploration, reward experiments | Cheap CPU | Sim-to-real gap; wrong mechanics |
+| **Native-engine PPO** (V4) | Fidelity and real strength | Engine cluster + GPU | Expensive; overfits the pool |
+| **Frozen teacher** (IL/General) | Curriculum, prevents early collapse | Cheap | Learner exploits teacher weaknesses |
+| **League / historical snapshots** | Diversity, no forgetting | Complexity | Stale pool; rock-paper-scissors |
+| **Real Null's ladder** | Ground truth, hard cases | 3–5 min/game | Slow, noisy; validation only |
+
+**Efficient rule:** use the cheapest source that teaches the missing skill. Don't burn live ladder
+games to learn basics; don't trust a fast sim for final strength.
+
+### What the video's numbers mean
+
+- **"1024" is episodes per PPO round, not 1024 models.** FirstLight-Zero collects 1,024 episodes, runs
+  one PPO update, saves a version. 1,450 rounds ≈ **1.5M episodes**.
+- Half are current-vs-current self-play; half are against historical snapshots sampled by PFSP. That is
+  what prevents forgetting and cycling.
+- **"Boss" is a held-out benchmark, not a teacher.** In FirstLight-Zero, Boss is the 16.8M IL model
+  trained on 193,530 human games; it never participates in training. It measures whether self-play
+  improvement is real.
+- In FirstLight_CR, IL and General are **frozen training opponents** (40/60 mix for the Hog
+  specialist), not a held-out boss. A boss you train against stops being a boss.
+
+### Reward hacking: what to watch
+
+- **Fixed-teacher exploitation.** The early fixed-IL Hog run hit 80% wins, but 296 of 306 wins came
+  from matches where IL took ≤3 non-WAIT actions. That is farming a passive opponent, not playing well.
+- **Shaping abuse.** Tower-damage or elixir-overflow bonuses can reward chip/stall behavior instead of
+  winning.
+- **Self-play stalling/collusion.** Both sides avoid losing; games run five minutes with no progress.
+- **Single-strategy loops.** Spell-cycle spam or one-lane X-Bow spam beats the pool but not a diverse
+  ladder.
+- **Sim bugs.** A wrong fast-sim interaction becomes a learned exploit that dies on the real client.
+
+### Mitigations
+
+- Terminal win/loss dominates the reward; keep shaping small and **anneal/remove it** after the
+  behavior appears (the author's Hog recipe).
+- Keep a **held-out boss** (shipped General or Hog specialist) that is never trained against.
+- Train against a mixed pool: 40% IL / 60% General, current self-play, historical snapshots, hard
+  decks. Add PFSP and a KL/behavior anchor.
+- Review behavior, not just win rate: first non-WAIT action time, non-WAIT count, elixir overflow,
+  game length, cards/game.
+- Fix sim bugs; validate every promising policy on the native engine.
+- Promote only on held-out results and live samples.
+
+### Promotion gate for a V4 checkpoint
+
+A new checkpoint replaces the current one only if:
+
+- [ ] It wins ≥60% over 200+ mirrored games against the deck pool.
+- [ ] It improves the **held-out boss** result (General or Hog specialist) without training on it.
+- [ ] `rejected_actions == 0`; truncations are explained.
+- [ ] Behavior metrics are within bounds: no 196-second openings, no overflow spiral, no stall loop.
+- [ ] Replay review shows intentional X-Bow/Hog play, not exploit spam.
+- [ ] It survives a 20–50 game live Null's sample without crashes or illegal taps.
+
+### Efficiency math
+
+- IL: 252k games, one supervised pass — cheap relative to RL.
+- FirstLight-Zero: ~1.5M self-play episodes to go from random to 97.5% vs Boss in the X-Bow mirror.
+- Native engine: 1,528 concurrent matches ≈ 700k games/day; real-time per match, parallel.
+- Fast sim: ~250k games/day/core through Python; 500k/day is 2–4 cores.
+- Live Null's: ~480 games/day per account if played nonstop at 3 minutes/game.
+
+Order: **IL → fast-sim exploration → native PPO → live validation.** Buy strength with cheap games;
+buy truth with expensive ones.
+
+### V4-specific recipe
+
+1. Start from V4 General/IL. No from-scratch.
+2. IL fine-tune on a 5–20k deck subset.
+3. PPO with 40% IL / 60% General + self-play snapshots + hard decks.
+4. Remove shaping once the behavior appears.
+5. Promote only through the held-out gate above.
+6. Use fast sim for X-Bow placement/reward experiments; validate on native and live.
+
+---
+
+## 5. Fast-simulator track (optional, parallel)
 
 Use `ClashAI`/`RoyaleSim` for cheap algorithm iteration, especially X-Bow reward design. Do **not**
 treat their results as main-server evidence: different physics, real sim-to-real gap, no UC evidence.
@@ -379,7 +464,7 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 
 ---
 
-## 5. Effort and budget
+## 6. Effort and budget
 
 | Phase | Estimate |
 | --- | --- |
@@ -397,7 +482,7 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 
 ---
 
-## 6. Risk register
+## 7. Risk register
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
@@ -415,7 +500,7 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 
 ---
 
-## 7. Do not do
+## 8. Do not do
 
 - Do not port FirstLight-Zero's 1.17M weights; different architecture and observation contract.
 - Do not reproduce Hog PPO; use the shipped Hog specialist.
@@ -429,7 +514,7 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 
 ---
 
-## 8. Immediate next actions
+## 9. Immediate next actions
 
 1. [ ] Phase 1: env + `check_install.py` → `Ready: 5 models`.
 2. [ ] Phase 2: engine + demo replay + evaluator smoke test.
@@ -440,7 +525,7 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 
 ---
 
-## 9. Repo map
+## 10. Repo map
 
 | Path | Purpose |
 | --- | --- |
