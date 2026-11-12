@@ -20,6 +20,25 @@ def supported_engine():
     return json.loads((PACKAGE / "supported_engine.json").read_text(encoding="utf-8"))
 
 
+def apk_matches_release(apk):
+    """Accept the pinned download or any re-signed/watermarked copy of the same engine.
+
+    Null's rewrites a custom APK Signing Block entry on every download, so no two official
+    downloads share a whole-file hash.  The probe, hooks, and attestation depend on the
+    ``libg.so`` payload, which is byte-identical across those copies.  A file that matches
+    neither the pinned whole-file hash nor the pinned engine payload is rejected.
+    """
+    release = supported_engine()
+    try:
+        if sha256(apk) == release["apk_sha256"]:
+            return True
+        with zipfile.ZipFile(apk) as archive:
+            payload = archive.read("lib/arm64-v8a/libg.so")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return False
+    return hashlib.sha256(payload).hexdigest() == release["libg_sha256"]
+
+
 def relative_file(name):
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts or "\\" in name or ":" in name:
@@ -41,8 +60,8 @@ def validate_update(update: Path):
 
 def prepare(input_apk: Path, update: Path | None, workspace: Path):
     release = supported_engine()
-    if sha256(input_apk) != release["apk_sha256"]:
-        raise ValueError("Input APK SHA-256 differs from supported_engine.json; supply the unmodified supported APK")
+    if not apk_matches_release(input_apk):
+        raise ValueError("Input APK does not carry the supported engine; supply the unmodified supported APK")
     if update is None:
         raise ValueError("Local resource compilation requires --runtime-update.")
     manifest = validate_update(update)
@@ -132,8 +151,8 @@ def main():
     p.add_argument("--probe", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "check-input":
-        if sha256(args.input_apk) != supported_engine()["apk_sha256"]:
-            raise ValueError("Input APK SHA-256 differs from supported_engine.json")
+        if not apk_matches_release(args.input_apk):
+            raise ValueError("Input APK does not carry the supported engine; supply the unmodified supported APK")
         print("Verified original APK", flush=True)
     elif args.command == "prepare":
         prepare(args.input_apk, args.runtime_update, args.workspace)

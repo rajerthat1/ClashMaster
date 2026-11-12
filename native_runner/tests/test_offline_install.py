@@ -118,6 +118,7 @@ def test_restore_rejects_arbitrary_device_path():
 def test_check_original_game_reads_apk_and_resources_without_replacing_app(monkeypatch, tmp_path):
     release = install.supported_engine()
     apk = tmp_path / "original.apk"
+    monkeypatch.setattr(install, "apk_matches_release", lambda path: True)
     monkeypatch.setattr(install, "sha256", lambda path: release["apk_sha256"])
     monkeypatch.setattr(install, "resource_hashes", lambda device: {"fingerprint.json": "verified"})
     monkeypatch.setattr(install, "validate_resources", lambda hashes: None)
@@ -139,6 +140,6 @@ def test_check_original_game_reads_apk_and_resources_without_replacing_app(monke
 def test_check_original_game_rejects_wrong_apk_before_device_access(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "sha256", lambda path: "0" * 64)
     device = Device([])
-    with pytest.raises(ValueError, match="Input APK SHA-256"):
+    with pytest.raises(ValueError, match="does not carry the supported engine"):
         install.check_original_game(device, tmp_path / "wrong.apk")
     assert device.calls == []

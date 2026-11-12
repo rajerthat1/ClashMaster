@@ -1,6 +1,7 @@
 """Source-only build boundary tests; no third-party APK or resources required."""
 
 import json
+import hashlib
 import zipfile
 
 import pytest
@@ -57,9 +58,51 @@ def test_output_reuses_device_resources_and_rejects_bundled_update(tmp_path, mon
 def test_wrong_apk_rejected_before_creating_output(tmp_path):
     apk = tmp_path / "wrong.apk"
     apk.write_bytes(b"unsupported")
-    with pytest.raises(ValueError, match="SHA-256"):
+    with pytest.raises(ValueError, match="does not carry the supported engine"):
         prepare(apk, None, tmp_path / "output")
     assert not (tmp_path / "output").exists()
+
+
+def test_input_apk_accepts_resigned_copy_with_pinned_engine(tmp_path, monkeypatch):
+    import native_runner.offline_build as build
+
+    apk = tmp_path / "resigned.apk"
+    engine = b"engine-payload"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("lib/arm64-v8a/libg.so", engine)
+    monkeypatch.setattr(
+        build,
+        "supported_engine",
+        lambda: {"apk_sha256": "0" * 64, "libg_sha256": hashlib.sha256(engine).hexdigest()},
+    )
+    assert build.apk_matches_release(apk)
+
+
+def test_input_apk_rejects_different_engine_payload(tmp_path, monkeypatch):
+    import native_runner.offline_build as build
+
+    apk = tmp_path / "wrong_engine.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("lib/arm64-v8a/libg.so", b"other-engine")
+    monkeypatch.setattr(
+        build,
+        "supported_engine",
+        lambda: {"apk_sha256": "0" * 64, "libg_sha256": hashlib.sha256(b"engine-payload").hexdigest()},
+    )
+    assert not build.apk_matches_release(apk)
+
+
+def test_input_apk_accepts_pinned_whole_file_hash(tmp_path, monkeypatch):
+    import native_runner.offline_build as build
+
+    apk = tmp_path / "pinned.apk"
+    apk.write_bytes(b"not-a-zip-required-when-the-whole-file-hash-matches")
+    monkeypatch.setattr(
+        build,
+        "supported_engine",
+        lambda: {"apk_sha256": build.sha256(apk), "libg_sha256": "0" * 64},
+    )
+    assert build.apk_matches_release(apk)
 
 
 @pytest.mark.parametrize("path", ["../outside", "/outside", "C:/outside", "assets/../../outside", "assets\\outside"])
