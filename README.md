@@ -19,8 +19,6 @@ below. Project-specific additions:
 - **[ROADMAP_CRFORGE_ADAPTER.md](ROADMAP_CRFORGE_ADAPTER.md)** — the engine-swap checklist.
 - **[ROADMAP_NULLS16_PROBE.md](ROADMAP_NULLS16_PROBE.md)** — Track B: the live reader that produces
   training data and is the only reality check on the simulator.
-- **[ROADMAP_LIVE_B_TO_C.md](ROADMAP_LIVE_B_TO_C.md)** — Track B → C: turn-aligned scheduling,
-  elixir reservation, confirmation, autonomy, capture.
 - **Sync upstream:** `./scripts/sync-upstream.sh`, or manually
   `git fetch upstream && git merge upstream/main && git push origin main`.
 - **Replay dataset:** `IL_Replay` is **retired** for this project — its games predate every rule

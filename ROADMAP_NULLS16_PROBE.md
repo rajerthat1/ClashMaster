@@ -87,18 +87,15 @@ JSON parse, no command queue, no native touch, no ruleset.
 
 ---
 
-## 3. Executor — minimum viable (weeks 3–5)
-
-B is deliberately dumb: it taps what the model asks and learns whether that worked. No budget, no
-turn alignment, no overlap. Those are C (`ROADMAP_LIVE_B_TO_C.md`).
+## 3. Executor (weeks 3–5)
 
 - [ ] Reuse RoyaleHarness's ADB two-touch path (hand slot, then tile).
-- [ ] One play in flight at a time; wait for the hand change before the next.
-- [ ] Log every tap and whether a play resulted.
+- [ ] Use the real delay: a card takes effect ~21 ticks (about 1 s) after the play.
+- [ ] Reserve elixir for plays already in flight before allowing the next one.
+- [ ] Confirm each play by a hand change, not by optimism; log taps that did nothing.
 - [ ] Latency budget: observation -> tap under 100 ms.
 
-**Exit:** three manual matches where taps produce plays and nothing double-plays. The miss rate
-recorded here is the baseline C must beat.
+**Exit:** three manual matches where every tap produced a play and nothing double-played.
 
 ---
 
@@ -152,9 +149,6 @@ This is the deliverable the crforge track consumes.
 
 - Null's has essentially no anti-tamper, unlike the official client. That is why this track is
   weeks and not months.
-- **This file is B only.** A working bridge still lands plays on an arbitrary tick. The production
-  loop — turn alignment, elixir reservation, slot state, confirmation, autonomy — is
-  `ROADMAP_LIVE_B_TO_C.md` (+10–12 weeks). A cycle deck reads the difference immediately.
 - Do not port the full 33-hook probe. A live bot needs reads and taps.
 - The 15.535.13 client is dead for live play. Everything here is 16.635.1.
 - If this track stalls, the crforge track still yields a trainer — but with no human data and no

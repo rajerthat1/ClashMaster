@@ -217,10 +217,8 @@ The hardest phase. One field group at a time, each with a unit test and a 20-gam
 
 ### Phase 7 — Live capture loop (Track B, parallel; 4–8 weeks)
 
-Runs alongside Phases 2–6; see `ROADMAP_NULLS16_PROBE.md`. That is the **bridge** (B). The
-production loop — turn-aligned scheduling, elixir reservation, confirmation, autonomy (C) — is
-`ROADMAP_LIVE_B_TO_C.md`, **+10–12 weeks**. Capture (C Phase 6) only needs a coherent frame, so
-it can be pulled forward if the engine track needs data sooner.
+Runs alongside Phases 2–6; see `ROADMAP_NULLS16_PROBE.md`. It is where the training data comes
+from, and the only ground-truth check on whether the simulator is teaching the right game.
 
 - [ ] Reader emits 20 Hz `ObservationV1` on Null's 16.635.1.
 - [ ] Replays captured in a crforge-labellable format.
@@ -264,7 +262,6 @@ maintenance, then the climb. Do not start before Phase 9 passes.
 | Phase 5 `observe-rich` | 4–6 weeks | $0 |
 | Phase 6 arena/eval/cache | 2–3 weeks | $0 |
 | Phase 7 live capture (Track B) | 4–8 weeks, parallel | $0 |
-| B → C production live loop | +10–12 weeks | $0 |
 | Phase 8 X-Bow training | 3–6 weeks | 20–60 GPU-h (~$20–70) |
 | Phase 9 gate | 1–2 weeks | $0 |
 | **Engine + first trained X-Bow** | **~4–6 months part-time** | **<$100** |
@@ -340,7 +337,6 @@ Write these down now; they are the point of the plan.
 | `checkpoints/` | Five V4 models; Everlight on `upstream/yes-delay` |
 | `ROADMAP_CRFORGE_ADAPTER.md` | Engineering checklist for the engine swap |
 | `ROADMAP_NULLS16_PROBE.md` | Track B: live reader on 16.635.1 |
-| `ROADMAP_LIVE_B_TO_C.md` | Track B → C: timing, budget, autonomy, capture |
 | `.resource/daybreak-cr/` | Live-loop and training architecture reference |
 | `user-provided/nulls-royale.apk` | 15.535.13, `libg` `110aa2b5…`, offline replays only |
 | `build/cr-ai-offline.apk` | Patched 15.535.13, base content, offline only |
