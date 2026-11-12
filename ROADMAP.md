@@ -200,8 +200,10 @@ cp .env.example .env
 
 **Smoke test:** all five V4 checkpoints load and hashes verify; tests pass/skip cleanly.
 
-- [x] `Ready: 5 models`.
+- [x] `Ready: 5 models`. (Linux/macOS: `python3.12 -m venv .venv` then the same pip installs.)
 - [x] `.env` created.
+- [x] Test suite green: 1202 passed, 18 skipped (2026-11-11). The native golden-bytes test now
+  normalizes CRLF before hashing, so it passes off Windows.
 
 ---
 
@@ -509,7 +511,8 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 ## 9. Immediate next actions
 
 1. [x] Phase 1: env + `check_install.py` → `Ready: 5 models`.
-2. [ ] Phase 2: engine + demo replay + evaluator smoke test.
+2. [ ] Phase 2: engine + demo replay + evaluator smoke test. Blocked on the Windows PC + MuMu +
+   Null's 15.535.13 APK; fill the Windows `.env` first.
 3. [ ] Phase 3: General vs IL (and Hog vs General with a MatchConfig).
 4. [ ] Phase 4: 2–5k replay cache + one-group IL smoke test.
 5. [ ] Phase 5: Hog specialist live loop on Null's.

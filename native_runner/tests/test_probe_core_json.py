@@ -84,9 +84,12 @@ def test_core_native_json_preserves_nullable_fields_precision_and_bounds(tmp_pat
         compiler, "-std=c++17", "-O2", "-I", str(ROOT / "probe"), str(cpp), "-o", str(executable),
     ], check=True, capture_output=True, text=True)
     output = subprocess.check_output([str(executable)])
+    # C stdio turns "\n" into "\r\n" on Windows; normalize so the golden bytes are
+    # platform-independent.
+    output = output.replace(b"\r\n", b"\n")
     # 1,080 complete records and 4,320 exact-boundary/overflow checks, including
     # all ability phases, nullable entities, UTF-8 and escaped control bytes.
-    assert len(output) == 508_076
+    assert len(output) == 502_676
     assert hashlib.sha256(output).hexdigest() == (
-        "ed43b1a42e3a88b3fa3ca03721ae230b3fda46d3d3115fc830a2990eb535a753"
+        "53aa42a3b13502f34a941b2c00e367b5fe33e4cc0eaaa0520d821818ba529c77"
     )
