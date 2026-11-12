@@ -1,132 +1,161 @@
-# Null's 16.635.1 — Simple Checklist
+# Track B — live bot on Null's 16.635.1
 
-Goal: get the bot working on Null's 16.635.1 with the least work.
+Status: **secondary track, started in parallel**, revised 2026-11-12
+Role: data source + reality check for the crforge track (`ROADMAP.md`)
+Not a gate: nothing downstream blocks on this finishing first.
 
-**Time at 10–15 h/week:** live bot 2–4 months · FirstLight training/eval 3–6 months · both 4–8 months.
+Goal: get **V4/Everlight playing real matches on Null's 16.635.1**, and capture those matches as
+labelled data for training.
 
-## Pick one target
-
-- [ ] **Live bot only** — content files + P0 probe/reader + Daybreak. Recommended if you already have a checkpoint and just want it playing.
-- [ ] **Training/eval only** — content files + full probe + FirstLight. No Daybreak.
-- [ ] **Both** — do the live bot first, then add training.
+**Time at 10–15 h/week: 4–8 weeks**, assuming the 16.x structs are intact. If more than ~25
+observation fields have no source, stop and take the kill criterion in `ROADMAP.md` §5.
 
 ---
 
-## 0. Freeze and acquire
+## Why this track exists at all
 
-- [ ] Save the working 15.535.13 APK, update folder, probe, and `build/cr-ai-offline.apk`.
-- [ ] Record SHA-256 for the APK, `libg.so`, probe, `fingerprint.json`, `assets.scdb`, and update files.
-- [ ] Get the unmodified Null's 16.635.1 APK.
-- [ ] Check package `nullsroyale.rel.free`, ABI `arm64-v8a`, and version code.
-- [ ] Open it once in a disposable Android 12 root instance; let content download; close it.
-- [ ] Copy `/data/user/0/nullsroyale.rel.free/update` off the device.
-- [ ] Record 16.635.1 hashes in `native_runner/versions/16.635.1.json`.
+The crforge track cannot supply its own supervision. `IL_Replay` predates every rule range
+crforge models, so the IL prior has to be re-captured on 16.635. This track is the only thing
+that produces:
+
+1. **Training data** — real human and bot battles on the live rule set.
+2. **Ground truth** — the only check on whether crforge is teaching the right game.
+
+Treat it as a required dependency of training, not as an optional deployment.
+
+---
+
+## What already exists
+
+| Asset | State | Use |
+| --- | --- | --- |
+| `RoyaleHarness` | Apache-2.0, reader + ADB executor, **pinned `libg` `110aa2b5…`** | Seed. Same `libg` as `user-provided/nulls-royale.apk` (15.535.13) |
+| `daybreak-cr` | `.resource/daybreak-cr/` | Scheduler reference: `play.py`, `live_budget.py`, `GAME_INTEGRATION.md` |
+| V4 checkpoints | `checkpoints/` | Frozen policy |
+| Everlight | `upstream/yes-delay` | Real 20-tick delay; preferred for live |
+| Local APK | 15.535.13, base content | Offline replays only — **no longer connects to Null's** |
+
+RoyaleHarness is pinned to 15.535.13, so it will not play live. Its value is that it already
+solves the *hard* half — observation adaptation, execution confirmation, coordinate mapping —
+for the same model and the same `libg` lineage.
+
+---
+
+## 0. Freeze and acquire (week 1)
+
+- [ ] Save the working 15.535.13 APK, update folder, probe, `build/cr-ai-offline.apk`.
+- [ ] Record SHA-256 for the APK, `libg.so`, probe, `fingerprint.json`, `assets.scdb`.
+- [ ] Get the unmodified **Null's 16.635.1** APK.
+- [ ] Check package `nullsroyale.rel.free`, ABI `arm64-v8a`, version code.
+- [ ] Extract `lib/arm64-v8a/libg.so`; record SHA-256 and build-id.
 - [ ] Capture a clean boot `logcat`; confirm the `libg.so` path.
-- [ ] Confirm JDK 17, NDK 27.3+, build-tools 37, Python 3.12.
-- [ ] Choose host: Linux + Windows MuMu, Linux + rooted ARM64 phone, or Windows + WSL2.
-- [ ] Optional: install REA (`npx rea-agents setup`) and configure Ghidra/JADX.
+- [ ] Confirm JDK 17, NDK 27.3+, build-tools 37, Python 3.12, MuMu Android 12 + root.
+
+**Exit:** `native_runner/versions/16.635.1.json` exists with APK + `libg` hashes.
 
 ---
 
-## 1. Content (2–4 weeks)
+## 1. Offset map — reader only (weeks 1–3)
 
-- [ ] Keep `fingerprint.json`, `assets.scdb`, and `csv_logic/` from the update folder.
-- [ ] Check whether your deck uses only the existing 122 cards / 62 forms.
-- [ ] If yes: **skip the full catalog diff** for now.
-- [ ] If no: run `tools/content_probe.py` and diff 15.535.86 → 16.635.1.
-- [ ] Update only the card forms your deck actually uses.
-- [ ] Confirm the client loads and the content hashes match.
+Only what `ObservationV1` needs. This is **not** the old P0 probe list: no lifecycle hooks, no
+JSON parse, no command queue, no native touch, no ruleset.
 
----
+- [ ] Manager / root context.
+- [ ] Battle object and tick counter.
+- [ ] Roster: per-side player state.
+- [ ] Elixir, hand, next card, cycle.
+- [ ] Tower HP and result.
+- [ ] Entity graph: units, buildings, towers — id, side, card, form, position, HP.
+- [ ] Card id / form mapping for 16.635.
+- [ ] Extract a 16-byte prologue for every hook you keep.
+- [ ] Verify each offset against the binary before building.
 
-## 2. P0 offset map (2–4 weeks)
-
-- [ ] Extract `libg.so`; record SHA-256 and build-id.
-- [ ] Locate the 9 runner lifecycle functions.
-- [ ] Locate tick, context A/B, state new/delete/ctor/setup/destroy.
-- [ ] Locate JSON parse, command parse/append/queue, snapshot/deserialize.
-- [ ] Locate command queue, card selection, tilemap, and native touch.
-- [ ] Extract a 16-byte prologue for every P0 hook.
-- [ ] Write `native_runner/versions/16.635.1/offsets.json`.
-- [ ] Verify every offset against the binary before building.
-- [ ] Optional: use REA for candidate functions and pseudocode, then verify each one.
+**Exit:** a written offset table with a verified prologue per entry.
 
 ---
 
-## 3. P0 probe/reader (2–4 weeks)
+## 2. Reader build (weeks 2–4)
 
-- [ ] Add a version switch to the probe build.
-- [ ] Add a Linux `build_probe.sh` wrapper if not using Windows.
-- [ ] Move offsets/prologues into a generated version header.
-- [ ] Port the P0 runner hooks.
-- [ ] Port the native touch interceptor.
-- [ ] Build and install `libcrprobe.so`.
-- [ ] Confirm `hook_install_ok=true`.
-- [ ] Confirm `content_ready=true` and `content_assets_mapped=true`.
-- [ ] Complete one cold-configure match with `truncated: 0`.
-
----
-
-## 4. Pick one front end
-
-### A. Daybreak live bot (recommended for live-only)
-
-- [ ] Create `~/cr-clients/nulls-16/client.json`.
-- [ ] Fill package, activity, serial, `reader`, `device_reader`, `manager_rva`, `root_context`.
-- [ ] Add `check.version_code` and `check.libg_sha256`.
-- [ ] Write the reader: open `/proc/<pid>/mem`, resolve `libg.so`, read manager/root context.
+- [ ] Fork RoyaleHarness; add a version switch keyed on `libg` SHA-256.
+- [ ] Move offsets into a generated version header.
+- [ ] Port the reader hooks; keep the probe read-only.
+- [ ] Build and install the reader; confirm it reports the expected `libg` hash.
 - [ ] Emit 20 Hz frames: elixir, hand, cycle, entities, towers, result.
-- [ ] Compile the reader, push it, `chmod 755`, verify SHA-256.
-- [ ] Run `play.py --client nulls-16 --watch` for three battles.
-- [ ] Run `--queue` with the model; verify two-touch plays and hand refill.
-- [ ] Check latency is under 100 ms.
+- [ ] Cross-check 50 frames against the screen (manual labels).
 
-### B. FirstLight training/eval
-
-- [ ] Make `supported_engine.json` version-aware.
-- [ ] Update `offline_build.py`, `offline_install.py`, `attestation.py`, `ruleset.py`.
-- [ ] Update the GameApp/Titan bootstrap anchors.
-- [ ] Build and install `cr-ai-offline.apk`.
-- [ ] Run the 16.635.1 version of `check_original_game.ps1`.
-- [ ] Run the demo cache with `--verify-roundtrip`.
-- [ ] Run a 40-game evaluation; require `rejected_actions: 0` and `truncated: 0`.
-- [ ] Run `serve_policy.py` and one manual model match.
+**Exit:** `ObservationV1` frames from the live client, with no write path into the game.
 
 ---
 
-## 5. Validate one battle
+## 3. Executor — minimum viable (weeks 3–5)
+
+B is deliberately dumb: it taps what the model asks and learns whether that worked. No budget, no
+turn alignment, no overlap. Those are C (`ROADMAP_LIVE_B_TO_C.md`).
+
+- [ ] Reuse RoyaleHarness's ADB two-touch path (hand slot, then tile).
+- [ ] One play in flight at a time; wait for the hand change before the next.
+- [ ] Log every tap and whether a play resulted.
+- [ ] Latency budget: observation -> tap under 100 ms.
+
+**Exit:** three manual matches where taps produce plays and nothing double-plays. The miss rate
+recorded here is the baseline C must beat.
+
+---
+
+## 4. Capture (weeks 4–6)
+
+This is the deliverable the crforge track consumes.
+
+- [ ] Define the capture format: reader frames + plays + result, one file per battle.
+- [ ] Make it convertible to the schema `crforge_env.label_replays` accepts.
+- [ ] Record 20 hand-played matches first; verify labelling works before scaling.
+- [ ] Then run `--watch` on ladder games: 500+ battles with the decks you care about.
+- [ ] Tag by deck, side, result, and rule/data version.
+
+**Exit (M3):** 500+ labelled 16.635 games, convertible, reproducible.
+
+---
+
+## 5. Deploy (weeks 5–8)
+
+- [ ] `play.py`-style loop: model picks, executor taps, confirmation returns.
+- [ ] `--queue` for ladder, `--watch` for capture.
+- [ ] Reconnect / abort handling tested.
+- [ ] Run Everlight zero-shot with Hog 2.6, then General with X-Bow 3.0.
+- [ ] Log every decision + input for later comparison with crforge.
+
+**Exit:** a V4/Everlight bot playing live Null's matches unattended.
+
+---
+
+## 6. Validate (week 8)
 
 - [ ] One full live battle completes.
-- [ ] No illegal taps.
-- [ ] No crashes.
-- [ ] Hand, elixir, towers, and result match the screen.
+- [ ] No illegal taps, no crashes.
+- [ ] Hand, elixir, towers, result match the screen.
 - [ ] Reconnect works after killing the game.
-- [ ] Save the logs, probe attestation, and reader hashes.
+- [ ] Save logs, reader hashes, capture files.
+- [ ] Publish the frame-parity report against crforge (feeds `ROADMAP.md` M2).
 
 ---
 
-## 6. Later — do not block the first bot
+## Later — do not block the first bot
 
-- [ ] Add combat-event hooks.
-- [ ] Add phase-runtime hooks.
-- [ ] Add remaining, tower-troop, visibility, and movement hooks.
-- [ ] Run the full catalog diff for new cards, evos, and heroes.
-- [ ] Fine-tune V4 for new forms.
-- [ ] Add pattern scanning and a version registry.
-- [ ] Run 20+ unattended games.
-- [ ] Add CI tests for offsets, hashes, and content identity.
+- [ ] Combat-event hooks.
+- [ ] Full catalog diff for new cards, evos, heroes.
+- [ ] Pattern scanning and a version registry.
+- [ ] 20+ unattended games.
 
 ---
 
 ## Notes
 
-- Linux is fine for content, RE, probe build, APK build, and training. Windows is only needed for MuMu.
-- Linux-only: use a rooted ARM64 phone or a Windows VM for MuMu; port the `.ps1` scripts.
-- REA speeds up Phase 2, but every offset still needs a prologue and runtime check.
-- Do not port all 33 hooks for the first battle. P0 is enough to get it playing.
-- Base content (`15.535.3`) is enough to exercise the simulator and the renderer, and even to make the
-  runner report `production_ready`, but it is **not** a training substitute: the ruleset stays pinned to
-  the `15.535.86` compiled data, and a base ruleset cannot be regenerated because the loose `csv_logic`
-  files only arrive through the server update. See `ROADMAP.md`.
-- If the goal is a bot that plays real players on Null's, this port is the only route: the pinned
-  `15.535.86` content would not help there either.
+- Null's has essentially no anti-tamper, unlike the official client. That is why this track is
+  weeks and not months.
+- **This file is B only.** A working bridge still lands plays on an arbitrary tick. The production
+  loop — turn alignment, elixir reservation, slot state, confirmation, autonomy — is
+  `ROADMAP_LIVE_B_TO_C.md` (+10–12 weeks). A cycle deck reads the difference immediately.
+- Do not port the full 33-hook probe. A live bot needs reads and taps.
+- The 15.535.13 client is dead for live play. Everything here is 16.635.1.
+- If this track stalls, the crforge track still yields a trainer — but with no human data and no
+  reality check. That is the outcome to avoid.

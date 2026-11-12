@@ -3,22 +3,29 @@
 Clash Royale AI research workspace targeting **Ultimate Champion on the main ladder**, starting with
 **Hog 2.6** and finishing with **X-Bow 3.0**.
 
-**Model:** FirstLight_CR V4, 16.8M parameters — the five shipped checkpoints, fine-tuned for X-Bow.
+**Model:** FirstLight_CR V4, 16.8M parameters (plus Everlight on `upstream/yes-delay`) — fine-tuned
+for X-Bow.
 
-**Current phase:** Null's Royale. The main-server bridge and the UC push are deferred to the end,
-behind a readiness gate.
+**Current phase:** 16.635.1 via a **crforge engine swap**. crforge (Java, tick-exact on client
+16.635.1) stands in for the native engine behind FirstLight's runner protocol, so the model,
+evaluator and trainer run unchanged. The main-server bridge and the UC push stay deferred behind a
+readiness gate.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
 below. Project-specific additions:
 
-- **[ROADMAP.md](ROADMAP.md)** — environment → Hog 2.6 on Null's → X-Bow 3.0 on Null's → main-server
-  bridge → UC push.
+- **[ROADMAP.md](ROADMAP.md)** — decision record, phase plan, kill criteria.
+- **[ROADMAP_CRFORGE_ADAPTER.md](ROADMAP_CRFORGE_ADAPTER.md)** — the engine-swap checklist.
+- **[ROADMAP_NULLS16_PROBE.md](ROADMAP_NULLS16_PROBE.md)** — Track B: the live reader that produces
+  training data and is the only reality check on the simulator.
+- **[ROADMAP_LIVE_B_TO_C.md](ROADMAP_LIVE_B_TO_C.md)** — Track B → C: turn-aligned scheduling,
+  elixir reservation, confirmation, autonomy, capture.
 - **Sync upstream:** `./scripts/sync-upstream.sh`, or manually
   `git fetch upstream && git merge upstream/main && git push origin main`.
-- **Replay dataset:** download
-  [IL_Replay](https://huggingface.co/datasets/VanguardX101/IL_Replay) into
-  `datasets/royaleapi/{replays,actions}/`; it is not tracked by git.
+- **Replay dataset:** `IL_Replay` is **retired** for this project — its games predate every rule
+  range crforge models, so they cannot be replayed on a 16.635 rule set. Training data is captured
+  live instead; see Track B.
 - **Remotes:** `origin` = this repo, `upstream` = `Jaasssoooonnnnn/FirstLight_CR`,
   `fork` = `rajerthat1/FirstLight_CR` (pristine mirror for upstream PRs).
 
