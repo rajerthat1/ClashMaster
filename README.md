@@ -3,12 +3,15 @@
 Clash Royale AI research workspace targeting **Ultimate Champion on the main ladder**, starting with
 **Hog 2.6** and finishing with **X-Bow 3.0**.
 
+**Current phase:** Null's Royale. The main-server bridge and the UC push are deferred to the end,
+behind a readiness gate.
+
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
 below. Project-specific additions:
 
-- **[ROADMAP.md](ROADMAP.md)** — phases from environment setup through Null's Royale to the
-  main-server UC push.
+- **[ROADMAP.md](ROADMAP.md)** — environment → Hog 2.6 on Null's → X-Bow 3.0 on Null's → main-server
+  bridge → UC push.
 - **Sync upstream:** `./scripts/sync-upstream.sh`, or manually
   `git fetch upstream && git merge upstream/main && git push origin main`.
 - **Replay dataset:** download

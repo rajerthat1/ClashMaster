@@ -1,89 +1,113 @@
 # Roadmap: Hog 2.6 → X-Bow 3.0 → Ultimate Champion
 
-Status: planning
+Status: active — Null's Royale phase
 Owner: Raj
 Primary repo: this repository (fork of `FirstLight_CR`; upstream code lives at the repo root)
 
 **End goal:** reach **Ultimate Champion (UC) on Supercell's main ladder** with **X-Bow 3.0**.
-**Stepping stones:** Hog 2.6 on Null's Royale → HF replay training → main-server X-Bow.
+**Current focus:** get strong on **Null's Royale** first. The main-server bridge and daybreak work are
+deferred to Phase 9, behind a readiness gate.
 
-| Deck | Role | Account state |
-| --- | --- | --- |
-| Hog 2.6 | Proves the full training + live-play loop | Null's account: everything maxed (lvl 16 + evo/hero). Main: only Hog Rider is maxed; the rest of 2.6 is not. **Hog is a Null's-only sandbox.** |
-| X-Bow 3.0 | Final UC deck | Main account: fully maxed (lvl 16 + evo/hero). Ready today. |
+| Stage | Deck | Environment | Status |
+| --- | --- | --- | --- |
+| 1 | Hog 2.6 | Null's Royale | Active: prove the training + live loop |
+| 2 | X-Bow 3.0 | Null's Royale | Next: train and validate the real UC deck |
+| 3 | X-Bow 3.0 | Main server | Deferred: reader, bridge, UC push |
 
-> Confirm the current X-Bow 3.0 build (2 evolutions + hero + tower troop) when Phase 8 starts. The
-> card core is X-Bow, Tesla, Archers, Knight, Fireball, The Log, Skeletons, Ice Spirit; the
-> evolution/hero slots are meta-dependent.
+**Milestones**
+
+- **M1 — Engine + baselines:** one native match, published numbers reproduced.
+- **M2 — Hog on Null's:** live memory loop, Hog bot climbs unattended.
+- **M3 — X-Bow on Null's:** X-Bow specialist beats Hog/General and climbs.
+- **M4 — Main bridge:** official-client reader stable at ≥20 Hz.
+- **M5 — UC:** X-Bow reaches Ultimate Champion on main.
 
 ---
 
 ## 0. Project constraints (from the planning Q&A)
 
-| Constraint | Answer | Effect on the plan |
+| Constraint | Answer | Effect |
 | --- | --- | --- |
-| Main account | X-Bow 3.0 maxed; Hog 2.6 incomplete; Grand Champion / Master | No account-building phase; X-Bow can go to ladder immediately after the bridge works |
-| Null's account | Everything maxed, evolutions and heroes | Hog 2.6 is a safe, fully powered sandbox |
-| Ban tolerance | **Full automation accepted on main** | Build the automation bridge; assist mode is validation, not the endpoint |
-| Hardware | Windows PC; cloud budget only; no rooted Android device | MuMu is the engine host. A used rooted ARM phone (~$60–100) is the best Phase 7 purchase |
-| Time | 5–15 h/week hands-on, tens of hours idle training | Timeline 6–12 months; favor the shipped checkpoints and short fine-tunes |
-| Budget | ~$50–200 (student credits) | Zero-shot General/X-Bow first; one X-Bow IL fine-tune; PPO optional |
-| Sequencing | Hog first, then X-Bow | Hog on Null's; X-Bow in parallel for the main ladder |
-
-**Immediate implication:** do not spend money or weeks building a Hog 2.6 main account. Hog exists to
-validate the loop on Null's. The main ladder is an X-Bow project.
+| Main account | X-Bow 3.0 maxed; Hog 2.6 incomplete; Grand Champion / Master | X-Bow is the only main-ladder deck; Hog is Null's-only |
+| Null's account | Everything maxed (lvl 16 + evo/hero) | Perfect sandbox for both decks |
+| Ban tolerance | Full automation accepted on main | Applies only at Phase 10; not a reason to rush the bridge |
+| Hardware | Windows PC; cloud budget only; no rooted device | MuMu for Null's; buy a rooted phone at Phase 9, not now |
+| Time | 5–15 h/week hands-on, tens of hours idle training | Null's phase is 3–6 months; main phase adds 3–6+ |
+| Budget | ~$50–200 (student credits) | Shipped checkpoints + short fine-tunes; no 8-GPU PPO |
+| Sequencing | Hog first, then X-Bow; Null's first, main last | Phases 5–8 are Null's; Phase 9 is the bridge |
+| Current focus | **Null's Royale** | Do not start daybreak/main work until Phase 8 passes |
 
 ---
 
-## 1. Goal, and the gap between here and it
+## 1. Goal, and the staged path
 
-**FirstLight_CR is still the right training base.** It ships the only complete imitation-learning +
-PPO pipeline, five checkpoints, 252k top-ladder replays, a native engine, and a Hog 2.6 specialist
-that the author used to reach a high ladder rank. It is far ahead of the pure simulators
-(`RoyaleSim`, `ClashAI`, `clash-royale-simulator`), the forks (`FirstLight-Zero`, `FL-Royale`), and the
-live-client tools (`cr-memory-reader`, `daybreak-cr`) for *policy training*.
+**FirstLight_CR is the right training base.** It ships the only complete imitation-learning + PPO
+pipeline, five checkpoints, 252k top-ladder replays, a native engine, and a Hog 2.6 specialist the
+author used to reach a high ladder rank. It is far ahead of the pure simulators (`RoyaleSim`, `ClashAI`,
+`clash-royale-simulator`), the forks (`FirstLight-Zero`, `FL-Royale`), and the live-client tools
+(`cr-memory-reader`, `daybreak-cr`) for *policy training*.
 
-**But it is not a path to the main ladder by itself.** The engine is a patched **Null's Royale
-15.535.13** private-server client, isolated from the network. There is no ranked/online/account code in
-the repo. The model transfers to another client; the client integration does not.
+**Null's is the right place to start.** The engine is a patched **Null's Royale 15.535.13** client,
+isolated from the network. That makes it a safe, maxed-account sandbox to prove the entire stack:
+replay cache → IL → PPO → live memory loop → taps → ladder queue. Nothing about the main server needs
+to be solved until that works.
 
-**Three hard gates stand between this repo and UC:**
+**The main server is a separate, later project.** The official client cannot be reached from this
+engine. The live-loop architecture exists in `daybreak-cr` (measured on official build 160402012), but
+its reader is private. Reaching UC requires a new reader for the current official build, plus the
+card-catalog updates and monthly maintenance described below. That is Phase 9, not now.
 
-1. **Engine** (Phase 2) — get one native match running. Hard prerequisite for dataset training.
-2. **Main-client bridge** (Phase 7) — observe the official client and act on it in real time. The
-   **loop** is proven: `daybreak-cr`'s `play.py` and `docs/GAME_INTEGRATION.md` were measured on
-   **official client build 160402012** in MuMu, and the script supports multiple clients. The **reader**
-   (per-client `client.json`, addresses, build check) is private and not in any repo. Building that
-   reader for the current official build is the main R&D task.
-3. **Account + ToS** (Phase 0 / Phase 9) — the X-Bow account is UC-eligible, so this gate is risk, not
-   progression. Automating the official client violates Supercell's ToS and can get the account
-   permanently banned. Full automation is accepted here; the risk is explicit.
+**The staged gates:**
+
+1. **Engine** (Phase 2) — one native match. Hard prerequisite for dataset training.
+2. **Null's live loop** (Phase 6) — reader → observation → policy → taps.
+3. **X-Bow readiness** (Phase 8) — the X-Bow policy is strong enough to justify the main bridge.
+4. **Main reader** (Phase 9) — official-client state at ≥20 Hz.
+5. **UC push** (Phase 10) — seasonal climb.
 
 ### Memory reading is the primary path, not vision
 
-This is the corrected position after checking the reference repos:
+Applies when Phase 9 starts, but the architecture matters now:
 
-| Source | Latency | Compute | Works on main? | Notes |
+| Source | Latency | Compute | Main-server feasibility | Notes |
 | --- | --- | --- | --- | --- |
-| **Memory reader** (native / Frida / rooted guest) | ~20–50 ms sampling | Tiny (C reader) | **Yes, proven** by `daybreak-cr` on official build 160402012 | Needs per-build offsets and pointer chains; updates break it |
-| Vision (screen capture + detection) | ~100–300 ms | Heavy (GPU/CPU) | Possible, unrooted | Fallback only; misreads in clutter; needs labeled data |
-| Hybrid | 20–100 ms | Medium | Possible | Memory for hand/elixir, vision for arena if needed |
+| **Memory reader** (native / Frida / rooted guest) | ~20–50 ms | Tiny | **Proven** by `daybreak-cr` on official build 160402012 | Per-build offsets; monthly maintenance |
+| Vision (screen capture + detection) | ~100–300 ms | Heavy | Possible, unrooted | Fallback only; clutter misreads |
+| Hybrid | 20–100 ms | Medium | Possible | Memory for hand/elixir, vision for arena |
 
 - `cr-memory-reader` targets **Null's Royale only** (package `nullsroyale.rel.free`, lead version
-  13.300.6). Its offsets will not work on the official client. Its **reverse-engineering method** is
-  the useful part: find `libg.so`, the `holder`, and the `hpComponentAccessor`, then build pointer
-  chains.
-- **Cheat Engine on the Windows host is the wrong layer.** MuMu is a VM and the game runs in the guest;
-  a host-side CE scan sees emulator memory, not the guest's virtual address space. GameGuardian inside
-  a rooted guest can discover values, but a production bot needs stable structures, not value scans.
-  Budget for a custom reader.
-- **Detection:** passive `/proc/pid/mem` reads are much stealthier than Frida injection or hooks;
-  root/emulator may itself be detectable, and behavioral patterns (24/7 play, perfect timing) are the
-  larger risk. Nothing here is guaranteed undetectable.
+  13.300.6). Its offsets do not work on main; its **method** does: find `libg.so`, `holder`, and
+  `hpComponentAccessor`, then build pointer chains.
+- **Cheat Engine on the Windows host is the wrong layer.** MuMu is a VM; a host scan sees emulator
+  memory, not the guest's address space. GameGuardian inside a rooted guest can discover values, but a
+  production bot needs stable structures, not value scans.
+- **Detection:** passive `/proc/pid/mem` reads are stealthier than Frida injection; root/emulator and
+  behavioral patterns remain risks. No guarantees.
 
-**Reality check:** reaching UC is a deployment, account, meta and operations problem as much as a
-model problem. The training stack is necessary, not sufficient. The X-Bow account is ready; the
-reader and the climb are the hard parts.
+### The main-server treadmill (plan for it now, start it later)
+
+Public tracking, Nov 2026:
+
+- **Seasons:** monthly. Season 88 Oct 5; Season 89 Nov 2.
+- **Balance changes:** 1–2 per month (Sep 8 & 17; Oct 5 & 19; none at the start of November).
+- **Client builds:** roughly monthly major branches, plus patches within days:
+  `160402012` (Oct 3) → `160635001` (Oct 27) → `160635007` (Oct 30) → `160635010` (Nov 8).
+- **New evolutions/heroes:** almost every season (S88 Evo Electro Giant + Hero Electro Wizard; S89 Evo
+  Giant + Evo Mirror).
+
+Three maintenance axes, only one of which is the reader:
+
+1. **Reader offsets** — break on client builds; re-validate monthly-ish.
+2. **Card catalog/features** — FirstLight is pinned to Null's 15.535.13 (122 cards, 42 evos, 24 heroes).
+   Official 16.635 has forms the model may not know. Extend the catalog and fine-tune.
+3. **Policy/meta** — balance changes shift matchups monthly; reader unaffected, policy affected.
+
+A main-server reader is a subscription, not a one-time build. Budget ~1–3 days per major build for
+re-validation, more when battle structs change.
+
+**Reality check:** UC is a deployment, account, meta and operations problem as much as a model
+problem. The X-Bow account is ready; the reader and the climb are the hard parts. The Null's phase
+gives you a strong policy and a working loop before you pay that cost.
 
 **The other hard truth:** the HF dataset alone does not start training. The cache builder replays every
 match through the native engine. Phase 2 is a prerequisite for "dataset training", not optional.
@@ -94,35 +118,37 @@ match through the native engine. Phase 2 is a prerequisite for "dataset training
 
 | Asset | State |
 | --- | --- |
-| Repository | Fork of `FirstLight_CR` at the repo root (upstream code + our additions) |
+| Repository | Fork of `FirstLight_CR` at the repo root |
 | Checkpoints | 5 models: IL, Active IL, General, Hog specialist 1, Hog specialist 2 |
 | IL_Replay dataset | Complete: 252,238 matches, 17.8M actions, ~1.8 GB |
 | Training code | IL cache builder, IL trainer, PPO cluster trainer, evaluator, policy service |
-| Live-play blueprint | `.resource/daybreak-cr/play.py` + `docs/GAME_INTEGRATION.md` (official client measurements, taps, ladder queue) |
 | Null's reader | `.resource/cr-memory-reader` (memory/Frida state capture for Null's) |
+| Live-loop blueprint | `.resource/daybreak-cr/play.py` (defer until Phase 9; useful earlier for tap timing) |
+| Timing rules | `.resource/daybreak-cr/docs/GAME_INTEGRATION.md` (touch, hand, elixir, server turns) |
 | X-Bow prior art | `.resource/ClashAI` (icebow, simulator), `.resource/FirstLight-Zero` (3.0 X-Bow self-play) |
 | Local machine | Linux, 12 vCPU, 14 GB RAM, **no CUDA GPU**, 90 GB free, `/dev/kvm`, `adb` |
 | Windows machine | MuMu host for engine build/run (the supported path) |
 | Cloud budget | ~$50–200, student credits |
-| Missing | Null's APK, official-client reader/offsets, GPU for training |
+| Missing | Null's APK, GPU for training, official-client reader (Phase 9 only) |
 
 ---
 
 ## 3. Phase plan
 
-### Phase 0 — Decisions already made (keep this current)
+### Phase 0 — Decisions and focus (keep this current)
 
-- [x] End goal: UC on Supercell's main ladder, final deck X-Bow 3.0.
+- [x] End goal: UC on main, final deck X-Bow 3.0.
 - [x] Hog 2.6: Null's-only sandbox; do not build it on main.
 - [x] Main account: X-Bow 3.0 maxed; eligible for a UC push.
 - [x] Risk: full automation accepted on main; ban risk acknowledged.
-- [x] Budget: $50–200; use shipped checkpoints before renting GPUs.
-- [ ] Season/date target for the UC push.
-- [ ] Buy a used rooted ARM64 phone for Phase 7 (~$60–100), or commit to MuMu direct reads.
+- [x] Budget: $50–200; shipped checkpoints before GPUs.
+- [x] **Current focus: Null's Royale. Main bridge deferred to Phase 9.**
+- [ ] Set a Null's milestone target (e.g. trophies or win rate over 200 games).
+- [ ] Defer the rooted-phone purchase until Phase 9.
 
 ---
 
-### Phase 1 — Local Python environment (half a day, no GPU needed)
+### Phase 1 — Local Python environment (half a day, no GPU)
 
 ```bash
 cd /home/raj/Desktop/ClashMaster
@@ -148,11 +174,11 @@ cp .env.example .env
 
 ### Phase 2 — Native engine on Windows (1–2 weeks)
 
-You have a Windows PC, so use the supported path: Android 12 MuMu instance with root and ARM64
+You have a Windows PC, so use the supported MuMu path: Android 12 instance with root and ARM64
 support, the original Null's Royale APK, JDK 17 + NDK 27.3 + build-tools 37.
 
-1. Obtain `nulls-royale.apk` 15.535.13 arm64-v8a (user-supplied; the repo does not ship it). Let it
-   update to content 15.535.86 in the lobby, then close it.
+1. Obtain `nulls-royale.apk` 15.535.13 arm64-v8a (user-supplied). Let it update to content
+   15.535.86 in the lobby, then close it.
 2. Build + install:
    ```powershell
    ./check_original_game.ps1 -InputApk ./user-provided/nulls-royale.apk
@@ -194,8 +220,8 @@ python -m native_runner.training.v4.evaluate \
   --output ./evaluations/hog2-vs-general
 ```
 
-- Published General 73.30% vs IL; Hog specialist 2 88.03% vs General (760 mirrored games).
-- Use argmax, mirrored sides, and the same first-action rule as the author.
+- Published: General 73.30% vs IL; Hog specialist 2 88.03% vs General (760 mirrored games).
+- Use argmax, mirrored sides, and the author's first-action rule.
 - Inspect `matches.jsonl`: `truncated`, `rejected_actions`, `actions_by_owner`, first non-WAIT time.
 
 - [ ] Numbers in the expected ballpark.
@@ -222,13 +248,13 @@ python -m native_runner.training.v4.evaluate \
      --output-dir runs/il-subset --epochs 1 --max-groups 1 --save-every-groups 1
    ```
 
-**4b. Budget-aware full run**
+**4b. Budget-aware run**
 
-- The dataset is top-ladder; filter for X-Bow 3.0 games when you start Phase 8. The full 252k cache is
-  likely too large for this budget; use a 5–20k subset first.
+- Filter for the deck you are training: Hog first, then X-Bow 3.0.
+- The full 252k cache is likely too large for this budget; use a 5–20k subset.
 - Fine-tune from the shipped IL checkpoint; do not train from scratch.
-- 1 GPU (rented) is enough for a light fine-tune; `IL_WORLD_SIZE=1`.
-- Cache storage: monitor; reserve 50–100 GB if you go larger.
+- 1 GPU (rented) is enough; `IL_WORLD_SIZE=1`.
+- Cache storage: monitor; reserve 50–100 GB if you scale.
 
 - [ ] Subset cache counts and expert/executed actions look sane.
 - [ ] Loss finite and decreasing; checkpoint reloads.
@@ -238,15 +264,15 @@ python -m native_runner.training.v4.evaluate \
 
 ---
 
-### Phase 5 — Hog 2.6 specialist via PPO (Null's sandbox only)
+### Phase 5 — Hog 2.6 specialist via PPO (Null's sandbox)
 
-This is a loop-validation exercise, not a main-ladder investment. Use the author's recipe:
+Loop-validation exercise, not a main-ladder investment. Follow the author's recipe:
 
 1. Initialize from **General**.
 2. Opponent mix **40% original IL / 60% General**; decks 30% focus / 40% weighted / 30% hard.
 3. Hog rewards + demonstrations → **specialist 1**.
 4. Remove shaping, keep outcome + tower-health + overflow penalties → **specialist 2**.
-5. Budget: one short PPO run on rented/free GPU credits; do not chase the author's 8-GPU scale.
+5. Budget: one short PPO run on rented/free credits; skip the author's 8-GPU scale.
 
 - [ ] `rejected_actions == 0` before accepting a rollout.
 - [ ] First non-WAIT action time tracked.
@@ -257,15 +283,16 @@ This is a loop-validation exercise, not a main-ladder investment. Use the author
 
 ---
 
-### Phase 6 — Null's Royale live loop (memory reader)
+### Phase 6 — Null's live loop (memory reader + taps)
 
-The goal is to prove the whole live stack on a maxed sandbox account: reader → observation → policy →
-taps → ladder queue → reconnect.
+Prove the whole live stack on the maxed Null's account: reader → observation → policy → taps → ladder
+queue → reconnect.
 
-Use `daybreak-cr/play.py` as the blueprint:
-- `client.json` per client, a C reader built with the NDK, a build check, and tap injection.
-- `.resource/cr-memory-reader` has a Null's state reader you can adapt.
+Use `.resource/daybreak-cr/play.py` as the architecture reference and `.resource/cr-memory-reader` for
+the Null's state reader:
+- `client.json` per client, a C reader built with the NDK, a build check, taps.
 - `--queue` presses Battle on the ladder; `--watch` records human play.
+- Read `docs/GAME_INTEGRATION.md` for touch/deal/elixir/server-turn timing.
 
 - [ ] Reader produces elixir, hand, cycle, entities, tower HP, battle result at ≥20 Hz.
 - [ ] Policy consumes the observation and issues legal taps.
@@ -277,53 +304,9 @@ Use `daybreak-cr/play.py` as the blueprint:
 
 ---
 
-### Phase 7 — Main-server memory bridge (the critical R&D, 4–12+ weeks)
+### Phase 7 — X-Bow 3.0 specialist on Null's
 
-Memory reading is the primary path. The loop is proven on the official client; your job is the reader
-and the observation/action adapter for the **current** official build.
-
-**7.1 Decide the host**
-
-| Host | Verdict |
-| --- | --- |
-| **Rooted ARM64 phone** | Best. Native ARM, no translation, low latency, easy `/proc/pid/mem` reads. Buy a used one (~$60–100) |
-| Windows + MuMu | Possible. x86_64 + ARM translation breaks Frida for `libg.so`; direct memory reads are the workaround (as `cr-memory-reader` does on Windows). Accept higher setup pain |
-| Vision on any device | Fallback only: 100–300 ms, heavy, misreads |
-
-**7.2 Build the reader**
-
-1. Identify the official package, version, and `libg.so` base per process.
-2. Find the `holder` / player-state chain: elixir, hand, cycle, tower HP, battle result.
-3. Find the entity graph (`hpComponentAccessor` equivalent): units, sides, card IDs, positions, HP.
-4. Find the command queue: own and opponent plays, issue/execute ticks.
-5. Map everything into FirstLight's `ObservationV1` contract; verify field-by-field against recorded
-   frames and replays.
-6. Add a build check and versioned parsing; fail closed when the client updates.
-
-**7.3 Build the action executor**
-
-- Two touches per play (hand slot → tile), minitouch/ADB injection.
-- Use `docs/GAME_INTEGRATION.md` for the measured rules: 21-tick execution, hand refill, touch timing,
-  server turns (R-8 / R+13), first-touch lockout.
-- The **`yes-delay`** branch ("Everlight") is trained with the real 20-tick (1 s) card delay; use it
-  for live play.
-
-**7.4 Validate**
-
-- [ ] Reader runs on the current official build at ≥20 Hz with stable addresses.
-- [ ] Observation matches live state on 50+ recorded frames.
-- [ ] Policy issues legal actions in friendly battles against a second account.
-- [ ] End-to-end latency measured: reader + inference + tap. Target <100 ms; hard stop >150 ms.
-- [ ] Reconnect, crash, and client-update handling tested.
-- [ ] Ranked games: monitor legality, disconnects, and win rate.
-
-**Exit:** the X-Bow policy plays official matches with a stable reader and no illegal actions.
-
----
-
-### Phase 8 — X-Bow 3.0 specialist (main deck)
-
-The main account is already maxed for X-Bow, so this is a policy problem, not a card problem.
+The main account is already maxed for X-Bow; this phase is a policy problem, not a card problem.
 
 1. **Zero-shot first:** run General with the X-Bow deck on Null's ladder. The card representations are
    universal; measure before training anything.
@@ -334,39 +317,110 @@ The main account is already maxed for X-Bow, so this is a policy problem, not a 
    validate on the native engine.
 4. **PPO:** deck-specific specialist phase (X-Bow placement, spell cycle, defensive Tesla/Knight
    usage), then remove shaping. Budget one short run.
-5. **Meta:** test against the current main-ladder matchups (EQ/Royal Delivery, cycle decks, evolutions).
-   Be ready to adjust the build or switch control deck if X-Bow is not viable.
+5. **Meta:** test against common Null's matchups (EQ/Royal Delivery, cycle decks, evolutions). Be ready
+   to adjust the build or switch control deck if X-Bow is not viable.
 
 - [ ] X-Bow IL checkpoint trained on filtered data.
 - [ ] X-Bow specialist beats General and trades evenly with Hog 2.6 on Null's.
 - [ ] Matchup table on the target meta.
 - [ ] X-Bow result on Null's ladder.
 
-**Exit:** an X-Bow policy good enough for the main ladder, with a documented matchup profile.
+**Exit:** an X-Bow policy that beats the Hog specialist on Null's, with a documented matchup profile.
 
 ---
 
-### Phase 9 — UC push on the main ladder (seasonal)
+### Phase 8 — Null's readiness gate (do not skip)
 
-- [ ] Confirm the deck forms and tower troop for the current season.
+Before spending on the main bridge, prove the policy and loop are worth porting:
+
+- [ ] X-Bow wins >60% over 200+ mirrored games against the deck pool.
+- [ ] X-Bow beats Hog specialist 2 over 100+ games.
+- [ ] X-Bow climbs to a self-defined Null's ladder target (trophies or rank).
+- [ ] Live loop stable for 100+ unattended games: no crashes, no illegal taps, reconnect works.
+- [ ] Replay review shows proactive, human-like X-Bow play, not passive waiting.
+- [ ] You (Grand Champion/Master) judge the decisions UC-caliber in assist/observation mode.
+
+**Exit:** a written go/no-go. If no-go, improve the policy on Null's; do not start Phase 9.
+
+---
+
+### Phase 9 — Main-server memory bridge (deferred to the end)
+
+Only after Phase 8 passes. This is the critical R&D: a reader for the **current** official build, plus
+the observation/action adapter.
+
+**9.1 Host**
+
+| Host | Verdict |
+| --- | --- |
+| **Rooted ARM64 phone** | Best. Native ARM, no translation, low latency, easy `/proc/pid/mem`. Buy used (~$60–100) now |
+| Windows + MuMu | Possible. x86_64 + ARM translation breaks Frida for `libg.so`; direct reads are the workaround |
+| Vision | Fallback only: 100–300 ms, heavy |
+
+**9.2 Reader**
+
+1. Identify the official package, version, and `libg.so` base.
+2. Find the `holder` / player-state chain: elixir, hand, cycle, tower HP, battle result.
+3. Find the entity graph (`hpComponentAccessor` equivalent): units, sides, card IDs, positions, HP.
+4. Find the command queue (optional; own taps can be tracked client-side).
+5. Map into FirstLight's `ObservationV1`; verify field-by-field against recorded frames.
+6. Add a build check and versioned parsing; fail closed on updates.
+
+Use `daybreak-cr/play.py` for the public chains (`battle = base + manager_global + 0x248 + 0x90`,
+roster `+0xa8`, ticks `+0x60/+0x64`) and `cr-memory-reader` for the RE method.
+
+**9.3 Card catalog**
+
+- FirstLight is pinned to Null's 15.535.13. Official 16.635 has newer evolutions/heroes.
+- Extend `native_runner/data/competitive` for the new card/form IDs; fine-tune the policy.
+- A perfect reader feeding a model that does not know Evo Giant or Hero Electro Wizard is still weak.
+
+**9.4 Action executor**
+
+- Two touches per play (hand slot → tile), minitouch/ADB.
+- Use `GAME_INTEGRATION.md`: 21-tick execution, hand refill, server turns (R-8/R+13), first-touch lockout.
+- Use the **`yes-delay`** branch (“Everlight”) for the real 20-tick card delay.
+
+**9.5 Maintenance**
+
+- Pattern scanning, not hardcoded offsets: anchor on function prologues/strings/vtables.
+- Version registry + recorded memory dumps; diff between builds.
+- Budget 1–3 days per major build; 1–2 weeks if battle structs change.
+- Frida only for RE; passive native reads for live play.
+
+**9.6 Validate**
+
+- [ ] Reader stable at ≥20 Hz on the current official build.
+- [ ] Observation matches live state on 50+ frames.
+- [ ] Legal actions in friendly battles against a second account.
+- [ ] End-to-end latency <100 ms; hard stop >150 ms.
+- [ ] Reconnect/crash/update handling tested.
+- [ ] Ranked games: legality, disconnects, win rate.
+
+**Exit:** the X-Bow policy plays official matches with a stable reader and no illegal actions.
+
+---
+
+### Phase 10 — UC push on the main ladder (seasonal)
+
+- [ ] Confirm deck forms and tower troop for the current season.
 - [ ] Plan around Path of Legends resets.
-- [ ] Operate in sessions: monitor latency, disconnects, rejected taps, loss streaks.
-- [ ] Automation is approved; keep behavior plausible (timing variance, breaks) and accept residual
-      detection risk.
-- [ ] Track win rate by matchup; adjust the build/policy weekly.
+- [ ] Operate in sessions; monitor latency, disconnects, rejected taps, loss streaks.
+- [ ] Automation is approved; keep behavior plausible and accept residual detection risk.
+- [ ] Track win rate by matchup; adjust weekly.
 - [ ] Keep a rollback checkpoint and a plan if the account is banned.
 
 **Exit:** UC reached and maintained, or the best rank documented with the stop reason.
 
 ---
 
-### Phase 10 — Improve beyond the baseline (ongoing)
+### Phase 11 — Improve beyond the baseline (ongoing)
 
 - Port the `yes-delay` Everlight model:
   `git fetch upstream yes-delay:yes-delay`, then read that branch's docs before switching.
 - Expand the opponent league: self-play snapshots, deck pool, hard-deck weighting.
 - Distill a smaller/faster policy if inference latency matters.
-- Collect main-ladder replays and add them to IL (domain shift is real).
+- Collect main-ladder replays and add them to IL.
 - Re-evaluate the deck each season.
 
 ---
@@ -375,8 +429,8 @@ The main account is already maxed for X-Bow, so this is a policy problem, not a 
 
 Use `ClashAI`/`RoyaleSim` for cheap algorithm iteration, especially X-Bow reward design, because they
 run on CPU without an Android guest. Do **not** treat their results as main-server evidence: different
-physics, a real sim-to-real gap, and no UC evidence. Promote only ideas that survive the native engine
-and Null's ladder.
+physics, a real sim-to-real gap, no UC evidence. Promote only ideas that survive the native engine and
+Null's ladder.
 
 `FirstLight-Zero` is a useful X-Bow self-play/async-PPO reference, but it still needs the native engine
 and a GPU; it is not a shortcut.
@@ -385,21 +439,22 @@ and a GPU; it is not a shortcut.
 
 ## 5. Effort and budget (adjusted to $50–200)
 
-| Item | Estimate |
+| Phase | Estimate |
 | --- | --- |
-| Phase 1 (env) | 0.5 day, $0 |
-| Phase 2 (engine) | 1–2 weeks, $0 (Windows PC) |
-| Phase 3 (baselines) | 2–3 days, $0 |
-| Phase 4 (IL subset) | 1–2 weeks; 5–20 GPU-hours (~$5–20) |
-| Phase 5 (Hog PPO) | 1–3 weeks; use free/student credits |
-| Phase 6 (Null's loop) | 2–4 weeks; $0 |
-| Phase 7 (main reader) | **4–12+ weeks**; $0–100 (used rooted phone) |
-| Phase 8 (X-Bow) | 1–3 weeks; 10–50 GPU-hours (~$10–60) |
-| Phase 9 (UC push) | 1–3 seasons |
-| Rooted ARM phone | $60–100 (recommended) |
+| 1 (env) | 0.5 day, $0 |
+| 2 (engine) | 1–2 weeks, $0 (Windows PC) |
+| 3 (baselines) | 2–3 days, $0 |
+| 4 (IL subset) | 1–2 weeks; 5–20 GPU-hours (~$5–20) |
+| 5 (Hog PPO) | 1–3 weeks; free/student credits |
+| 6 (Null's loop) | 2–4 weeks; $0 |
+| 7 (X-Bow specialist) | 1–3 weeks; 10–50 GPU-hours (~$10–60) |
+| 8 (readiness gate) | 1–2 weeks; $0 |
+| 9 (main reader) | **4–12+ weeks**; $60–100 phone + monthly maintenance |
+| 10 (UC push) | 1–3 seasons |
+| **Null's path (1–8)** | **~3–6 months part-time** |
+| **Through UC (1–10)** | **~9–18 months part-time** |
 
-Realistic total: **6–12 months part-time**, dominated by the reader and the climb. Skip the
-author-scale PPO cluster; this budget buys fine-tunes, not 8-GPU self-play.
+Skip the author-scale PPO cluster; this budget buys fine-tunes, not 8-GPU self-play.
 
 ---
 
@@ -407,27 +462,30 @@ author-scale PPO cluster; this budget buys fine-tunes, not 8-GPU self-play.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Main-client automation → permanent ban | Lose the account | Full automation accepted; use session hygiene; keep a backup plan |
-| Official client update breaks offsets | Bot stops | Versioned parser; build check; fast recalibration; vision fallback |
-| Reader reverse-engineering takes longer than expected | Delays UC | Timebox Phase 7; consider a rooted ARM phone; reuse `daybreak-cr` measurements |
-| MuMu x86_64 + ARM translation breaks Frida | No reader | Direct `/proc/pid/mem` reads; or buy a rooted ARM device |
-| X-Bow 3.0 not viable in the current meta | Cannot reach UC with the deck | Matchup analysis; be ready to switch control deck |
-| Sim-to-real gap (Null's ≠ main) | Offline wins do not transfer | Assist/ranked validation; collect main replays |
-| Path of Legends season reset | Progress wiped | Plan pushes within a season |
-| Passive policy / fake win rate | Looks good, loses on ladder | Replay review, first-action timing, non-WAIT counts |
+| Scope creep into the main bridge too early | Months lost before a strong Null's bot | Phase 8 gate; defer Phase 9 explicitly |
+| Null's ladder is dead/empty | No sandbox validation | Offline eval + friendlies; still train the policy |
+| Hog PPO overfits a passive IL opponent | Fake progress | Replay review, first-action timing, non-WAIT counts |
+| X-Bow not viable in the meta | Weak main deck | Matchup analysis; be ready to switch control deck |
 | Budget overrun | Stop mid-project | Shipped checkpoints + subsets; free credits |
-| Account rank already Grand Champion/Master | Close to UC; expectations high | Validate decisions in assist mode before automating |
+| **Phase 9:** main-client automation → ban | Lose the account | Accepted risk; session hygiene; backup plan |
+| **Phase 9:** official build breaks offsets | Bot stops | Pattern scanning; version registry; monthly re-validation |
+| **Phase 9:** new evolutions/heroes not in catalog | Model cannot represent them | Extend competitive data; fine-tune |
+| **Phase 9:** reader takes longer than expected | Delays UC | Timebox; rooted ARM phone; daybreak anchors; vision fallback |
+| **Phase 9:** sim-to-real gap (Null's ≠ main) | Offline wins do not transfer | Main replays; assist validation; retrain |
+| **Phase 10:** Path of Legends reset | Progress wiped | Plan pushes within a season |
 
 ---
 
 ## 7. Do not do
 
+- Do not start Phase 9 until the Phase 8 gate passes.
+- Do not buy the rooted phone or read daybreak end-to-end before Null's works.
 - Do not build a Hog 2.6 main account; Hog is a Null's sandbox.
 - Do not assume Null's results transfer to the main ladder.
-- Do not use vision as the primary path; memory reading is faster, cheaper, and proven on the official client.
-- Do not expect `cr-memory-reader` to work on main; it targets Null's. Reuse its method, not its offsets.
-- Do not use Cheat Engine on the Windows host expecting guest memory; use an in-guest reader or a native ARM device.
-- Do not train X-Bow from scratch; fine-tune and use the existing prior art.
+- Do not use vision as the primary main-server path.
+- Do not expect `cr-memory-reader` to work on main; reuse its method, not its offsets.
+- Do not use Cheat Engine on the Windows host expecting guest memory.
+- Do not train X-Bow from scratch; fine-tune and use the prior art.
 - Do not train on the full 252k dataset with this budget; subset first.
 - Do not start PPO from scratch; `FirstLight-Zero` needed 1,450 rounds for one deck.
 - Do not treat `ClashAI`/`RoyaleSim` results as main-server evidence.
@@ -435,15 +493,15 @@ author-scale PPO cluster; this budget buys fine-tunes, not 8-GPU self-play.
 
 ---
 
-## 8. Immediate next actions
+## 8. Immediate next actions (Null's phase)
 
 1. [ ] Run Phase 1: Python 3.12 env + `check_install.py` → `Ready: 5 models`.
 2. [ ] Source the Null's Royale 15.535.13 APK and build the engine on Windows/MuMu.
 3. [ ] Reproduce General vs IL and Hog 2 vs General; record the numbers.
-4. [ ] Read `daybreak-cr/docs/GAME_INTEGRATION.md` end-to-end before writing the reader.
-5. [ ] Decide Phase 7 host: used rooted ARM phone vs MuMu direct reads.
-6. [ ] Run General zero-shot with the X-Bow deck on Null's; measure before training.
-7. [ ] Start the 2–5k replay cache subset and measure throughput.
+4. [ ] Start the 2–5k replay cache subset and measure throughput.
+5. [ ] Get the Hog live loop running on Null's with `cr-memory-reader`.
+6. [ ] Run General zero-shot with the X-Bow deck on Null's before training it.
+7. [ ] Set the Phase 8 readiness target (win rate + ladder rank).
 
 ---
 
@@ -457,8 +515,8 @@ author-scale PPO cluster; this budget buys fine-tunes, not 8-GPU self-play.
 | `docs/training.md` | Cache, IL, Linux AVD, PPO |
 | `docs/training_history.md` | The five models and the Hog recipe |
 | `checkpoints/README.md` | Checkpoint selection and evaluation protocol |
-| `.resource/daybreak-cr/` | Live-play architecture and official-client timing measurements |
+| `.resource/cr-memory-reader/` | Null's memory-reader method (active in Phase 6) |
+| `.resource/daybreak-cr/` | Live-loop architecture; defer to Phase 9 (timing doc useful earlier) |
 | `.resource/daybreak-cr/docs/GAME_INTEGRATION.md` | Touch, hand, elixir, server-turn rules |
-| `.resource/cr-memory-reader/` | Null's memory-reader method (not main-compatible) |
 | `.resource/ClashAI/`, `.resource/FirstLight-Zero/` | X-Bow prior art |
 | `.resource/` | Other cloned reference repos, ignored by git |
