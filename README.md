@@ -3,6 +3,8 @@
 Clash Royale AI research workspace targeting **Ultimate Champion on the main ladder**, starting with
 **Hog 2.6** and finishing with **X-Bow 3.0**.
 
+**Model:** FirstLight_CR V4, 16.8M parameters — the five shipped checkpoints, fine-tuned for X-Bow.
+
 **Current phase:** Null's Royale. The main-server bridge and the UC push are deferred to the end,
 behind a readiness gate.
 
