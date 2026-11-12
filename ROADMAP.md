@@ -31,7 +31,7 @@ deferred to Phase 9, behind a readiness gate.
 | Main account | X-Bow 3.0 maxed; Hog 2.6 incomplete; Grand Champion / Master | X-Bow is the only main-ladder deck; Hog is Null's-only |
 | Null's account | Everything maxed (lvl 16 + evo/hero) | Perfect sandbox for both decks |
 | Ban tolerance | Full automation accepted on main | Applies only at Phase 10; not a reason to rush the bridge |
-| Hardware | Windows PC; cloud budget only; no rooted device | MuMu for Null's; buy a rooted phone at Phase 9, not now |
+| Hardware | Windows PC; cloud budget only; no rooted device | MuMu for Null's; rooted phone is optional at Phase 9, not now |
 | Time | 5–15 h/week hands-on, tens of hours idle training | Null's phase is 3–6 months; main phase adds 3–6+ |
 | Budget | ~$50–200 (student credits) | Shipped checkpoints + short fine-tunes; no 8-GPU PPO |
 | Sequencing | Hog first, then X-Bow; Null's first, main last | Phases 5–8 are Null's; Phase 9 is the bridge |
@@ -144,7 +144,7 @@ match through the native engine. Phase 2 is a prerequisite for "dataset training
 - [x] Budget: $50–200; shipped checkpoints before GPUs.
 - [x] **Current focus: Null's Royale. Main bridge deferred to Phase 9.**
 - [ ] Set a Null's milestone target (e.g. trophies or win rate over 200 games).
-- [ ] Defer the rooted-phone purchase until Phase 9.
+- [ ] Treat the rooted phone as optional: decide at Phase 9, and only if MuMu direct reads prove too painful.
 
 ---
 
@@ -353,8 +353,8 @@ the observation/action adapter.
 
 | Host | Verdict |
 | --- | --- |
-| **Rooted ARM64 phone** | Best. Native ARM, no translation, low latency, easy `/proc/pid/mem`. Buy used (~$60–100) now |
-| Windows + MuMu | Possible. x86_64 + ARM translation breaks Frida for `libg.so`; direct reads are the workaround |
+| **Rooted ARM64 phone** (optional) | Best experience: native ARM, no translation, low latency, easy `/proc/pid/mem`. Buy used (~$60–100) only if the budget allows and MuMu is too painful |
+| Windows + MuMu | The no-purchase default. x86_64 + ARM translation breaks Frida for `libg.so`; direct reads are the workaround |
 | Vision | Fallback only: 100–300 ms, heavy |
 
 **9.2 Reader**
@@ -449,7 +449,7 @@ and a GPU; it is not a shortcut.
 | 6 (Null's loop) | 2–4 weeks; $0 |
 | 7 (X-Bow specialist) | 1–3 weeks; 10–50 GPU-hours (~$10–60) |
 | 8 (readiness gate) | 1–2 weeks; $0 |
-| 9 (main reader) | **4–12+ weeks**; $60–100 phone + monthly maintenance |
+| 9 (main reader) | **4–12+ weeks**; $0–100 (phone optional) + monthly maintenance |
 | 10 (UC push) | 1–3 seasons |
 | **Null's path (1–8)** | **~3–6 months part-time** |
 | **Through UC (1–10)** | **~9–18 months part-time** |
