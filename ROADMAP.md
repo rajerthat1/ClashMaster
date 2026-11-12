@@ -1,3 +1,4 @@
+https://www.sjsu.edu/cmpe/current-students/hpc.php
 # Roadmap: V4 Hog 2.6 → V4 X-Bow 3.0 → Ultimate Champion
 
 Status: active — Null's Royale phase
@@ -127,6 +128,48 @@ match through the native engine. Phase 2 is a prerequisite for dataset training.
 ---
 
 ## 3. Phase plan
+
+### Where each phase runs (OS + compute)
+
+Upstream guidance: **Windows supports cache building, inference, evaluation and the console. The
+IL/PPO launchers target Linux with CUDA and NCCL.** Plan around that split.
+
+| Phase | OS | Laptop (Linux, no GPU) | Cloud credits | SJSU HPC |
+| --- | --- | --- | --- | --- |
+| 0 Decisions | any | ✓ | — | — |
+| 1 Env + model smoke | Linux/Windows | ✓ | ✓ | ✓ |
+| 2 Engine build/install | **Windows + MuMu** (supported) | ✗ (use Windows PC) | Windows VM (needs nested virt) | ✗ |
+| 3 Baselines/evaluations | host with engine | only against a LAN engine | Windows/Linux GPU | only with extracted engine |
+| 4 Cache build | Windows + MuMu | ✗ (use Windows PC) | **best** | only extracted engine |
+| 4 IL smoke/train | **Linux** (bash + CUDA) | CPU smoke only | Linux GPU | **best** |
+| 5 Hog live loop | Windows + MuMu / Android | ✗ on laptop; ✓ on Windows PC | Windows VM (if nested virt) | ✗ |
+| 6 X-Bow zero-shot/eval | host with engine | via LAN engine | Windows/Linux | extracted engine only |
+| 6 X-Bow IL/PPO | **Linux** for training | CPU smoke only | Linux GPU | **best** for training; engines need extracted engine |
+| 7 Readiness gate | Windows + MuMu | ✗ on laptop; ✓ on Windows PC | Windows VM | ✗ |
+| 8 Main bridge | Android / Windows | ✓ local (Windows/Android) | Windows VM or physical device | ✗ |
+| 9 UC push | Android / Windows | ✓ local (Windows/Android) | — | ✗ |
+| 10 Improve | Linux training + local live | some | ✓ | ✓ |
+
+**Hard constraints**
+
+- HPC has no root, Android, MuMu, or GUI. It cannot build the APK, run Null's, or play the live ladder.
+  It is a training box only.
+- The HPC cache/PPO path needs the **extracted engine** to be allowed; otherwise build caches elsewhere
+  and use HPC for IL training only.
+- Cloud Windows needs **nested virtualization** for MuMu; test before paying.
+- The laptop has no CUDA GPU. It is for code, smoke tests, small CPU IL runs, fast-sim experiments, and
+  evaluation against an engine on the LAN.
+
+**Recommended allocation**
+
+- **Windows PC:** engine build, cache building, Hog/Null's live loop, main bridge.
+- **Linux laptop:** repo work, `check_install`, small IL smoke tests, RoyaleSim experiments, evaluations
+  against a LAN engine.
+- **SJSU HPC:** IL training and PPO learner/inference on cached data (A100/H100).
+- **$500 cloud:** Windows cache-build VM, burst GPU fallback, or engine hosting if the HPC route is
+  blocked.
+
+---
 
 ### Phase 0 — Decisions and focus
 
