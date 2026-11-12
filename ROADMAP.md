@@ -63,6 +63,15 @@ Hasty-CR documents in its own README ("the simulator marking its own homework").
 - 15.535.13 no longer connects to Null's: **no players**. It is only good for offline replays.
 - crforge removes the libg dependency for training entirely: it builds tables per data version
   and needs no APK.
+- The bundled `15.535.3` content runs offline matches on a **base-content location**
+  (`15000000–15000198`, e.g. `15000002` PvP_goblin). `15000199` exists only in `.86` and is
+  exactly what failed the tilemap prewarm. Card stats and effects are then `.53`, not `.86`, so
+  do not claim `.86` fidelity; record the content version/fingerprint per run. Upstream issue #9
+  (Elwii04, 2026-11-12) confirmed headless simulation and native render both work on the base pack.
+- Replays carry no arena/location field, so any legacy offline replay run takes the runtime
+  default: map unset locations to the base location and skip special arenas, or the first replay
+  dies on the tilemap prewarm. Do not hand-edit `native_runner/data/native_match.json` — it is
+  hashed into the ruleset data group, and `MatchConfig.location` already overrides it at build time.
 
 ### External assets evaluated (do not re-litigate)
 
@@ -295,6 +304,8 @@ Write these down now; they are the point of the plan.
 | 16.635 catalog differs from V4's 122/62 | Model cannot represent new forms | Catalog bridge; fine-tune after capture |
 | `observe-rich` balloons | Months lost | Basic-only path first; rich is additive |
 | crforge moves version under work | Churn | Pin `crforge-data.lock`; fork the repo |
+| Base-content (`.53`) balance differs from `.86` | Small policy/eval bias vs pinned tables | Record content version/fingerprint per run; do not claim `.86` fidelity |
+| Replay location fallback missing | Legacy offline replay dies on tilemap prewarm | Map unset replay locations to the base location; skip special arenas |
 | GPU budget exhausted | Training stops | Subset caches, spot instances, checkpoint often |
 | Phase 10 automation ban | Lose account | Accepted risk; session hygiene; rollback plan |
 | Docs drift again | Wrong decisions | This file is the single source; update it in the same commit |
@@ -312,6 +323,7 @@ Write these down now; they are the point of the plan.
 - Do not start Phase 10 before Phase 9.
 - Do not treat simulator win rates as ladder evidence.
 - Do not split the engine track from the live track; D needs B's data.
+- Do not use `locationId=15000199` on base content; it only exists in `15.535.86`.
 
 ---
 
