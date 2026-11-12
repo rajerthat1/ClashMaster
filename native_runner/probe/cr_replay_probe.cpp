@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include <array>
 #include <atomic>
 #include <cstdarg>
 #include <cstddef>
@@ -27,8 +28,11 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
+#include <limits>
 #include <memory>
 #include <new>
+#include <type_traits>
 
 #include "native_touch_interceptor.h"
 #include "probe_json.h"
