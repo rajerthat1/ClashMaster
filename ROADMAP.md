@@ -1,4 +1,3 @@
-https://www.sjsu.edu/cmpe/current-students/hpc.php
 # Roadmap: V4 Hog 2.6 → V4 X-Bow 3.0 → Ultimate Champion
 
 Status: active — Null's Royale phase
@@ -35,7 +34,7 @@ Model: **FirstLight_CR V4, 16.8M parameters** — one model family, no side ques
 | Ban tolerance | Full automation accepted on main | Applies at Phase 9 only |
 | Hardware | Windows PC; cloud budget only; no rooted device | MuMu for Null's; phone optional at Phase 9 |
 | Time | 5–15 h/week hands-on, tens of hours idle training | Null's phase 3–6 months; through UC 9–18 |
-| Budget | ~$50–200 (student credits) | Fine-tunes, not 8-GPU self-play |
+| Budget | ~$500 cloud credits; no HPC | Fine-tunes + short cache VM, not 8-GPU self-play |
 | Current focus | **Null's Royale** | Do not start the main bridge before Phase 8 passes |
 
 ### Model choice: V4, not FirstLight-Zero
@@ -122,7 +121,7 @@ match through the native engine. Phase 2 is a prerequisite for dataset training.
 | X-Bow prior art | `.resource/ClashAI` (icebow), `.resource/FirstLight-Zero` (reference only) |
 | Local machine | Linux, 12 vCPU, 14 GB RAM, no CUDA GPU, 90 GB free |
 | Windows machine | MuMu host for engine build/run |
-| Budget | ~$50–200 |
+| Budget | ~$500 cloud credits; no HPC |
 | Missing | Null's APK, GPU for training, official-client reader (Phase 8) |
 
 ---
@@ -134,29 +133,29 @@ match through the native engine. Phase 2 is a prerequisite for dataset training.
 Upstream guidance: **Windows supports cache building, inference, evaluation and the console. The
 IL/PPO launchers target Linux with CUDA and NCCL.** Plan around that split.
 
-| Phase | OS | Laptop (Linux, no GPU) | Cloud credits | SJSU HPC |
-| --- | --- | --- | --- | --- |
-| 0 Decisions | any | ✓ | — | — |
-| 1 Env + model smoke | Linux/Windows | ✓ | ✓ | ✓ |
-| 2 Engine build/install | **Windows + MuMu** (supported) | ✗ (use Windows PC) | Windows VM (needs nested virt) | ✗ |
-| 3 Baselines/evaluations | host with engine | only against a LAN engine | Windows/Linux GPU | only with extracted engine |
-| 4 Cache build | Windows + MuMu | ✗ (use Windows PC) | **best** | only extracted engine |
-| 4 IL smoke/train | **Linux** (bash + CUDA) | CPU smoke only | Linux GPU | **best** |
-| 5 Hog live loop | Windows + MuMu / Android | ✗ on laptop; ✓ on Windows PC | Windows VM (if nested virt) | ✗ |
-| 6 X-Bow zero-shot/eval | host with engine | via LAN engine | Windows/Linux | extracted engine only |
-| 6 X-Bow IL/PPO | **Linux** for training | CPU smoke only | Linux GPU | **best** for training; engines need extracted engine |
-| 7 Readiness gate | Windows + MuMu | ✗ on laptop; ✓ on Windows PC | Windows VM | ✗ |
-| 8 Main bridge | Android / Windows | ✓ local (Windows/Android) | Windows VM or physical device | ✗ |
-| 9 UC push | Android / Windows | ✓ local (Windows/Android) | — | ✗ |
-| 10 Improve | Linux training + local live | some | ✓ | ✓ |
+| Phase | OS | Laptop (Linux, no GPU) | Cloud credits |
+| --- | --- | --- | --- |
+| 0 Decisions | any | ✓ | — |
+| 1 Env + model smoke | Linux/Windows | ✓ | ✓ |
+| 2 Engine build/install | **Windows + MuMu** | ✗ (use Windows PC) | Windows GPU VM (needs nested virt); test first |
+| 3 Baselines/evaluations | host with engine | only against a LAN engine | Windows/Linux GPU |
+| 4 Cache build | Windows + MuMu | ✗ (use Windows PC) | Windows VM (short burst) |
+| 4 IL smoke/train | **Linux** (bash + CUDA) | CPU smoke only | **Linux GPU (best)** |
+| 5 Hog live loop | Windows + MuMu / Android | ✗ on laptop; ✓ on Windows PC | Windows VM (if nested virt) |
+| 6 X-Bow zero-shot/eval | host with engine | via LAN engine | Windows/Linux |
+| 6 X-Bow IL/PPO | **Linux** for training | CPU smoke only | **Linux GPU (best)** |
+| 7 Readiness gate | Windows + MuMu | ✗ on laptop; ✓ on Windows PC | Windows VM |
+| 8 Main bridge | Android / Windows | ✓ local (Windows/Android) | Windows VM or physical device |
+| 9 UC push | Android / Windows | ✓ local (Windows/Android) | — |
+| 10 Improve | Linux training + local live | some | ✓ |
 
 **Hard constraints**
 
-- HPC has no root, Android, MuMu, or GUI. It cannot build the APK, run Null's, or play the live ladder.
-  It is a training box only.
-- The HPC cache/PPO path needs the **extracted engine** to be allowed; otherwise build caches elsewhere
-  and use HPC for IL training only.
-- Cloud Windows needs **nested virtualization** for MuMu; test before paying.
+- **No HPC access.** Every remote job runs on the **$500 cloud credits**; budget and monitor spend.
+- Cloud Windows needs **nested virtualization** for MuMu; test on an hourly VM before committing.
+- Prefer Linux GPU instances for IL/PPO. Windows VMs are for cache/engine work only.
+- Cloud ingress/egress and storage cost money too; keep the cache on the instance or cheap object
+  storage and delete it after upload.
 - The laptop has no CUDA GPU. It is for code, smoke tests, small CPU IL runs, fast-sim experiments, and
   evaluation against an engine on the LAN.
 
@@ -165,9 +164,8 @@ IL/PPO launchers target Linux with CUDA and NCCL.** Plan around that split.
 - **Windows PC:** engine build, cache building, Hog/Null's live loop, main bridge.
 - **Linux laptop:** repo work, `check_install`, small IL smoke tests, RoyaleSim experiments, evaluations
   against a LAN engine.
-- **SJSU HPC:** IL training and PPO learner/inference on cached data (A100/H100).
-- **$500 cloud:** Windows cache-build VM, burst GPU fallback, or engine hosting if the HPC route is
-  blocked.
+- **$500 cloud:** Windows cache-build VM (short burst), Linux GPU for IL/PPO, engine hosting fallback.
+  Use spot/preemptible instances, checkpoint often, and stop instances when idle.
 
 ---
 
@@ -177,7 +175,7 @@ IL/PPO launchers target Linux with CUDA and NCCL.** Plan around that split.
 - [x] Hog 2.6: Null's-only sandbox.
 - [x] Main account: X-Bow 3.0 maxed.
 - [x] Risk: full automation accepted on main.
-- [x] Budget: $50–200.
+- [x] Budget: ~$500 cloud credits; no HPC.
 - [x] **Current focus: Null's Royale.**
 - [ ] Set a Null's milestone target (e.g. trophies or win rate over 200 games).
 - [ ] Treat the rooted phone as optional at Phase 8.
@@ -459,12 +457,13 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 | 1 (env) | 0.5 day, $0 |
 | 2 (engine) | 1–2 weeks, $0 (Windows PC) |
 | 3 (baselines) | 2–3 days, $0 |
-| 4 (training smoke) | 1–2 weeks; 5–20 GPU-hours (~$5–20) |
+| 4 (cache + training smoke) | 1–2 weeks; 5–20 GPU-hours + short Windows cache VM (~$10–40) |
 | 5 (Hog live loop) | 2–4 weeks; $0 |
 | 6 (X-Bow V4) | 2–4 weeks; 10–50 GPU-hours (~$10–60) |
 | 7 (gate) | 1–2 weeks; $0 |
 | 8 (main reader) | **4–12+ weeks**; $0–100 (phone optional) + monthly maintenance |
 | 9 (UC push) | 1–3 seasons |
+| **Cloud spend (1–6)** | **~$40–150 of the $500; keep the rest as buffer** |
 | **Null's path (1–7)** | **~3–6 months part-time** |
 | **Through UC (1–9)** | **~9–18 months part-time** |
 
@@ -480,6 +479,9 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 | Cache too large/slow | Weeks lost | 2–5k subset first; measure bytes/replay |
 | Live loop reader/taps unstable | No ladder data | Phase 5 with known-good checkpoint; timebox |
 | X-Bow not viable in meta | Weak main deck | Matchup analysis; be ready to switch control deck |
+| Cloud credits exhausted | Training stops mid-run | Subset caches, spot instances, stop idle VMs, monitor spend |
+| Windows VM lacks nested virtualization | No MuMu in cloud | Test hourly; use the local Windows PC for cache/live |
+| Cloud storage/egress costs | Hidden spend | Keep cache on the instance, compress, delete after upload |
 | **Phase 8:** automation ban | Lose account | Accepted risk; session hygiene; backup plan |
 | **Phase 8:** build breaks offsets | Bot stops | Pattern scanning; version registry; monthly re-validation |
 | **Phase 8:** new evos/heroes not in catalog | Model cannot represent them | Extend competitive data; fine-tune |
@@ -497,6 +499,8 @@ speed, not truth. `FirstLight-Zero` is reference only; do not port its weights.
 - Do not assume Null's results transfer to main.
 - Do not train X-Bow from scratch; fine-tune V4.
 - Do not train on the full 252k dataset with this budget; subset first.
+- Do not plan around HPC access; it is not available.
+- Do not leave cloud instances running while idle.
 - Do not treat RoyaleSim/ClashAI results as main-server evidence.
 - Do not switch to `yes-delay` until the baseline is reproducible.
 
