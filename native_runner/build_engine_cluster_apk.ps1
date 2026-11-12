@@ -57,6 +57,12 @@ foreach ($required in @(
     }
 }
 
+# zipalign/apksigner resolve java from JAVA_HOME or PATH, not from CR_JAVA.
+if (-not $env:JAVA_HOME) {
+    $env:JAVA_HOME = Split-Path -Parent (Split-Path -Parent $Java)
+    $env:Path = (Join-Path $env:JAVA_HOME "bin") + ";" + $env:Path
+}
+
 New-Item -ItemType Directory -Force -Path (Split-Path $apktool) | Out-Null
 if (-not (Test-Path -LiteralPath $apktool -PathType Leaf)) {
     Invoke-WebRequest -Uri $apktoolUrl -OutFile $apktool
