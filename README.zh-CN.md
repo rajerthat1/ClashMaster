@@ -2,13 +2,12 @@
   <img src="docs/assets/firstlight-cr.png" width="240" alt="FirstLight CR 标志">
 </p>
 <h1 align="center">FirstLight CR</h1>
-<p align="center">用于《皇室战争》AI 训练和离线对战，支持模仿学习与 PPO 自博弈。</p>
+<p align="center">用于《皇室战争》AI 训练和离线对战，支持原生引擎自博弈 PPO 与实况行为克隆。</p>
 <p align="center"><a href="README.md">English</a> · <strong>简体中文</strong></p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB.svg" alt="Python 3.12">
-  <img src="https://img.shields.io/badge/Learning-IL_%2B_PPO-EE4C2C.svg" alt="IL 与 PPO">
-  <a href="https://huggingface.co/datasets/VanguardX101/IL_Replay"><img src="https://img.shields.io/badge/🤗_Dataset-252K_replays-FFD21E.svg" alt="Hugging Face 回放数据集"></a>
+  <img src="https://img.shields.io/badge/Learning-PPO_self--play-EE4C2C.svg" alt="PPO 自博弈">
 </p>
 <p align="center">
   <a href="docs/getting_started.md">安装指南</a> ·
@@ -22,6 +21,8 @@
 <p align="center">
   <img src="docs/assets/battle-montage.gif" width="960" alt="18 段对局组成六列三行的拼图，以 12 倍速循环播放">
 </p>
+
+> **本分支说明（2026-11-12）：** 主路线已切换为**原生引擎无头自博弈**，目标客户端 16.635.1；X-Bow 专精模型优先（卡组与 FirstLight-Zero 完全相同），V4/Everlight 作为通用模型、对手与后备。笔记本用于演示、实况与轻量训练，PPO 使用学生云 GPU 额度。**IL_Replay 不再作为训练语料**，仅保留模型 checkpoint 作为对手/基线。crforge 仅作后备与 CI 对照。详见 [ROADMAP.md](ROADMAP.md)。
 
 > **视频：模型冲击名人堂与 AI 架构设计讲解**
 >
@@ -48,25 +49,24 @@
 
 **122 张支持卡牌 · 5 个随附模型 · 252,238 场回放 · 17,836,160 条动作**
 
-各版本支持的卡牌和形态见[兼容性说明](native_runner/data/competitive/README.md)。回放数据集在 [Hugging Face](https://huggingface.co/datasets/VanguardX101/IL_Replay) 下载。
+各版本支持的卡牌和形态见[兼容性说明](native_runner/data/competitive/README.md)。本分支**不再使用 IL_Replay 训练**；回放数据集仅作历史参考。
 
 ## 训练流程
 
 ```mermaid
 flowchart LR
-    R[回放数据集] --> C[原生对局重建]
-    C --> D[观测与动作序列]
-    D --> IL[模仿学习]
-    IL --> P[循环策略]
+    E[原生引擎无头运行] --> O[观测与特征]
+    L[实况采集] --> BC[行为克隆]
+    O --> P[X-Bow 专精策略]
+    BC --> P
     P --> S[自博弈与对手匹配]
     S --> PPO[PPO]
     PPO --> P
-    P --> E[完整对局评测]
-    P --> H[人机对战]
+    P --> EV[镜像与实况评测]
     P --> API[本地策略服务]
 ```
 
-各模块的源码入口和数据格式见[架构指南](docs/architecture.md)。
+本分支已退役“回放数据集 → 模仿学习”训练路径；详见 [ROADMAP.md](ROADMAP.md)。各模块的源码入口和数据格式见[架构指南](docs/architecture.md)。
 
 ## 快速开始
 
@@ -98,7 +98,7 @@ Copy-Item .env.example .env
 
 ## 训练与评测
 
-使用 [IL_Replay](https://huggingface.co/datasets/VanguardX101/IL_Replay) 开始模仿学习，也可以先执行 `python tools/make_demo_data.py` 生成小规模流程样例。[训练指南](docs/training.md)覆盖缓存生成、IL、引擎集群、Linux AVD 准备及分布式 PPO。
+本分支的 X-Bow 专精模型采用**原生引擎自博弈**训练，实况采集用于行为克隆与验证；不再使用 IL_Replay 训练。可先执行 `python tools/make_demo_data.py` 生成小规模流程样例。[训练指南](docs/training.md)覆盖缓存生成、引擎集群、Linux AVD 准备及分布式 PPO；上游 IL 流程仅作参考。
 
 比较两个随附模型时，先停止控制台任务，再执行：
 

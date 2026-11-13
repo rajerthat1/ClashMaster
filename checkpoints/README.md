@@ -2,6 +2,10 @@
 
 [English home](../README.md) · [中文首页](../README.zh-CN.md) · [Training / 训练](../docs/training.md) · [Training history / 训练历程](../docs/training_history.md)
 
+> **Fork note (2026-11-12):** these checkpoints are kept as **opponents, baselines, and fallbacks**.
+> The primary model for this fork is an **X-Bow 3.0 specialist** trained by native-engine self-play
+> (FirstLight-Zero recipe). See [`ROADMAP.md`](../ROADMAP.md).
+
 FirstLight CR includes a **strong general-purpose agent** and a **Hall of Fame–level 2.6 Hog Cycle specialist**, alongside IL checkpoints. Select a model in the match interface, or pass its path to the evaluator or policy service.
 
 FirstLight CR 提供**较强的通用模型**、**名人堂级 2.6 速猪专精模型**和 IL checkpoint。可在对战界面选择模型，也可将文件路径传给评测器或策略服务。

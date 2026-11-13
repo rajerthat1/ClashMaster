@@ -2,11 +2,16 @@
 
 [English home](../README.md) · [Installation](getting_started.md) · [Training history](training_history.md)
 
+> **Fork note (2026-11-12):** this fork trains the X-Bow specialist by **self-play on the native
+> engine**. `IL_Replay` is **retired as a training corpus**; the IL/General/Everlight checkpoints
+> are kept as opponents, baselines, and fallbacks. The upstream IL instructions below remain for
+> reference and for optional representation experiments. See [`ROADMAP.md`](../ROADMAP.md).
+
 Run commands from the repository root with the Python dependencies installed. Windows supports cache building, inference, evaluation, and the console. The IL/PPO launchers target Linux with CUDA and NCCL.
 
 ## 1. Data and workflow examples
 
-[IL_Replay](https://huggingface.co/datasets/VanguardX101/IL_Replay) provides 252,238 replays and 17,836,160 actions. Download its files into one directory, keeping the `replays/` and `actions/` subdirectories. Set `CR_REPLAY_DATASET_ROOT` to that directory to browse it in the console.
+[IL_Replay](https://huggingface.co/datasets/VanguardX101/IL_Replay) provides 252,238 replays and 17,836,160 actions. **This fork does not use it as a training corpus.** It is kept only for reference and optional representation experiments; the X-Bow specialist is trained from self-play and live captures. The upstream instructions below describe the original IL workflow.
 
 For a small reproducible example, generate a 45-second synthetic replay, Parquet dataset, tag list, and deck pool:
 

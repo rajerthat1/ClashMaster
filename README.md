@@ -1,29 +1,37 @@
 # ClashMaster
 
-Clash Royale AI research workspace targeting **Ultimate Champion on the main ladder**, starting with
-**Hog 2.6** and finishing with **X-Bow 3.0**.
+Clash Royale AI research workspace targeting **Ultimate Champion on the main ladder** with
+**X-Bow 3.0**. Hog 2.6 is kept as an opponent and baseline, not a deployment stage.
 
-**Model:** FirstLight_CR V4, 16.8M parameters (plus Everlight on `upstream/yes-delay`) — fine-tuned
-for X-Bow.
+**Model:** **X-Bow 3.0 specialist first** — the deck is exactly FirstLight-Zero's, so its 1.17M
+CNN + LSTM recipe and v1450 checkpoint are the starting point. Training is **3a mirror bootstrap →
+3b matchup pool** (General/IL/Hog/scripted/live). The FirstLight_CR V4 / Everlight 16.8M models are
+generalists, opponents, and fallbacks.
 
-**Current phase:** 16.635.1 via a **crforge engine swap**. crforge (Java, tick-exact on client
-16.635.1) stands in for the native engine behind FirstLight's runner protocol, so the model,
-evaluator and trainer run unchanged. The main-server bridge and the UC push stay deferred behind a
-readiness gate.
+**Current phase:** **native-engine route (Option E)**. The real Clash Royale engine runs headless
+through FirstLight's probe/runner; the target client is **16.635.1**. Frida/static analysis is used
+to port the probe; an extracted `libg.so` headless process is preferred for speed. **crforge is a
+fallback and CI oracle only**, not the critical path.
+
+**Next milestone:** a scripted X-Bow bot playing live on Null's 16.635.1, then a learned X-Bow bot
+that beats it and is ready for a main-ladder canary.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
 below. Project-specific additions:
 
-- **[ROADMAP.md](ROADMAP.md)** — decision record, phase plan, kill criteria.
-- **[ROADMAP_CRFORGE_ADAPTER.md](ROADMAP_CRFORGE_ADAPTER.md)** — the engine-swap checklist.
-- **[ROADMAP_NULLS16_PROBE.md](ROADMAP_NULLS16_PROBE.md)** — Track B: the live reader that produces
-  training data and is the only reality check on the simulator.
+- **[ROADMAP.md](ROADMAP.md)** — the single source: engine decision, Phases 0–4 + main-ladder gate, QA harness.
+- **[ROADMAP_CRFORGE.md](ROADMAP_CRFORGE.md)** — optional crforge fallback / CI roadmap.
+- **[HANDOFF.md](HANDOFF.md)** — current state, measured facts, next actions.
 - **Sync upstream:** `./scripts/sync-upstream.sh`, or manually
   `git fetch upstream && git merge upstream/main && git push origin main`.
-- **Replay dataset:** `IL_Replay` is **retired** for this project — its games predate every rule
-  range crforge models, so they cannot be replayed on a 16.635 rule set. Training data is captured
-  live instead; see Track B.
+- **Replay dataset:** `IL_Replay` is **retired as a training corpus** in this fork. The X-Bow
+  specialist is trained by self-play, with live captures for behavior cloning and validation. The
+  IL/General/Everlight checkpoints are kept as opponents, baselines, and fallbacks.
+- **15.535 vs 16.635:** the upstream 15.535.13 / 15.535.86 install below is the **offline training
+  lab** (run it on Windows/MuMu or a Linux AVD). Live play and the probe target are 16.635.1; see
+  `ROADMAP.md`. The laptop handles demos/live/light training; use the student cloud GPU credits
+  for PPO.
 - **Remotes:** `origin` = this repo, `upstream` = `Jaasssoooonnnnn/FirstLight_CR`,
   `fork` = `rajerthat1/FirstLight_CR` (pristine mirror for upstream PRs).
 
@@ -39,8 +47,7 @@ below. Project-specific additions:
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB.svg" alt="Python 3.12">
-  <img src="https://img.shields.io/badge/Learning-IL_%2B_PPO-EE4C2C.svg" alt="IL and PPO">
-  <a href="https://huggingface.co/datasets/VanguardX101/IL_Replay"><img src="https://img.shields.io/badge/🤗_Dataset-252K_replays-FFD21E.svg" alt="252K replays on Hugging Face"></a>
+  <img src="https://img.shields.io/badge/Learning-PPO_self--play-EE4C2C.svg" alt="PPO self-play">
 </p>
 <p align="center">
   <a href="docs/getting_started.md">Installation</a> ·
@@ -78,27 +85,27 @@ Choose **General** for different decks or a **Hog 2.6 specialist** for Hog Cycle
 - **Match and replay interface.** Play against a model, control both sides manually, or watch training and collected replays in one offline VM.
 - **Source code.** The probe, APK build tools, battle environment, and training code are included.
 
-**122 supported cards · 5 included checkpoints · 252,238 replays · 17,836,160 actions**
+**122 supported cards · 5 included checkpoints · self-play + live captures**
 
-See [compatibility data](native_runner/data/competitive/README.md) for the cards and forms supported by each version. Download the replay dataset from [Hugging Face](https://huggingface.co/datasets/VanguardX101/IL_Replay).
+See [compatibility data](native_runner/data/competitive/README.md) for the cards and forms supported by each version. The upstream replay dataset is **retired as a training corpus** in this fork; the checkpoints are kept as opponents, baselines, and fallbacks.
 
 ## Training flow
 
 ```mermaid
 flowchart LR
-    R[Replay dataset] --> C[Native reconstruction]
-    C --> D[Observation / action sequences]
-    D --> IL[Imitation learning]
-    IL --> P[Recurrent policy]
+    E[Real engine, headless] --> O[Observation / features]
+    L[Live captures] --> BC[Behavior cloning]
+    O --> P[X-Bow specialist]
+    BC --> P
     P --> S[Self-play + matchmaking]
     S --> PPO[PPO]
     PPO --> P
-    P --> E[Match evaluation]
-    P --> H[Play against the agent]
+    P --> EV[Mirrored + live evaluation]
     P --> API[Local policy service]
 ```
 
-See the [architecture guide](docs/architecture.md) for source entry points and data formats.
+The upstream replay-dataset → IL path is retired in this fork; see [`ROADMAP.md`](ROADMAP.md). The
+[architecture guide](docs/architecture.md) covers source entry points and data formats.
 
 ## Quick start
 
@@ -130,7 +137,7 @@ To open the interface after installation, run `FirstLight_CR\launch_interface.cm
 
 ## Train and evaluate
 
-Start with [IL_Replay](https://huggingface.co/datasets/VanguardX101/IL_Replay) for imitation learning, or generate a small workflow example with `python tools/make_demo_data.py`. The [training guide](docs/training.md) covers cache generation, IL, engine clusters, Linux AVD preparation, and distributed PPO.
+This fork trains the X-Bow specialist by **self-play on the native engine**, with live captures for behavior cloning and validation. Generate a small workflow example with `python tools/make_demo_data.py`. The [training guide](docs/training.md) covers cache generation, engine clusters, Linux AVD preparation, and distributed PPO; the upstream IL path remains for reference only.
 
 To compare two included checkpoints, stop any console task and run:
 
