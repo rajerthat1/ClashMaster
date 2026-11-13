@@ -1,0 +1,2911 @@
+{
+  "summary": {
+    "EXACT": 59,
+    "LIKELY": 32,
+    "MISSING": 16,
+    "AMBIGUOUS": 40
+  },
+  "anchors": [
+    {
+      "hook": "kGameAppGetter",
+      "old_offset": "0x00755818",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x007c27ac",
+      "delta": "+0x6cf94",
+      "window": 64,
+      "votes": [
+        {
+          "relative": 256,
+          "size": 64
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x6cf94",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameAppPendingEventSetter",
+      "old_offset": "0x0075a6dc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x6cf94",
+      "new_offset": "0x007c79d8",
+      "delta": "+0x6d2fc",
+      "window": 24,
+      "window_relative": 32,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kGameAppPauseGuard",
+      "old_offset": "0x0075c628",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x007c99ac",
+      "delta": "+0x6d384",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 128,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x6cf94",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateContextA",
+      "old_offset": "0x0080031c",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING"
+    },
+    {
+      "hook": "kLocationTileMapEnsure",
+      "old_offset": "0x00857608",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 20,
+      "occurrences": 461,
+      "candidates": [
+        "0x007c4b28",
+        "0x007f12cc",
+        "0x007f13fc",
+        "0x007f154c",
+        "0x007f166c",
+        "0x007f16f8",
+        "0x007f1770",
+        "0x007f17fc"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kGameStateBaseDestroy",
+      "old_offset": "0x00988844",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 24,
+      "occurrences": 1,
+      "candidates": [
+        "0x009fe0b0"
+      ],
+      "new_offset": "0x009fe0b0",
+      "delta": "+0x7586c",
+      "confidence": "LIKELY"
+    },
+    {
+      "hook": "kStateSnapshot",
+      "old_offset": "0x00ad9a50",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 28,
+      "occurrences": 1,
+      "candidates": [
+        "0x00bb3ac4"
+      ],
+      "new_offset": "0x00bb3ac4",
+      "delta": "+0xda074",
+      "confidence": "LIKELY"
+    },
+    {
+      "hook": "kReplayBattleControllerLifecycle",
+      "old_offset": "0x00c87620",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 24,
+      "occurrences": 6,
+      "candidates": [
+        "0x00a36604",
+        "0x00af5674",
+        "0x00c69a0c",
+        "0x00da8cbc",
+        "0x015c8878",
+        "0x0161eafc"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x1131c8",
+      "suspect": true
+    },
+    {
+      "hook": "kNativeReplayRunner",
+      "old_offset": "0x00c87ecc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 32,
+      "occurrences": 87,
+      "candidates": [
+        "0x007ee428",
+        "0x007ee600",
+        "0x007ee7c4",
+        "0x00824ce0",
+        "0x0088ace8",
+        "0x0089d20c",
+        "0x0089f560",
+        "0x008ba8a4"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x1131c8",
+      "suspect": true
+    },
+    {
+      "hook": "kReplayBattleControllerFullUpdate",
+      "old_offset": "0x00c88bbc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 16,
+      "occurrences": 2,
+      "candidates": [
+        "0x0097e634",
+        "0x00ac16f0"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x1131c8",
+      "suspect": true
+    },
+    {
+      "hook": "kReplayBattleControllerClock",
+      "old_offset": "0x00c890bc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x00d9c284",
+      "delta": "+0x1131c8",
+      "window": 48,
+      "votes": [
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x1131c8",
+      "delta_verified": true
+    },
+    {
+      "hook": "kReplayBattleControllerAlternateUpdate",
+      "old_offset": "0x00c899e0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x00d9cc24"
+      ],
+      "new_offset": "0x00d9cc24",
+      "delta": "+0x113244",
+      "confidence": "EXACT",
+      "expected_delta": "+0x113244",
+      "delta_verified": true
+    },
+    {
+      "hook": "kReplayManagerGetter",
+      "old_offset": "0x00c8c5b8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x113244",
+      "new_offset": "0x00da0670",
+      "delta": "+0x1140b8",
+      "window": 24,
+      "window_relative": 32,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kReplayJsonSetter",
+      "old_offset": "0x00c8de8c",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 24,
+      "occurrences": 26,
+      "candidates": [
+        "0x00da1f90",
+        "0x00febc14",
+        "0x01067370",
+        "0x01068ea0",
+        "0x011402e8",
+        "0x011cea38",
+        "0x011cee90",
+        "0x011cfb48"
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x113244",
+      "new_offset": "0x00da1f90",
+      "delta": "+0x114104",
+      "window_relative": 0,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kTranslatedSha256InitializerCall",
+      "old_offset": "0x00c8ece0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING",
+      "expected_delta": "+0x113244",
+      "suspect": true
+    },
+    {
+      "hook": "kReplayClockGlobalPauseGuard",
+      "old_offset": "0x00cb6694",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING",
+      "expected_delta": "+0x113244",
+      "suspect": true
+    },
+    {
+      "hook": "kJsonMemberFind",
+      "old_offset": "0x00d0e100",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 48,
+      "occurrences": 45,
+      "candidates": [
+        "0x007cc718",
+        "0x0089f6e8",
+        "0x0090a1c4",
+        "0x00b4fc64",
+        "0x00bc4c6c",
+        "0x00bc4dc4",
+        "0x00bc63bc",
+        "0x00bc6648"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x12554c",
+      "suspect": true
+    },
+    {
+      "hook": "kLogicCommandQueueConstructor",
+      "old_offset": "0x00d2eddc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 32,
+      "occurrences": 1,
+      "candidates": [
+        "0x00e54328"
+      ],
+      "new_offset": "0x00e54328",
+      "delta": "+0x12554c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x12554c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kLogicCommandQueueDestroy",
+      "old_offset": "0x00d2ee40",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 1,
+      "candidates": [
+        "0x00e5438c"
+      ],
+      "new_offset": "0x00e5438c",
+      "delta": "+0x12554c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x12554c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kLogicCommandAppend",
+      "old_offset": "0x00d2eef0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 32,
+      "occurrences": 1,
+      "candidates": [
+        "0x00e5443c"
+      ],
+      "new_offset": "0x00e5443c",
+      "delta": "+0x12554c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x12554c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kLogicCommandParse",
+      "old_offset": "0x00d2fe78",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 24,
+      "occurrences": 8,
+      "candidates": [
+        "0x009148c8",
+        "0x009eb7ec",
+        "0x00a5c5b8",
+        "0x00cb399c",
+        "0x00cd7b3c",
+        "0x0126d1fc",
+        "0x01552298",
+        "0x01be1c64"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x12554c",
+      "suspect": true
+    },
+    {
+      "hook": "kBuffAssetClassNameGetter",
+      "old_offset": "0x00d961f4",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING",
+      "expected_delta": "+0x12c8b0",
+      "suspect": true
+    },
+    {
+      "hook": "kLogicDataTypeGetter",
+      "old_offset": "0x00dc2560",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x00eeee10",
+      "delta": "+0x12c8b0",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 16,
+          "size": 32
+        },
+        {
+          "relative": 160,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x12c8b0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kLogicDataByGlobalId",
+      "old_offset": "0x00dd1340",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 96,
+      "occurrences": 570,
+      "candidates": [
+        "0x007cd3b4",
+        "0x007cd458",
+        "0x007cda98",
+        "0x007cdb3c",
+        "0x007ce088",
+        "0x007ce12c",
+        "0x008014e4",
+        "0x0080345c"
+      ],
+      "new_offset": "0x00efe42c",
+      "delta": "+0x12d0ec",
+      "votes": [
+        {
+          "relative": 96,
+          "size": 96
+        },
+        {
+          "relative": 96,
+          "size": 64
+        },
+        {
+          "relative": 128,
+          "size": 96
+        },
+        {
+          "relative": 128,
+          "size": 64
+        },
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 128,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x12d0ec",
+      "delta_verified": true
+    },
+    {
+      "hook": "kLocationTileMapLookup",
+      "old_offset": "0x00df8508",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 16,
+      "occurrences": 1821,
+      "candidates": [
+        "0x007cb934",
+        "0x007dbe2c",
+        "0x007e1ea0",
+        "0x007e2adc",
+        "0x007eda80",
+        "0x007f15d0",
+        "0x007f1610",
+        "0x007f244c"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x12d0ec",
+      "suspect": true
+    },
+    {
+      "hook": "kCardSelectionBuild",
+      "old_offset": "0x00e2d1bc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 64,
+      "occurrences": 1,
+      "candidates": [
+        "0x00f671a0"
+      ],
+      "new_offset": "0x00f671a0",
+      "delta": "+0x139fe4",
+      "confidence": "EXACT",
+      "expected_delta": "+0x139fe4",
+      "delta_verified": true
+    },
+    {
+      "hook": "kChangeGameObjectDataExecute",
+      "old_offset": "0x00e58638",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 24,
+      "occurrences": 1,
+      "candidates": [
+        "0x00f93844"
+      ],
+      "new_offset": "0x00f93844",
+      "delta": "+0x13b20c",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x13d7b0",
+      "window_relative": 0,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kChangeMutationCall",
+      "old_offset": "0x00e58678",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x00f93844",
+      "delta": "+0x13b1cc",
+      "window": 20,
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x13d7b0",
+      "window_relative": 16,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kActionSpawnToLocationExecute",
+      "old_offset": "0x00e7b864",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 32,
+      "occurrences": 52,
+      "candidates": [
+        "0x0080703c",
+        "0x008b75b4",
+        "0x00a7cbcc",
+        "0x00b035b0",
+        "0x00b7922c",
+        "0x00b793fc",
+        "0x00b87564",
+        "0x00bf9368"
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x13d7b0",
+      "new_offset": "0x00fb7e64",
+      "delta": "+0x13c600",
+      "window_relative": 0,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kWarpPositionCommit",
+      "old_offset": "0x00e82a34",
+      "source": "native_runner/probe/action_movement_runtime_layout.h",
+      "window": 48,
+      "occurrences": 6,
+      "candidates": [
+        "0x00d25834",
+        "0x00d2602c",
+        "0x00db34b4",
+        "0x01170b68",
+        "0x01170d0c",
+        "0x012e5060"
+      ],
+      "new_offset": "0x00fc01e4",
+      "delta": "+0x13d7b0",
+      "votes": [
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x13d7b0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateContextB",
+      "old_offset": "0x00eaf1c8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x00ff253c",
+      "delta": "+0x143374",
+      "window": 96,
+      "votes": [
+        {
+          "relative": 32,
+          "size": 48
+        },
+        {
+          "relative": 32,
+          "size": 32
+        },
+        {
+          "relative": 48,
+          "size": 32
+        },
+        {
+          "relative": 128,
+          "size": 96
+        },
+        {
+          "relative": 128,
+          "size": 64
+        },
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 128,
+          "size": 32
+        },
+        {
+          "relative": 160,
+          "size": 96
+        },
+        {
+          "relative": 160,
+          "size": 64
+        },
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        },
+        {
+          "relative": 192,
+          "size": 96
+        },
+        {
+          "relative": 192,
+          "size": 64
+        },
+        {
+          "relative": 192,
+          "size": 48
+        },
+        {
+          "relative": 192,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 96
+        },
+        {
+          "relative": 256,
+          "size": 64
+        },
+        {
+          "relative": 256,
+          "size": 48
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x143374",
+      "delta_verified": true
+    },
+    {
+      "hook": "kAreaEffectObjectTick",
+      "old_offset": "0x00f143a8",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 16,
+      "occurrences": 25,
+      "candidates": [
+        "0x00805540",
+        "0x0086f038",
+        "0x00b34f1c",
+        "0x00ce1af8",
+        "0x00ce2ed8",
+        "0x00ce34d4",
+        "0x013673d0",
+        "0x0138dce4"
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "new_offset": "0x01070d18",
+      "delta": "+0x15c970",
+      "window_relative": 32,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kCombatDeflect",
+      "old_offset": "0x00f1629c",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 32,
+      "occurrences": 244,
+      "candidates": [
+        "0x00888728",
+        "0x008947e0",
+        "0x008a5744",
+        "0x008b654c",
+        "0x00901f50",
+        "0x00914d94",
+        "0x00916a38",
+        "0x0091bf30"
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "new_offset": "0x01074190",
+      "delta": "+0x15def4",
+      "window_relative": 0,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kStateSetter",
+      "old_offset": "0x00f18654",
+      "source": "native_runner/probe/character_state_runtime_layout.h",
+      "window": 32,
+      "occurrences": 51,
+      "candidates": [
+        "0x00a20dc8",
+        "0x00a4723c",
+        "0x00a80058",
+        "0x00b78dd4",
+        "0x00baa6f4",
+        "0x00bbdcbc",
+        "0x00bc0c90",
+        "0x00bc238c"
+      ],
+      "new_offset": "0x01075d64",
+      "delta": "+0x15d710",
+      "votes": [
+        {
+          "relative": 192,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "delta_verified": true
+    },
+    {
+      "hook": "kSpawnAttachHelperCall",
+      "old_offset": "0x00f18ff0",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "new_offset": "0x01076758",
+      "delta": "+0x15d768",
+      "window": 16,
+      "window_relative": 16,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kSpawnAttachHelperReturn",
+      "old_offset": "0x00f18ff4",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "new_offset": "0x0107676c",
+      "delta": "+0x15d778",
+      "window": 16,
+      "window_relative": 32,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kCharacterSpawnHelper",
+      "old_offset": "0x00f19314",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 32,
+      "occurrences": 23,
+      "candidates": [
+        "0x0098d6e0",
+        "0x0098e1b0",
+        "0x00abcc98",
+        "0x00abe080",
+        "0x00b0da18",
+        "0x00b278a8",
+        "0x00bbace0",
+        "0x00c21184"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x15c590",
+      "suspect": true
+    },
+    {
+      "hook": "kDeployScaleReturn",
+      "old_offset": "0x00f1abc0",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15c590",
+      "suspect": true
+    },
+    {
+      "hook": "kPeriodicResourceCall",
+      "old_offset": "0x00f1acd0",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x010775f4",
+      "delta": "+0x15c924",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 192,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "delta_verified": true
+    },
+    {
+      "hook": "kPeriodicResourceReturn",
+      "old_offset": "0x00f1acd4",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x010775f8",
+      "delta": "+0x15c924",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 192,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15c590",
+      "delta_verified": true
+    },
+    {
+      "hook": "kAreaDamageEligible",
+      "old_offset": "0x00f1cb90",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 64,
+      "occurrences": 1,
+      "candidates": [
+        "0x01079120"
+      ],
+      "new_offset": "0x01079120",
+      "delta": "+0x15c590",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15c590",
+      "delta_verified": true
+    },
+    {
+      "hook": "kAreaDamageEligibleBody",
+      "old_offset": "0x00f1cba0",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x01079130"
+      ],
+      "new_offset": "0x01079130",
+      "delta": "+0x15c590",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15c590",
+      "delta_verified": true
+    },
+    {
+      "hook": "kEffectiveMovementSpeed",
+      "old_offset": "0x00f1d004",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 96,
+      "occurrences": 5000,
+      "candidates": [
+        "0x007c281c",
+        "0x007c294c",
+        "0x007c2f64",
+        "0x007c6928",
+        "0x007c8f50",
+        "0x007ca78c",
+        "0x007cb0b0",
+        "0x007cbb0c"
+      ],
+      "new_offset": "0x010796f4",
+      "delta": "+0x15c6f0",
+      "votes": [
+        {
+          "relative": 32,
+          "size": 48
+        },
+        {
+          "relative": 32,
+          "size": 32
+        },
+        {
+          "relative": 48,
+          "size": 32
+        },
+        {
+          "relative": 192,
+          "size": 96
+        },
+        {
+          "relative": 192,
+          "size": 64
+        },
+        {
+          "relative": 192,
+          "size": 48
+        },
+        {
+          "relative": 192,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15c6f0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kEffectiveSpeedEffectReturn",
+      "old_offset": "0x00f1d218",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "new_offset": "0x01079908",
+      "delta": "+0x15c6f0",
+      "window": 96,
+      "votes": [
+        {
+          "relative": 16,
+          "size": 96
+        },
+        {
+          "relative": 16,
+          "size": 64
+        },
+        {
+          "relative": 16,
+          "size": 48
+        },
+        {
+          "relative": 16,
+          "size": 32
+        },
+        {
+          "relative": 32,
+          "size": 96
+        },
+        {
+          "relative": 32,
+          "size": 64
+        },
+        {
+          "relative": 32,
+          "size": 48
+        },
+        {
+          "relative": 32,
+          "size": 32
+        },
+        {
+          "relative": 48,
+          "size": 96
+        },
+        {
+          "relative": 48,
+          "size": 64
+        },
+        {
+          "relative": 48,
+          "size": 48
+        },
+        {
+          "relative": 48,
+          "size": 32
+        },
+        {
+          "relative": 64,
+          "size": 96
+        },
+        {
+          "relative": 64,
+          "size": 64
+        },
+        {
+          "relative": 64,
+          "size": 48
+        },
+        {
+          "relative": 64,
+          "size": 32
+        },
+        {
+          "relative": 96,
+          "size": 64
+        },
+        {
+          "relative": 96,
+          "size": 48
+        },
+        {
+          "relative": 96,
+          "size": 32
+        },
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 128,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15c6f0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatHealEffectReturn",
+      "old_offset": "0x00f20df0",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 32,
+      "occurrences": 1,
+      "candidates": [
+        "0x00a22aac"
+      ],
+      "new_offset": "0x00a22aac",
+      "delta": "-0x4fe344",
+      "confidence": "EXACT",
+      "expected_delta": "-0x4fe344",
+      "delta_verified": true
+    },
+    {
+      "hook": "kActionDispatch",
+      "old_offset": "0x00f23110",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x010809c0"
+      ],
+      "new_offset": "0x010809c0",
+      "delta": "+0x15d8b0",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d8b0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kAreaEffectObjectFactory",
+      "old_offset": "0x00f2384c",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 32,
+      "occurrences": 1,
+      "candidates": [
+        "0x01080fa4"
+      ],
+      "new_offset": "0x01080fa4",
+      "delta": "+0x15d758",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d758",
+      "delta_verified": true
+    },
+    {
+      "hook": "kActionSpawnMode1ChildCreateReturn",
+      "old_offset": "0x00f24bb0",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15d7cc",
+      "suspect": true
+    },
+    {
+      "hook": "kPendingObjectAdd",
+      "old_offset": "0x00f25928",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 72,
+      "occurrences": 1,
+      "candidates": [
+        "0x010830f4"
+      ],
+      "new_offset": "0x010830f4",
+      "delta": "+0x15d7cc",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d7cc",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatSpawn",
+      "old_offset": "0x00f25b8c",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 192,
+      "occurrences": 1,
+      "candidates": [
+        "0x01083358"
+      ],
+      "new_offset": "0x01083358",
+      "delta": "+0x15d7cc",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d7cc",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatRemove",
+      "old_offset": "0x00f25d90",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 192,
+      "occurrences": 1,
+      "candidates": [
+        "0x0108355c"
+      ],
+      "new_offset": "0x0108355c",
+      "delta": "+0x15d7cc",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d7cc",
+      "delta_verified": true
+    },
+    {
+      "hook": "kProjectileKindGetter",
+      "old_offset": "0x00f27a58",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 72,
+      "occurrences": 1,
+      "candidates": [
+        "0x0108530c"
+      ],
+      "new_offset": "0x0108530c",
+      "delta": "+0x15d8b4",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d8b4",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatProjectileTerminal",
+      "old_offset": "0x00f28470",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 32,
+      "occurrences": 5,
+      "candidates": [
+        "0x00bd4900",
+        "0x00bd49bc",
+        "0x01085d24",
+        "0x01347900",
+        "0x017ad490"
+      ],
+      "new_offset": "0x01085d24",
+      "delta": "+0x15d8b4",
+      "votes": [
+        {
+          "relative": 64,
+          "size": 32
+        },
+        {
+          "relative": 128,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d8b4",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatImpactFunction",
+      "old_offset": "0x00f29514",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x00cce0d0"
+      ],
+      "new_offset": "0x00cce0d0",
+      "delta": "-0x25b444",
+      "confidence": "EXACT",
+      "expected_delta": "-0x25b444",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatImpactBoundary",
+      "old_offset": "0x00f2981c",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "new_offset": "0x010870fc",
+      "delta": "+0x15d8e0",
+      "window": 96,
+      "votes": [
+        {
+          "relative": 32,
+          "size": 96
+        },
+        {
+          "relative": 32,
+          "size": 64
+        },
+        {
+          "relative": 32,
+          "size": 48
+        },
+        {
+          "relative": 32,
+          "size": 32
+        },
+        {
+          "relative": 48,
+          "size": 64
+        },
+        {
+          "relative": 48,
+          "size": 48
+        },
+        {
+          "relative": 48,
+          "size": 32
+        },
+        {
+          "relative": 64,
+          "size": 64
+        },
+        {
+          "relative": 64,
+          "size": 48
+        },
+        {
+          "relative": 64,
+          "size": 32
+        },
+        {
+          "relative": 96,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d8e0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatExpireSourceLostCall",
+      "old_offset": "0x00f2a11c",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "new_offset": "0x0108794c",
+      "delta": "+0x15d830",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 96,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15d830",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatExpireSourceLostReturn",
+      "old_offset": "0x00f2a120",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 32,
+      "occurrences": 1,
+      "candidates": [
+        "0x01087950"
+      ],
+      "new_offset": "0x01087950",
+      "delta": "+0x15d830",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d830",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatExpireCancelCall",
+      "old_offset": "0x00f2a148",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "new_offset": "0x01087978",
+      "delta": "+0x15d830",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15d830",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatExpireCancelReturn",
+      "old_offset": "0x00f2a14c",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "new_offset": "0x0108797c",
+      "delta": "+0x15d830",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15d830",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatHealProjectileReturn",
+      "old_offset": "0x00f2b374",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 16,
+      "occurrences": 1,
+      "candidates": [
+        "0x01089410"
+      ],
+      "new_offset": "0x01089410",
+      "delta": "+0x15e09c",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15d830",
+      "delta_verified": true
+    },
+    {
+      "hook": "kActionSpawnMode1ChildCreate",
+      "old_offset": "0x00f2ffb8",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x0108d838"
+      ],
+      "new_offset": "0x0108d838",
+      "delta": "+0x15d880",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d880",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatHealAreaReturn",
+      "old_offset": "0x00f319a4",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15d880",
+      "suspect": true
+    },
+    {
+      "hook": "kCombatConsumeCard",
+      "old_offset": "0x00f38a68",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 16,
+      "occurrences": 52,
+      "candidates": [
+        "0x0080703c",
+        "0x008b75b4",
+        "0x00a7cbcc",
+        "0x00b035b0",
+        "0x00b7922c",
+        "0x00b793fc",
+        "0x00b87564",
+        "0x00bf9368"
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15d13c",
+      "new_offset": "0x010959ec",
+      "delta": "+0x15cf84",
+      "window_relative": 32,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kResourceFixedDelta",
+      "old_offset": "0x00f3b3d4",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x01098510"
+      ],
+      "new_offset": "0x01098510",
+      "delta": "+0x15d13c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d13c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kResourceWholeDelta",
+      "old_offset": "0x00f3ba4c",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x01098b8c"
+      ],
+      "new_offset": "0x01098b8c",
+      "delta": "+0x15d140",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d140",
+      "delta_verified": true
+    },
+    {
+      "hook": "kDaggerInit",
+      "old_offset": "0x00f43f10",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 64,
+      "occurrences": 4787,
+      "candidates": [
+        "0x007c385c",
+        "0x007c4af8",
+        "0x007c9488",
+        "0x007c9cf4",
+        "0x007cb040",
+        "0x007cc874",
+        "0x007cc9a0",
+        "0x007ccb28"
+      ],
+      "new_offset": "0x010a1270",
+      "delta": "+0x15d360",
+      "votes": [
+        {
+          "relative": 192,
+          "size": 64
+        },
+        {
+          "relative": 192,
+          "size": 48
+        },
+        {
+          "relative": 192,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d360",
+      "delta_verified": true
+    },
+    {
+      "hook": "kDaggerTick",
+      "old_offset": "0x00f43f3c",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 96,
+      "occurrences": 93,
+      "candidates": [
+        "0x007f8088",
+        "0x007f82b8",
+        "0x008ccd5c",
+        "0x008eb028",
+        "0x0090765c",
+        "0x009a0dec",
+        "0x009a58c8",
+        "0x00a1a11c"
+      ],
+      "new_offset": "0x010a129c",
+      "delta": "+0x15d360",
+      "votes": [
+        {
+          "relative": 64,
+          "size": 32
+        },
+        {
+          "relative": 128,
+          "size": 96
+        },
+        {
+          "relative": 128,
+          "size": 64
+        },
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 128,
+          "size": 32
+        },
+        {
+          "relative": 160,
+          "size": 64
+        },
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        },
+        {
+          "relative": 192,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 96
+        },
+        {
+          "relative": 256,
+          "size": 64
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d360",
+      "delta_verified": true
+    },
+    {
+      "hook": "kChefInit",
+      "old_offset": "0x00f47e08",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 48,
+      "occurrences": 4787,
+      "candidates": [
+        "0x007c385c",
+        "0x007c4af8",
+        "0x007c9488",
+        "0x007c9cf4",
+        "0x007cb040",
+        "0x007cc874",
+        "0x007cc9a0",
+        "0x007ccb28"
+      ],
+      "new_offset": "0x010a5378",
+      "delta": "+0x15d570",
+      "votes": [
+        {
+          "relative": 32,
+          "size": 48
+        },
+        {
+          "relative": 32,
+          "size": 32
+        },
+        {
+          "relative": 96,
+          "size": 48
+        },
+        {
+          "relative": 96,
+          "size": 32
+        },
+        {
+          "relative": 160,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d570",
+      "delta_verified": true
+    },
+    {
+      "hook": "kChefTick",
+      "old_offset": "0x00f47e3c",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 64,
+      "occurrences": 12,
+      "candidates": [
+        "0x007cec68",
+        "0x0081d364",
+        "0x00c9e794",
+        "0x00eaa5f8",
+        "0x010606cc",
+        "0x010a53ac",
+        "0x01203e60",
+        "0x0127122c"
+      ],
+      "new_offset": "0x010a53ac",
+      "delta": "+0x15d570",
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        },
+        {
+          "relative": 192,
+          "size": 48
+        },
+        {
+          "relative": 192,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 64
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d570",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGoldenKnightHop",
+      "old_offset": "0x00f49d24",
+      "source": "native_runner/probe/action_movement_runtime_layout.h",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x010a7230"
+      ],
+      "new_offset": "0x010a7230",
+      "delta": "+0x15d50c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d50c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kActionWaitUpdate",
+      "old_offset": "0x00f587c4",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 24,
+      "occurrences": 250,
+      "candidates": [
+        "0x007c4c1c",
+        "0x007d0608",
+        "0x007d9da0",
+        "0x007dfb60",
+        "0x00808808",
+        "0x0081e510",
+        "0x0084f77c",
+        "0x00884a94"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x15df18",
+      "suspect": true
+    },
+    {
+      "hook": "kActionWaitDispatchCall",
+      "old_offset": "0x00f5881c",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x010b6178",
+      "delta": "+0x15d95c",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 128,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15df18",
+      "delta_verified": true
+    },
+    {
+      "hook": "kActionWaitDispatchReturn",
+      "old_offset": "0x00f58820",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 32,
+      "occurrences": 302,
+      "candidates": [
+        "0x007c685c",
+        "0x007cf1d8",
+        "0x007cf1f4",
+        "0x007cf2d0",
+        "0x007f7de8",
+        "0x007f7ff8",
+        "0x008081a0",
+        "0x0081c58c"
+      ],
+      "new_offset": "0x010b617c",
+      "delta": "+0x15d95c",
+      "votes": [
+        {
+          "relative": 128,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15df18",
+      "delta_verified": true
+    },
+    {
+      "hook": "kBuffRemoveOnlyCall",
+      "old_offset": "0x00f59304",
+      "source": "native_runner/probe/visibility_runtime_layout.h",
+      "new_offset": "0x010b721c",
+      "delta": "+0x15df18",
+      "window": 96,
+      "votes": [
+        {
+          "relative": 128,
+          "size": 96
+        },
+        {
+          "relative": 128,
+          "size": 64
+        },
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 128,
+          "size": 32
+        },
+        {
+          "relative": 160,
+          "size": 64
+        },
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15df18",
+      "delta_verified": true
+    },
+    {
+      "hook": "kBuffComponentTypeGetter",
+      "old_offset": "0x00f59aac",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x010b79c4"
+      ],
+      "new_offset": "0x010b79c4",
+      "delta": "+0x15df18",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15df18",
+      "delta_verified": true
+    },
+    {
+      "hook": "kBuffApplyOnlyCall",
+      "old_offset": "0x00f59ea8",
+      "source": "native_runner/probe/visibility_runtime_layout.h",
+      "new_offset": "0x010b7dcc",
+      "delta": "+0x15df24",
+      "window": 48,
+      "votes": [
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 128,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15df24",
+      "delta_verified": true
+    },
+    {
+      "hook": "kBuffAdded",
+      "old_offset": "0x00f5a2d4",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x010b820c"
+      ],
+      "new_offset": "0x010b820c",
+      "delta": "+0x15df38",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15df38",
+      "delta_verified": true
+    },
+    {
+      "hook": "kBuffApply",
+      "old_offset": "0x00f5a2d4",
+      "source": "native_runner/probe/visibility_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x010b820c"
+      ],
+      "new_offset": "0x010b820c",
+      "delta": "+0x15df38",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15df38",
+      "delta_verified": true
+    },
+    {
+      "hook": "kBuffRemove",
+      "old_offset": "0x00f5a578",
+      "source": "native_runner/probe/visibility_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x010b84b0"
+      ],
+      "new_offset": "0x010b84b0",
+      "delta": "+0x15df38",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15df38",
+      "delta_verified": true
+    },
+    {
+      "hook": "kMovementScale",
+      "old_offset": "0x00f5b3c8",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 96,
+      "occurrences": 3,
+      "candidates": [
+        "0x010b9300",
+        "0x010b93e4",
+        "0x010b94c8"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x15df38",
+      "suspect": true
+    },
+    {
+      "hook": "kAttackScale",
+      "old_offset": "0x00f5b4ac",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 96,
+      "occurrences": 3,
+      "candidates": [
+        "0x010b9300",
+        "0x010b93e4",
+        "0x010b94c8"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x15df38",
+      "suspect": true
+    },
+    {
+      "hook": "kAttackComponentTypeGetter",
+      "old_offset": "0x00f5c878",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 72,
+      "occurrences": 1,
+      "candidates": [
+        "0x010ba8c4"
+      ],
+      "new_offset": "0x010ba8c4",
+      "delta": "+0x15e04c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15e04c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kTargetSet",
+      "old_offset": "0x00f5c894",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x010ba8e0"
+      ],
+      "new_offset": "0x010ba8e0",
+      "delta": "+0x15e04c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15e04c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kTowerTargetSet",
+      "old_offset": "0x00f5c894",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x010ba8e0"
+      ],
+      "new_offset": "0x010ba8e0",
+      "delta": "+0x15e04c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15e04c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kAttackExecute",
+      "old_offset": "0x00f5f100",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 32,
+      "occurrences": 19,
+      "candidates": [
+        "0x00b010f0",
+        "0x00b62e68",
+        "0x00ca5f64",
+        "0x00ce262c",
+        "0x00d08f78",
+        "0x00d479e4",
+        "0x01081904",
+        "0x012970b4"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x15e04c",
+      "suspect": true
+    },
+    {
+      "hook": "kExecute",
+      "old_offset": "0x00f609dc",
+      "source": "native_runner/probe/special_movement_runtime_layout.h",
+      "window": 32,
+      "occurrences": 401,
+      "candidates": [
+        "0x007cb1a8",
+        "0x007d98b4",
+        "0x007ecb70",
+        "0x007f7390",
+        "0x007fe8c4",
+        "0x00801fc8",
+        "0x0080b35c",
+        "0x008195a8"
+      ],
+      "new_offset": "0x010be63c",
+      "delta": "+0x15dc60",
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15db64",
+      "delta_verified": true
+    },
+    {
+      "hook": "kAttackStartReturn",
+      "old_offset": "0x00f61a7c",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15db64",
+      "suspect": true
+    },
+    {
+      "hook": "kExecuteCallerReturn",
+      "old_offset": "0x00f61bf0",
+      "source": "native_runner/probe/special_movement_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15db64",
+      "suspect": true
+    },
+    {
+      "hook": "kPrimaryAttackReturn",
+      "old_offset": "0x00f61d10",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15db64",
+      "suspect": true
+    },
+    {
+      "hook": "kAdditionalAttackReturn",
+      "old_offset": "0x00f61e34",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15db64",
+      "suspect": true
+    },
+    {
+      "hook": "kAttackScaleReturn",
+      "old_offset": "0x00f62030",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "confidence": "MISSING",
+      "expected_delta": "+0x15db64",
+      "suspect": true
+    },
+    {
+      "hook": "kDeathOwnerResourceCall",
+      "old_offset": "0x00f63714",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15db64",
+      "new_offset": "0x010c1288",
+      "delta": "+0x15db74",
+      "window": 20,
+      "window_relative": 16,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kDeathOwnerResourceReturn",
+      "old_offset": "0x00f63718",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x010c127c",
+      "delta": "+0x15db64",
+      "window": 32,
+      "votes": [
+        {
+          "relative": 96,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15db64",
+      "delta_verified": true
+    },
+    {
+      "hook": "kDeathOpponentResourceCall",
+      "old_offset": "0x00f63830",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x010c1394",
+      "delta": "+0x15db64",
+      "window": 48,
+      "votes": [
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15db64",
+      "delta_verified": true
+    },
+    {
+      "hook": "kDeathOpponentResourceReturn",
+      "old_offset": "0x00f63834",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "new_offset": "0x010c1398",
+      "delta": "+0x15db64",
+      "window": 48,
+      "votes": [
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15db64",
+      "delta_verified": true
+    },
+    {
+      "hook": "kCombatDamage",
+      "old_offset": "0x00f642c4",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 32,
+      "occurrences": 70,
+      "candidates": [
+        "0x007d3298",
+        "0x00836b7c",
+        "0x0083baf0",
+        "0x0097a330",
+        "0x0098cd94",
+        "0x00a3bdc0",
+        "0x00b0e69c",
+        "0x00bc1ab4"
+      ],
+      "confidence": "AMBIGUOUS",
+      "expected_delta": "+0x15dc90",
+      "suspect": true
+    },
+    {
+      "hook": "kCombatHeal",
+      "old_offset": "0x00f64d14",
+      "source": "native_runner/probe/combat_event_telemetry.inc",
+      "window": 64,
+      "occurrences": 1,
+      "candidates": [
+        "0x010c29a4"
+      ],
+      "new_offset": "0x010c29a4",
+      "delta": "+0x15dc90",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15dc90",
+      "delta_verified": true
+    },
+    {
+      "hook": "kMovementTickScaleReturn",
+      "old_offset": "0x00f66290",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 20,
+      "occurrences": 1,
+      "candidates": [
+        "0x010c3fe8"
+      ],
+      "new_offset": "0x010c3fe8",
+      "delta": "+0x15dd58",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15dc90",
+      "delta_verified": true
+    },
+    {
+      "hook": "kMovementDelta",
+      "old_offset": "0x00f68808",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x010c6560"
+      ],
+      "new_offset": "0x010c6560",
+      "delta": "+0x15dd58",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15dd58",
+      "delta_verified": true
+    },
+    {
+      "hook": "kClassicChargeActionReturn",
+      "old_offset": "0x00f68958",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "new_offset": "0x010c66b0",
+      "delta": "+0x15dd58",
+      "window": 64,
+      "votes": [
+        {
+          "relative": 160,
+          "size": 64
+        },
+        {
+          "relative": 160,
+          "size": 48
+        },
+        {
+          "relative": 160,
+          "size": 32
+        },
+        {
+          "relative": 192,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x15dd58",
+      "delta_verified": true
+    },
+    {
+      "hook": "kMovementComponentTypeGetter",
+      "old_offset": "0x00f6939c",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 32,
+      "occurrences": 50,
+      "candidates": [
+        "0x00858580",
+        "0x0085b11c",
+        "0x008bb95c",
+        "0x008bba7c",
+        "0x008bbb94",
+        "0x00cdcd34",
+        "0x00cdd308",
+        "0x00e45470"
+      ],
+      "new_offset": "0x010c70f4",
+      "delta": "+0x15dd58",
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x15dd58",
+      "delta_verified": true
+    },
+    {
+      "hook": "kStateSnapshotDelete",
+      "old_offset": "0x0105e8bc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x011cfb78",
+      "delta": "+0x1712bc",
+      "window": 64,
+      "votes": [
+        {
+          "relative": 256,
+          "size": 64
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x1712bc",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateConstructor",
+      "old_offset": "0x01060ba8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 24,
+      "occurrences": 2,
+      "candidates": [
+        "0x00959b5c",
+        "0x01307460"
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x1712d8",
+      "new_offset": "0x011d1e68",
+      "delta": "+0x1712c0",
+      "window_relative": 32,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kGameStateSetup",
+      "old_offset": "0x01060f84",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x011d225c"
+      ],
+      "new_offset": "0x011d225c",
+      "delta": "+0x1712d8",
+      "confidence": "EXACT",
+      "expected_delta": "+0x1712d8",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateDestroy",
+      "old_offset": "0x010610b0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 72,
+      "occurrences": 1,
+      "candidates": [
+        "0x011d2388"
+      ],
+      "new_offset": "0x011d2388",
+      "delta": "+0x1712d8",
+      "confidence": "EXACT",
+      "expected_delta": "+0x1712d8",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateLoad",
+      "old_offset": "0x01061b1c",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 32,
+      "occurrences": 187,
+      "candidates": [
+        "0x007fd270",
+        "0x0083b9c0",
+        "0x0083c980",
+        "0x0087e180",
+        "0x0089d988",
+        "0x0089f014",
+        "0x008a1b08",
+        "0x008b1ae4"
+      ],
+      "new_offset": "0x011d2dc4",
+      "delta": "+0x1712a8",
+      "votes": [
+        {
+          "relative": 48,
+          "size": 32
+        }
+      ],
+      "confidence": "LIKELY",
+      "expected_delta": "+0x1712d8",
+      "window_relative": 96,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kGameStateStep",
+      "old_offset": "0x010620a4",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 24,
+      "occurrences": 1,
+      "candidates": [
+        "0x011d2dc4"
+      ],
+      "new_offset": "0x011d2dc4",
+      "delta": "+0x170d20",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x1710d0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateTick",
+      "old_offset": "0x01062bc0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "new_offset": "0x011d3c90",
+      "delta": "+0x1710d0",
+      "window": 48,
+      "votes": [
+        {
+          "relative": 64,
+          "size": 32
+        },
+        {
+          "relative": 128,
+          "size": 48
+        },
+        {
+          "relative": 192,
+          "size": 32
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x1710d0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateDeserializeHeader",
+      "old_offset": "0x010634c0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 96,
+      "occurrences": 1,
+      "candidates": [
+        "0x011d45c8"
+      ],
+      "new_offset": "0x011d45c8",
+      "delta": "+0x171108",
+      "confidence": "EXACT",
+      "expected_delta": "+0x171108",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateDeserializeBody",
+      "old_offset": "0x0106379c",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x011d4b14"
+      ],
+      "new_offset": "0x011d4b14",
+      "delta": "+0x171378",
+      "confidence": "EXACT",
+      "expected_delta": "+0x171378",
+      "delta_verified": true
+    },
+    {
+      "hook": "kByteStreamResetRead",
+      "old_offset": "0x0121220c",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 128,
+      "occurrences": 1,
+      "candidates": [
+        "0x01397568"
+      ],
+      "new_offset": "0x01397568",
+      "delta": "+0x18535c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x18535c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kByteStreamFlipRead",
+      "old_offset": "0x0121221c",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 128,
+      "occurrences": 1,
+      "candidates": [
+        "0x01397578"
+      ],
+      "new_offset": "0x01397578",
+      "delta": "+0x18535c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x18535c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kByteStreamResetChecksum",
+      "old_offset": "0x012141bc",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 40,
+      "occurrences": 1,
+      "candidates": [
+        "0x01399518"
+      ],
+      "new_offset": "0x01399518",
+      "delta": "+0x18535c",
+      "confidence": "EXACT",
+      "expected_delta": "+0x18535c",
+      "delta_verified": true
+    },
+    {
+      "hook": "kJsonParse",
+      "old_offset": "0x0121a648",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 48,
+      "occurrences": 1,
+      "candidates": [
+        "0x0139f838"
+      ],
+      "new_offset": "0x0139f838",
+      "delta": "+0x1851f0",
+      "confidence": "EXACT",
+      "expected_delta": "+0x1851f0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kLibgStringFromUtf8",
+      "old_offset": "0x0138a800",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 16,
+      "occurrences": 1,
+      "candidates": [
+        "0x0153de30"
+      ],
+      "new_offset": "0x015267f0",
+      "delta": "+0x19bff0",
+      "confidence": "LIKELY",
+      "expected_delta": "+0x19ebb0",
+      "window_relative": 16,
+      "delta_constrained": true
+    },
+    {
+      "hook": "kGameAppTouch",
+      "old_offset": "0x013d0be0",
+      "source": "native_runner/probe/native_touch_interceptor.cpp",
+      "window": 64,
+      "occurrences": 1323,
+      "candidates": [
+        "0x007d1578",
+        "0x007d1720",
+        "0x007d2818",
+        "0x007d41a0",
+        "0x007d7134",
+        "0x007d9728",
+        "0x007d9c14",
+        "0x007dc71c"
+      ],
+      "new_offset": "0x0156f790",
+      "delta": "+0x19ebb0",
+      "votes": [
+        {
+          "relative": 256,
+          "size": 64
+        },
+        {
+          "relative": 256,
+          "size": 48
+        },
+        {
+          "relative": 256,
+          "size": 32
+        }
+      ],
+      "confidence": "EXACT",
+      "expected_delta": "+0x19ebb0",
+      "delta_verified": true
+    },
+    {
+      "hook": "kGameStateNew",
+      "old_offset": "0x017e4b20",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING"
+    },
+    {
+      "hook": "kGameStateDelete",
+      "old_offset": "0x017e4b50",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING"
+    },
+    {
+      "hook": "kCharacterAbilityDataVtable",
+      "old_offset": "0x018823f0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kBuffAssetVtable",
+      "old_offset": "0x01882500",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kDaggerStaticVtable",
+      "old_offset": "0x0188c3f8",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kCaptureCharacterActionDataVtable",
+      "old_offset": "0x0188c848",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kChampionActionDataVtable",
+      "old_offset": "0x0188cb28",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kChangeGameObjectDataVtable",
+      "old_offset": "0x0188cc98",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kChefStaticVtable",
+      "old_offset": "0x0188cf78",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kDashingAttackChainDataVtable",
+      "old_offset": "0x0188daf8",
+      "source": "native_runner/probe/action_movement_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kPeriodicAttackModifierActionDataVtable",
+      "old_offset": "0x0188eac8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kThresholdRelocationActionDataVtable",
+      "old_offset": "0x0188ef18",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kActionSpawnToLocationStaticVtable",
+      "old_offset": "0x01894588",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kActionWaitStaticVtable",
+      "old_offset": "0x01894fb0",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kWarpCharacterDataVtable",
+      "old_offset": "0x01895120",
+      "source": "native_runner/probe/action_movement_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kAreaEffectObjectVtable",
+      "old_offset": "0x0189c2e8",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kCharacterVtable",
+      "old_offset": "0x0189c4e8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kProjectileVtable",
+      "old_offset": "0x0189cc28",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kDaggerRuntimeVtable",
+      "old_offset": "0x0189e0c8",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kCaptureCharacterRuntimeVtable",
+      "old_offset": "0x0189e2d8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kChampionControllerVtable",
+      "old_offset": "0x0189e4e8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kChefRuntimeVtable",
+      "old_offset": "0x0189e738",
+      "source": "native_runner/probe/tower_troop_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kDashingAttackChainRuntimeVtable",
+      "old_offset": "0x0189eca0",
+      "source": "native_runner/probe/action_movement_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kPeriodicAttackModifierRuntimeVtable",
+      "old_offset": "0x0189f3d8",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kThresholdRelocationRuntimeVtable",
+      "old_offset": "0x0189f6f0",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kActionWaitRuntimeVtable",
+      "old_offset": "0x018a1a40",
+      "source": "native_runner/probe/remaining_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kBuffComponentVtable",
+      "old_offset": "0x018a1d58",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kAttackComponentVtable",
+      "old_offset": "0x018a1dd0",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kMovementComponentVtable",
+      "old_offset": "0x018a1f38",
+      "source": "native_runner/probe/phase_runtime_layout.h",
+      "window": 192,
+      "occurrences": 5000,
+      "candidates": [
+        "0x000002da",
+        "0x000002db",
+        "0x000002dc",
+        "0x000002dd",
+        "0x000002de",
+        "0x000002df",
+        "0x000002e0",
+        "0x000002e1"
+      ],
+      "confidence": "AMBIGUOUS"
+    },
+    {
+      "hook": "kEglSwapBuffersGot",
+      "old_offset": "0x018e9d88",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING"
+    },
+    {
+      "hook": "kGameStateContextRootSlot",
+      "old_offset": "0x019ad878",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "confidence": "MISSING"
+    }
+  ]
+}

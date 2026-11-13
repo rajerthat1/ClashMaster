@@ -1,6 +1,6 @@
 # Environment data and compatibility · 环境数据与兼容性
 
-[English home](../../../README.md) · [中文首页](../../../README.zh-CN.md) · [Architecture / 架构](../../../docs/architecture.md)
+[English home](../../../README.md) · [Architecture / 架构](../../../docs/architecture.md)
 
 These versioned tables connect native battle mechanics to policy features and action decoding. They define the supported cards, forms, and catalog identities used by the V4 model.
 

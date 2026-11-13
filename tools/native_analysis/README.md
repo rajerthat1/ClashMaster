@@ -1,0 +1,83 @@
+# Native binary analysis tools
+
+Helpers for the `libg.so` probe port. They work on the shipped, section-stripped
+ELF because all address translation goes through the program headers.
+
+## Requirements
+
+`capstone`, `numpy`, `pyelftools` (already in `.venv`).
+
+## `cr_elf.py`
+
+```bash
+# identity: hashes, build id, LOAD segments
+.venv/bin/python tools/native_analysis/cr_elf.py info .resource/native/16.635.1/reference/libg.so
+
+# find strings and their adrp+add xrefs
+.venv/bin/python tools/native_analysis/cr_elf.py strings LIBG "replay data passed as NULL" --xrefs
+
+# all references to a VA (adrp+add and adr)
+.venv/bin/python tools/native_analysis/cr_elf.py xrefs LIBG 0x32f041
+
+# direct bl/b callers of a function
+.venv/bin/python tools/native_analysis/cr_elf.py calls LIBG 0x109ae58
+
+# disassemble a VA range (reads through PT_LOAD)
+.venv/bin/python tools/native_analysis/cr_elf.py disasm LIBG 0x109ae58 0x109ae70
+
+# surviving dynamic symbols (JNI exports)
+.venv/bin/python tools/native_analysis/cr_elf.py symbols LIBG --grep Touch
+
+# literal 8-byte pointers in data
+.venv/bin/python tools/native_analysis/cr_elf.py refs LIBG 0x19f9f20
+```
+
+`xrefs` and `calls` use vectorised instruction-word matching, so they are fast
+on the 25 MB code segment.
+
+## `relocate_hooks.py`
+
+Extracts every 16-byte hook prologue from `native_runner/probe` and searches a
+target build for the same bytes, filtered to plausible function starts.
+
+```bash
+.venv/bin/python tools/native_analysis/relocate_hooks.py \
+    .resource/native/16.635.1/reference/libg.so \
+    --out docs/native/16.635.1/hook-relocation.json
+```
+
+Verdicts:
+
+- `UNIQUE-START` — one function start matches. Candidate only; verify semantics.
+- `CHANGED` — the prologue does not occur at all.
+- `AMBIGUOUS(n)` — generic prologue, needs function-level matching.
+
+## `diff_builds.py`
+
+When an old build is available, this is far stronger than prologue matching. It
+takes every `*Offset` from the probe source and searches the new build for exact
+byte windows from the old function. Unchanged functions come back `EXACT` with a
+new offset and delta; changed functions fall back to independent windows taken
+at several relative positions (multi-window vote).
+
+```bash
+.venv/bin/python tools/native_analysis/diff_builds.py \
+    .resource/native/15.535.13/reference/libg.so \
+    .resource/native/16.635.1/reference/libg.so \
+    --out docs/native/16.635.1/offset-diff.json
+```
+
+Verdicts: `EXACT`, `LIKELY`, `AMBIGUOUS`, `MISSING`.
+
+## Ghidra scripts
+
+`ghidra_scripts/ExportFunctions.java` and `DecompileAt.java` are for the
+headless project (`/tmp/opencode/ghidra_project`, JDK 25):
+
+```bash
+GHIDRA=.resource/ghidra_download/ghidra_12.2_PUBLIC/support/analyzeHeadless
+JAVA_HOME=.resource/jdk25/jdk-25.0.5+8 \
+  $GHIDRA /tmp/opencode/ghidra_project cr16 -process libg.so -noanalysis \
+  -scriptPath tools/native_analysis/ghidra_scripts \
+  -postScript ExportFunctions.java /tmp/opencode/functions.csv
+```

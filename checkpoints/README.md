@@ -1,6 +1,6 @@
 # Models · 模型
 
-[English home](../README.md) · [中文首页](../README.zh-CN.md) · [Training / 训练](../docs/training.md) · [Training history / 训练历程](../docs/training_history.md)
+[English home](../README.md) · [Training / 训练](../docs/training.md) · [Training history / 训练历程](../docs/training_history.md)
 
 > **Fork note (2026-11-12):** these checkpoints are kept as **opponents, baselines, and fallbacks**.
 > The primary model for this fork is an **X-Bow 3.0 specialist** trained by native-engine self-play
@@ -38,7 +38,7 @@ python -m native_runner.training.v4.serve_policy \
 
 The service waits for JSON-line requests. See the [policy protocol](../docs/policy_service.md) for episode initialization and action requests. For complete matches, follow the evaluator example in the [main README](../README.md).
 
-策略服务启动后等待 JSON 行请求；对局初始化与动作请求格式见[策略协议](../docs/policy_service.md)。完整对局评测命令见[中文首页](../README.zh-CN.md)。
+策略服务启动后等待 JSON 行请求；对局初始化与动作请求格式见[策略协议](../docs/policy_service.md)。完整对局评测命令见[主 README](../README.md)。
 
 ## Evaluation · 模型评测
 

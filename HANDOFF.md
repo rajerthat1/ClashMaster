@@ -6,11 +6,65 @@
 
 ## State
 
-- **Two commits pushed to `origin/main`:**
+- **Static port: the 15.535 reference build is now available and the offset diff is done.**
+  See [`docs/native/16.635.1/FINDINGS.md`](docs/native/16.635.1/FINDINGS.md) (evidence log)
+  and [`docs/native/16.635.1/offset-diff.json`](docs/native/16.635.1/offset-diff.json).
+  - **15.535.13 APK acquired** from APKPure (757.6 MB, version code 150535013). The APK
+    hash differs because APKPure re-signs, but the extracted
+    `.resource/native/15.535.13/reference/libg.so` matches the probe's required
+    SHA-256 `110aa2b5…9783` exactly (build ID `90e6f351…5a83`, 27,554,368 bytes).
+    This is the exact build the probe attests. `.resource/` is gitignored.
+  - **16.635.1 libg.so** extracted to `.resource/native/16.635.1/reference/`
+    (SHA-256 `0b580222…e4eaa`, build ID `179ac4bd…1c30`).
+  - **New tools** (all under `tools/native_analysis/`, README has usage):
+    `cr_elf.py` (info/strings/xrefs/calls/refs/imm/disasm/symbols, section-stripped
+    ELF), `relocate_hooks.py` (all probe prologues), `diff_builds.py` (old→new offset
+    diff with local-delta validation), `match_vtables.py` (vtable matching through
+    `R_AARCH64_RELATIVE` relocations), and Ghidra export/decompile scripts.
+  - **Offset diff result:** 59 `EXACT`, 32 `LIKELY` (11 delta-constrained), 40
+    `AMBIGUOUS` (all vtable/data anchors), 16 `MISSING`. `offset-diff.json` has every
+    row, old/new address, delta and flags.
+  - **Verified / high-confidence 16.635 anchors:**
+    - Touch JNI **`0x0156f790`** (prologue identical to `kGameAppTouchPrologue`);
+      internal `GameApp::onTouch` `0x01552b14`.
+    - GameState family: constructor `0x011d1e68`, setup `0x011d225c`, destroy
+      `0x011d2388`, **load `0x011d2dc4`**, **step `0x011d3174`**, tick `0x011d3c90`,
+      deserialize header/body `0x011d45c8`/`0x011d4b14`.
+      - `load` was manually corrected: `diff_builds.py` first confused it with `step`
+        (both share a near-identical body; the prologue changed length). Verified by
+        the old load call site `0xc87f64` and body match.
+      - `step` was found through its caller: old clock `0xc890bc+0xfc` calls step;
+        new clock `0xd9c284+0xfc` calls **`0x011d3174`**. Its old body
+        (`ldrb w20,[x0,#0x1e8]`) matches.
+    - Replay controller: clock `0x00d9c284`, alternate update `0x00d9cc24` (`EXACT`);
+      replay JSON setter `0x00da1f90`, manager singleton `0x00da0658`, getter
+      `0x00da0670` (`LIKELY`, string-anchored).
+    - `kJsonParse 0x0139f838`, `kByteStreamResetRead 0x01397568`,
+      `kByteStreamFlipRead 0x01397578`, `kByteStreamResetChecksum 0x01399518`.
+    - Hand model (16.635): `holder + 0x290` unchanged; hand array `model + 0x210`
+      (15.535 `0x220`); next queue `model + 0x208` (15.535 `0x210`). Accessors
+      `0x0109ae58`, `0x01094d1c`, queue helpers `0x0109c8b4/0x0109c8e8`.
+  - **Vtable diff** (`vtable-diff.json`): Character `0x01a4fbd0`, Projectile
+    `0x01a50348`, AreaEffect `0x01a4f9a0`, MovementComponent `0x01a55a10`,
+    AttackComponent `0x01a558b0` (LIKELY), BuffComponent still unmapped. Runtime/action
+    data vtables are mostly `LIKELY`; a few share a base and need manual review.
+  - **Still open:** new replay `lifecycle`/`runner`/`fullUpdate` (old bodies do not
+    match even 48-byte windows; the module was refactored). Old lifecycle and
+    fullUpdate are vtable slots at old data offsets `0x186e748`/`0x186e758`; diff that
+    vtable (and `0x186f6d0`) to recover all three. `GameStateNew/Delete` are PLT thunks
+    to operator new/delete; `kEglSwapBuffersGot` is a GOT slot —
+    both need import/relocation resolution, not code matching.
+  - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
+    `.resource/jdk25/`; JDK 21 is rejected). Project:
+    `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. Check whether
+    auto-analysis finished; if not, rerun with `-analysisTimeoutPerFile 7200`.
+- **Commits on `origin/main`:**
   - `32d76f3` — `feat(crforge): add bridge, catalog, attestation, and F0 fixes`
   - `40d9a45` — `docs: refocus roadmap on native 16.635 engine and X-Bow specialist`
-- Working tree is **clean**. The accidental root `LICENSE` deletion was restored and is not part of
-  either commit.
+- The accidental root `LICENSE` deletion was restored and is not part of either commit.
+- **Working tree is dirty with this session's uncommitted work** (see `git status`):
+  `HANDOFF.md`, `docs/native/16.635.1/*`, `tools/native_analysis/*`. Commit before the
+  next session if you want the anchors preserved in git.
 - `ROADMAP.md` now has the **3a mirror bootstrap / 3b matchup pool** split.
 - `ROADMAP_CRFORGE.md` is the optional fallback/CI roadmap. `ROADMAP_NULLS16_PROBE.md` was folded
   into `ROADMAP.md` Phase 1 and removed.
@@ -87,7 +141,40 @@ part-time; with his notes it can be weeks.
 
 ## Next session: start here
 
-### 1. Linux — static probe port (today)
+### 0. Continue the static port (new)
+
+The 15.535.13 reference binary is present; the long pole is now matching the
+remaining hooks, not acquiring the build.
+
+1. Read `docs/native/16.635.1/FINDINGS.md` and `offset-diff.json`. Every verified
+   claim has a reproduce command.
+2. **Recover the replay controller trio** (`lifecycle`, `runner`, `fullUpdate`):
+   - old lifecycle/fullUpdate/alternate are slots in the vtable at old
+     `0x186e748` (second copy `0x186f6d0`). Run `match_vtables.py` logic on that
+     data address (or expose it in the probe file list) and read the new slots.
+   - `runner` is not a vtable slot. Its load call is old `0xc87f64` (runner+0x98);
+     new load callers are `0xd9a590`, `0xd9ab18`, `0xd9aee4`. The function
+     containing `0xd9aee4` and step call `0xd9b144` is the new runner; walk back to
+     the previous `ret`/`b` to get its entry.
+3. **Fix the diff tool's near-duplicate confusion.** `kGameStateStep` is still
+   recorded as the load address in `offset-diff.json`; correct it to
+   `0x011d3174`. Either add a manual override file or use caller-relative
+   relocation (old call site + mapped caller) as the second pass.
+4. **Generate the 16.635 probe layout header** from the verified rows: offset +
+   16-byte prologue read from the new binary. Start with the 9 runner hooks +
+   touch; do not emit offsets without a verified new prologue.
+5. **Resolve the non-code anchors:** `GameStateNew/Delete` are PLT thunks to
+   operator new/delete (map through dynsym/GOT); `kEglSwapBuffersGot` is a GOT
+   slot; `kGameStateContextRootSlot`/`kGameStateContextA` are data slots.
+6. **Then** verify the GameState constructor field changes (`+0xa0 → +0xa4`,
+   new fields at `+0x228`) and do the entity/HP (`hpComponentAccessor`) work.
+7. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. If it
+   timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use
+   `ghidra_scripts/DecompileAt.java` on the anchors above to name them.
+8. Commit this session's work before the next session (`HANDOFF.md`,
+   `docs/native/16.635.1/`, `tools/native_analysis/`).
+
+### 1. Linux — static probe port (original plan)
 
 1. Confirm the repo is clean and the commits are present:
    ```bash
@@ -176,4 +263,4 @@ Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <
 - Do not make crforge the critical path.
 - Do not blindly port FirstLight-Zero weights; verify the 16.635 mapping first.
 - Do not treat mirror win rate as ladder evidence; use the per-archetype evaluation matrix.
-- Do not delete `LICENSE`, `AIFeed.txt`, `resources.txt`, or `Jason_Notes/`.
+- Do not delete `LICENSE`, `resources.txt`, or `jason_notes/`.

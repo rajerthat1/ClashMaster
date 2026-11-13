@@ -354,6 +354,6 @@ A QA harness is the referee: a small, repeatable program that runs fixed battles
 | `.resource/crforge/` | Optional fallback engine; see `ROADMAP_CRFORGE.md` |
 | `crforge_bridge/` | Optional fallback/CI bridge |
 | `docs/capture_format.md` | Live capture format and optional crforge conversion |
-| `Jason_Notes/` | Source transcripts for the native/RE path |
+| `jason_notes/` | Source transcripts for the native/RE path |
 | `nr_16.635.1_release_951fe421.apk` | 16.635.1 client; probe port target |
 | 15.535.13 APK | **Not in this workspace**; needed for the FirstLight-Zero lab |

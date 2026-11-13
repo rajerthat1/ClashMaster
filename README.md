@@ -43,7 +43,6 @@ below. Project-specific additions:
 <h1 align="center">FirstLight CR</h1>
 <p align="center"><strong>From replays to agents. From self-play to the arena.</strong></p>
 <p align="center">Train Clash Royale agents and play offline, with imitation learning and PPO self-play.</p>
-<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0"></a>
   <img src="https://img.shields.io/badge/Python-3.12-3776AB.svg" alt="Python 3.12">
