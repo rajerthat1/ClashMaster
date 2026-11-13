@@ -69,6 +69,7 @@ const char *g_assets_paths[] = {
 #if defined(CR_PROBE_TARGET_16_635_1)
 namespace probe_target = cr_native_16_635_1;
 constexpr bool kProbeTargetIs16_635_1 = true;
+constexpr const char *kProbeTargetVersion = probe_target::kClientVersion;
 
 constexpr std::uintptr_t kReplayJsonSetterOffset = probe_target::kReplayJsonSetterOffset;
 constexpr auto &kReplayJsonSetterPrologue = probe_target::kReplayJsonSetterPrologue;
@@ -156,6 +157,7 @@ constexpr std::uint32_t kAarch64Nop = 0xd503201fu;
 constexpr std::uintptr_t kGameStateContextRootSlotOffset = probe_target::kGameStateContextRootSlotOffset;
 #else
 constexpr bool kProbeTargetIs16_635_1 = false;
+constexpr const char *kProbeTargetVersion = "15.535.13";
 
 constexpr std::uintptr_t kReplayJsonSetterOffset = 0x00c8de8c;
 constexpr std::uintptr_t kReplayManagerGetterOffset = 0x00c8c5b8;
@@ -8516,6 +8518,14 @@ bool install_inline_hook(std::uintptr_t libg_base, std::uintptr_t offset, const 
 
 bool install_hooks(std::uintptr_t libg_base) {
   g_libg_base = libg_base;
+  LOGI("probe target client=%s build16=%d", kProbeTargetVersion, kProbeTargetIs16_635_1 ? 1 : 0);
+#if defined(CR_PROBE_TARGET_16_635_1)
+  for (const char *name : probe_target::kUnresolvedAnchors) {
+    if (name != nullptr) {
+      LOGI("anchor unavailable on this build: %s", name);
+    }
+  }
+#endif
   const bool translated_sha256_compatible = install_translated_sha256_compatibility_shim(libg_base);
   g_egl_swap_buffers_got = reinterpret_cast<void **>(libg_base + kEglSwapBuffersGotOffset);
   void *egl_swap_buffers = nullptr;
