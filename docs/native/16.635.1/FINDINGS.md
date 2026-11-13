@@ -1173,3 +1173,95 @@ adb install -r builds/cr-engine-cluster-16.635.1.apk
 # live A/B without a restart:
 #   engine-affinity 0 | 7 | none   (control command)
 ```
+
+### 3.25 Multi-engine aggregation on the A51 (2 and 3 lanes)
+
+The cluster APK (`build_cluster_apk.sh --engine-count 4`) was installed on the
+SM-A515U and three `:engineN` processes were launched one at a time with
+`debug.cr.engine_cpu_map=1,7,6`. Android put only the last activity
+(`:engine2`) in `/top-app`; the other two fell to `/background`, so their
+effective `Cpus_allowed_list` is `0-1` no matter which CPU the probe requests:
+
+| process | cpuset | `Cpus_allowed_list` | probe affinity |
+| --- | --- | --- | ---: |
+| `:engine0` | `/background` | `0-1` | 1 |
+| `:engine1` | `/background` | `0-1` | 7 |
+| `:engine2` | `/top-app` | `0-7` | 6 |
+
+Every lane ran 8 resident slots, real `BatchPlayActionV1` actions
+(`--actions --action-every 3`), and a full ordinary capture per batch. The
+throughput tool now reports both aggregates:
+
+- **capacity** = sum of the per-lane rates. This is the training-relevant
+  number (FirstLight's 9.85 matches/s is 16 slots × ~0.62 matches/s) and stays
+  correct when lanes have unequal speed.
+- **makespan floor** = total slot-ticks / slowest lane's window. This is a lower
+  bound that pays for fast lanes finishing early; the previous implementation
+  reported only this, which under-counted mixed-speed lanes by ~40%.
+
+Single-lane baselines in the same session (8 slots × 600 ticks × 5 batches,
+3,000 slot-ticks per lane):
+
+| lane | placement | slot-ticks/s | matches/s | actions/s |
+| --- | --- | ---: | ---: | ---: |
+| `:engine0` | background, little core | 5,719 | **0.943** | 3.8 |
+| `:engine1` | top-app, big core | 12,727 | **2.097** | 8.5 |
+
+Concurrent lanes, same 5 × 600 shape:
+
+| lanes | slot-ticks/s (capacity) | matches/s (capacity) | makespan floor | actions/s |
+| --- | ---: | ---: | ---: | ---: |
+| 2 (`:engine0` + `:engine1`) | 19,453–19,756 | **3.21–3.26** | 2.10–2.12 | 13.0–13.2 |
+| 3 (throttled) | 26,300 | **4.34** | 2.69 | 17.5 |
+| 3 (first, unthrottled) | 47,100 | **7.76** | 4.73 | 31.4 |
+
+Sustained shape, 8 slots × 600 ticks × 10 batches (6,000 ticks ≈ one match):
+
+| lanes | slot-ticks/s (capacity) | matches/s (capacity) | makespan floor | actions/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 (`:engine2`, top-app) | 12,897 | **2.13** | — | 12.9 |
+| 2 (`:engine0` + `:engine2`) | 19,729 | **3.25** | 2.06 | 19.7 |
+| 3, run 1 | 30,446 | **5.02** | 2.93 | 30.4 |
+| 3, run 2 | 24,942 | **4.11** | 2.41 | 24.9 |
+
+Aggregation is additive: each lane's rate holds when lanes run together, and
+the 3-lane capacity is the sum of its lanes (e.g. `1.23 + 0.98 + 2.82 = 5.02`).
+No shared channel or engine bottleneck appeared up to three lanes; the limit is
+the phone's cpusets and memory.
+
+**Thermal throttling dominates the variance.** The big cluster was at 1.25 GHz
+during the 2-lane runs and had fallen to 936 MHz by the sustained 3-lane runs
+(little cores 1.05 GHz; maxima are 2.31 / 1.74 GHz). The 7.76 and first 4.47
+lane numbers were short unthrottled bursts; 2.1–2.8 matches/s is the realistic
+sustained big-core lane, and 0.9–1.2 is the realistic background/little lane.
+The earlier §3.24 1.80 was measured on a cool phone.
+
+**Memory** is the hard ceiling for more lanes: with 3 engines and 24 resident
+slots, `VmHWM` was ~570–680 MB per engine, `MemFree` fell to 83–125 MB and the
+phone used ~1.5 GB of its 4 GB swap. Only ~540 MB was available; there was no
+crash, but a fourth engine is not safe on this device. That matches §3.24's
+2–4 lane estimate.
+
+Implication for the A51-as-reference: one native ARM64 core is worth
+**~2–2.8 matches/s sustained** (up to ~4.5 in short bursts), not 1.8. The phone's
+3-lane 4–5 matches/s is a cpuset/memory artefact, not an engine limit. The
+training host is the cr-native x86_64 runtime — see
+[`ROADMAP.md`](../../../ROADMAP.md).
+
+Reproduce:
+
+```bash
+./build_cluster_apk.sh --input-apk nr_16.635.1_release_951fe421.apk \
+    --target-build 16.635.1 --engine-count 3 \
+    --output-apk builds/cr-engine-cluster-16.635.1.apk
+adb install -r builds/cr-engine-cluster-16.635.1.apk
+./launch_cluster_a51.sh --engines 3 --cpu-map 1,7,6 --timeout 180
+for pid in $(adb shell ps -A -o PID,NAME | awk '/nullsroyale.rel.free:engine/ {print $1}'); do
+  adb shell cat /proc/$pid/cgroup | grep cpuset
+  adb shell cat /proc/$pid/status | grep Cpus_allowed_list
+done
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --ports 26789,26790,26791 --slots 8 --batches 10 --ticks 600 --actions \
+    --output /tmp/opencode/resident_3x8x6000_actions.json
+adb logcat -b crash -d
+```

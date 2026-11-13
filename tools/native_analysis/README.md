@@ -205,8 +205,19 @@ from each slot's capture and sends real `BatchPlayActionV1` receipts every
     --output /tmp/opencode/resident_8x600x5_actions.json
 ```
 
-Real action numbers are in FINDINGS §3.23. The probe control server is
-single-client; keep the batch channel closed while issuing ordinary commands.
+Real action numbers are in FINDINGS §3.23. With `--ports` it measures several
+engine lanes behind a start barrier and reports the lane-sum **capacity**
+matches/s (the training-relevant number) plus the slower makespan floor:
+
+```bash
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --ports 26789,26790,26791 --slots 8 --batches 10 --ticks 600 --actions \
+    --output /tmp/opencode/resident_3x8x6000_actions.json
+```
+
+Multi-lane numbers and the cpuset/throttling caveats are in FINDINGS §3.25.
+The probe control server is single-client; keep the batch channel closed while
+issuing ordinary commands.
 
 ### `entity_hp_probe.py`
 

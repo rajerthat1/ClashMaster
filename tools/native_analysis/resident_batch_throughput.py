@@ -9,7 +9,11 @@ of ticks, which is how the training harness is meant to run.
 This tool configures N resident slots per engine, opens one batch channel per
 engine, and steps them for a fixed number of batches. With several `--ports` it
 runs the lanes concurrently behind a start barrier and reports the aggregate
-matches/s, which is the number the training-host decision rule uses.
+matches/s, which is the number the training-host decision rule uses. The
+reported aggregate is the **lane-sum capacity**; the slower makespan floor
+(total work / slowest lane) is kept separately, because a phone lane pinned to a
+little core finishes long after a big-core lane and would otherwise hide the
+faster lane's throughput.
 
 It deliberately issues no policy work: this is the transport + engine ceiling.
 A batch step carries the full ordinary/atomic capture per slot, so real
@@ -201,6 +205,35 @@ def measure_lane(
     return report
 
 
+def aggregate_lanes(
+    lanes: list[dict[str, Any]], slots: int, ticks: int, batches: int
+) -> dict[str, Any]:
+    """Combine per-lane measurements into aggregate throughput.
+
+    ``aggregateSlotMatchesPerSecond`` is the lane-sum capacity: the number a
+    training loop can sustain, and the definition FirstLight's published
+    9.85 matches/s uses. ``makespanSlotMatchesPerSecond`` is total work divided
+    by the slowest lane's window; it is a lower bound and is only equal to
+    capacity when every lane runs at the same rate.
+    """
+    window_seconds = max(lane["laneSeconds"] for lane in lanes)
+    total_slot_ticks = sum(lane["slots"] * ticks * batches for lane in lanes)
+    total_actions = sum(lane["totalActions"] for lane in lanes)
+    makespan_ticks_per_second = total_slot_ticks / window_seconds if window_seconds else 0.0
+    capacity_ticks_per_second = sum(lane["engineTicksPerSecond"] for lane in lanes)
+    capacity_actions_per_second = sum(lane["actionsPerSecond"] for lane in lanes)
+    return {
+        "aggregateWindowSeconds": round(window_seconds, 4),
+        "aggregateSlotTicksPerSecond": round(capacity_ticks_per_second, 1),
+        "aggregateSlotMatchesPerSecond": round(capacity_ticks_per_second / MATCH_TICKS, 3),
+        "makespanSlotTicksPerSecond": round(makespan_ticks_per_second, 1),
+        "makespanSlotMatchesPerSecond": round(makespan_ticks_per_second / MATCH_TICKS, 3),
+        "totalActions": total_actions,
+        "aggregateActionsPerSecond": round(capacity_actions_per_second, 3),
+        "battleCapacity": len(lanes) * slots,
+    }
+
+
 def print_lane(report: dict[str, Any]) -> None:
     label = f"port {report['port']}"
     print(
@@ -326,29 +359,20 @@ def main(argv: list[str] | None = None) -> int:
         "lanes": lanes,
     }
     if not failures:
-        # Sum the lane windows rather than the whole configure wall time: the
-        # aggregate is the parallel stepping window, and the barrier aligns it.
-        window_seconds = max(lane["laneSeconds"] for lane in lanes)
-        total_slot_ticks = sum(lane["slots"] * args.ticks * args.batches for lane in lanes)
-        total_actions = sum(lane["totalActions"] for lane in lanes)
-        ticks_per_second = total_slot_ticks / window_seconds if window_seconds else 0.0
-        report.update(
-            {
-                "aggregateWindowSeconds": round(window_seconds, 4),
-                "aggregateSlotTicksPerSecond": round(ticks_per_second, 1),
-                "aggregateSlotMatchesPerSecond": round(ticks_per_second / MATCH_TICKS, 3),
-                "totalActions": total_actions,
-                "aggregateActionsPerSecond": round(total_actions / window_seconds, 3) if window_seconds else 0.0,
-                "battleCapacity": len(ports) * args.slots,
-            }
-        )
+        aggregate = aggregate_lanes(lanes, args.slots, args.ticks, args.batches)
+        report.update(aggregate)
+        lane_rates = " + ".join(f"{lane['slotMatchesPerSecond']:.2f}" for lane in lanes)
         print(
-            f"aggregate: {len(ports)} engines x {args.slots} slots in {window_seconds:.3f} s window "
-            f"= {ticks_per_second:,.0f} slot-ticks/s = "
-            f"{report['aggregateSlotMatchesPerSecond']} matches/s over {report['battleCapacity']} lanes"
+            f"aggregate: {len(ports)} engines x {args.slots} slots = "
+            f"{aggregate['aggregateSlotMatchesPerSecond']} matches/s capacity "
+            f"(lanes {lane_rates}); makespan floor "
+            f"{aggregate['makespanSlotMatchesPerSecond']} matches/s in "
+            f"{aggregate['aggregateWindowSeconds']:.3f} s "
+            f"= {aggregate['makespanSlotTicksPerSecond']:,.0f} slot-ticks/s over "
+            f"{aggregate['battleCapacity']} lanes"
         )
         if args.actions:
-            print(f"aggregate actions: {report['aggregateActionsPerSecond']} actions/s")
+            print(f"aggregate actions: {aggregate['aggregateActionsPerSecond']} actions/s (lane sum)")
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

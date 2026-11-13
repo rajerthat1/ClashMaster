@@ -6,6 +6,10 @@ https://github.com/Jaasssoooonnnnn/FirstLight-Zero
 https://github.com/Jaasssoooonnnnn/FL-Royale
 https://github.com/Jaasssoooonnnnn/FirstLight_CR
 https://github.com/vegetableleaf/ClashAI
+CR Real Engine:
+https://github.com/IMAX9D/cr-native-sandbox
+https://github.com/IMAX9D/cr-native-linux-bionic
+------------------------------------------------------------
 Dataset:
 https://huggingface.co/datasets/VanguardX101/IL_Replay
 RoyaleGym:
@@ -15,13 +19,8 @@ https://github.com/RoyaleGym/RoyaleLearn
 https://github.com/RoyaleGym/RoyaleViser
 https://github.com/RoyaleGym/RoyaleImitate
 https://github.com/mirsella/clash-royale
-CREngine:
-https://github.com/IMAX9D/cr-native-sandbox
-https://github.com/IMAX9D/cr-native-linux-bionic
-https://aboufama.github.io/clash-royale-research/
-https://github.com/aboufama/clash-royale-research
-------------------------------------------------------------
 Utility:
+https://github.com/aboufama/clash-royale-research
 https://github.com/Pbatch/ClashRoyaleBuildABot
 https://github.com/krazyness/CRBot-public
 https://github.com/pyclashbot/py-clash-bot

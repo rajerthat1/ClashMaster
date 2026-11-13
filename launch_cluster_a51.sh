@@ -69,65 +69,55 @@ if [[ -n "$cpu_map" ]]; then
 fi
 echo "engine_cpu_map=$("$adb_bin" "${adb_args[@]}" shell getprop debug.cr.engine_cpu_map | tr -d '\r')"
 
-echo "[3/4] Forwarding ports and launching $engines engine processes"
+echo "[3/4] Forwarding ports and launching $engines engine processes (one at a time)"
 "$adb_bin" "${adb_args[@]}" shell am force-stop --user 0 "$package" >/dev/null || true
 sleep 1
+ports=""
 for ((engine_id = 0; engine_id < engines; ++engine_id)); do
   host_port=$((base_port + engine_id))
   guest_port=$((guest_base_port + engine_id))
   "$adb_bin" "${adb_args[@]}" forward "tcp:$host_port" "tcp:$guest_port" >/dev/null
   "$adb_bin" "${adb_args[@]}" shell am start --user 0 -f 0x18000000 \
     -n "$package/com.supercell.clashroyale.Engine${engine_id}App" >/dev/null
-done
-
-echo "[4/4] Waiting up to ${timeout_seconds}s for every engine to become cold-ready"
-ports="$("$repo_root/.venv/bin/python" - "$base_port" "$engines" <<'PY'
-import sys
-base, count = int(sys.argv[1]), int(sys.argv[2])
-print(",".join(str(base + i) for i in range(count)))
-PY
-)"
-"$repo_root/.venv/bin/python" - "$ports" "$timeout_seconds" <<'PY'
+  ports="${ports:+$ports,}$host_port"
+  # Launch-and-wait: an engine started while another activity covers it can sit
+  # below coldReady indefinitely.  Let each engine finish its content gate while
+  # it is still the foreground activity, then start the next one.
+  echo "  waiting up to ${timeout_seconds}s for engine $engine_id (port $host_port)"
+  "$repo_root/.venv/bin/python" - "$repo_root" "$host_port" "$timeout_seconds" <<'PY'
 import json
 import sys
 import time
 
-sys.path.insert(0, ".")
+repo_root, port, timeout = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+sys.path.insert(0, repo_root)
 from native_runner.cr_native_env import NativeClashEnv, RunnerError
 
-ports = [int(port) for port in sys.argv[1].split(",")]
-timeout = float(sys.argv[2])
-pending = {port: None for port in ports}
 deadline = time.monotonic() + timeout
-while pending and time.monotonic() < deadline:
-    for port in list(pending):
-        try:
-            env = NativeClashEnv("127.0.0.1", port, timeout=3)
-            status = env.status()
-            identity = env._request("engine-status")
-            if status.get("coldReady") and identity.get("pid"):
-                pending[port] = {
-                    "engine": identity.get("engineId"),
-                    "pid": identity.get("pid"),
-                    "process": identity.get("processName"),
-                    "assignedCpu": identity.get("assignedCpu"),
-                    "currentCpu": identity.get("currentCpu"),
-                    "affinity": identity.get("affinity"),
-                }
-        except (RunnerError, OSError, json.JSONDecodeError):
-            pass
-    if pending:
-        time.sleep(1.0)
-
-for port in ports:
-    value = pending.get(port)
-    if value:
-        print(f"port {port}: ready {value}")
-    else:
-        print(f"port {port}: NOT READY after {timeout:.0f}s", file=sys.stderr)
-raise SystemExit(0 if not pending else 1)
+while time.monotonic() < deadline:
+    try:
+        env = NativeClashEnv("127.0.0.1", port, timeout=3)
+        status = env.status()
+        identity = env._request("engine-status")
+        if status.get("coldReady") and identity.get("pid"):
+            print(
+                f"  port {port}: ready "
+                + json.dumps(
+                    {
+                        key: identity.get(key)
+                        for key in ("engineId", "pid", "processName", "assignedCpu", "currentCpu", "affinity")
+                    }
+                )
+            )
+            raise SystemExit(0)
+    except (RunnerError, OSError, json.JSONDecodeError):
+        pass
+    time.sleep(1.0)
+print(f"  port {port}: NOT READY after {timeout:.0f}s", file=sys.stderr)
+raise SystemExit(1)
 PY
+done
 
-echo "Cluster engines are ready.  Next:"
+echo "[4/4] Every engine reported cold-ready.  Next:"
 echo "  .venv/bin/python tools/native_analysis/resident_batch_throughput.py \\"
 echo "      --ports $ports --slots 8 --batches 5 --ticks 600 --actions"
