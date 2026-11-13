@@ -115,9 +115,21 @@
   - **Still open:** confirm the constructor field roles from named live
     goldens and do the entity/HP (`hpComponentAccessor`) work. The
     Character/Projectile/AreaEffect/component vtables still need manual review.
-    The remaining `AMBIGUOUS` core anchors (`kJsonMemberFind`,
-    `kLogicCommandParse`, `kLocationTileMapEnsure`, `kLocationTileMapLookup`)
-    keep cold configure and live command injection closed on 16.635.
+  - **The four core anchors are resolved** (FINDINGS §3.11), all `MANUAL`:
+    `kJsonMemberFind 0x00e38d60`, `kLogicCommandParse 0x00e553e4`,
+    `kLocationTileMapEnsure 0x008ae750`, `kLocationTileMapLookup 0x00f2edec`.
+    Each is proved by caller/loop structure, not a byte window. Only
+    `kBuffAssetClassNameGetter` (rich buff telemetry) is still unavailable.
+    On-device attestation now reports `two_sided_actions: true`.
+    `kJsonMemberFind` changed its key ABI to a
+    16-byte `StringView {data,size}`; the probe builds it under
+    `CR_PROBE_TARGET_16_635_1`.
+  - **Cold configure is still closed by the content gate, not the anchors**
+    (FINDINGS §3.12): `configure` returns `native content runtime is not
+    initialized yet`, because `kContentPostProcessReadyOffset = 0x6e8` is wrong
+    for 16.635 (the byte there is inside a heap pointer). A bounded read-only
+    `content-window <offset> <length>` probe command was added to investigate;
+    see §3.12 for the capture and the candidate approaches.
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
     `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
@@ -301,10 +313,20 @@ the four ambiguous core anchors, and naming the entity fields.
    off; the fix is MANUAL. `diff_builds.py` now emits `tiny_shape_mismatch` and
    `gen_layout.py` refuses it without an override. When adding an anchor that is
    a two-instruction getter, disassemble it and compare shape, not just bytes.
-7. **Next analysis blockers:** resolve `kJsonMemberFind`, `kLogicCommandParse`,
-   `kLocationTileMapEnsure` and `kLocationTileMapLookup` (FINDINGS §3.9). Until
-   then the 16.635 build intentionally leaves cold configure and live command
-   injection closed and skips the rich telemetry installs.
+7. **Core anchors resolved** (FINDINGS §3.11): `kJsonMemberFind`
+   `0x00e38d60`, `kLogicCommandParse` `0x00e553e4`, `kLocationTileMapEnsure`
+   `0x008ae750`, `kLocationTileMapLookup` `0x00f2edec`. On the A51 the
+   bootstrap now reports only `kBuffAssetClassNameGetter` unavailable and
+   attestation flips `two_sided_actions` to **true**.
+7b. **Cold configure is still closed, but by the content gate, not the anchors**
+   (FINDINGS §3.12). `configure` fails with `native content runtime is not
+   initialized yet` because `kContentPostProcessReadyOffset = 0x6e8` is a
+   15.535-era literal: on 16.635 that byte is inside a heap pointer (`0xa0`),
+   and no displacement/immediate `0x6e8` exists in either binary. The probe now
+   has a bounded read-only `content-window <offset> <length>` diagnostic that
+   was used to establish this. Next: build the 15.535 probe (APK at
+   `.resource/native/15.535.13/nr_15.535.13_apkpure.apk`) and compare the same
+   window, or gate on a known `LogicDataByGlobalId` lookup instead of a byte.
 8. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. The
    lock is stale; remove it only if no Ghidra process is running. If analysis
    timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use

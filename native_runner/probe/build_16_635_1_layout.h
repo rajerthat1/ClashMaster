@@ -135,14 +135,18 @@ inline constexpr bool kProjectileKindGetterResolved = true;
 
 // Core anchors still AMBIGUOUS/MISSING.  The probe must fail closed
 // (leave the pointer null) instead of using a 15.535.13 address.
-inline constexpr std::uintptr_t kJsonMemberFindOffset = kUnavailableOffset;
-inline constexpr bool kJsonMemberFindResolved = false;
-inline constexpr std::uintptr_t kLogicCommandParseOffset = kUnavailableOffset;
-inline constexpr bool kLogicCommandParseResolved = false;
-inline constexpr std::uintptr_t kLocationTileMapEnsureOffset = kUnavailableOffset;
-inline constexpr bool kLocationTileMapEnsureResolved = false;
-inline constexpr std::uintptr_t kLocationTileMapLookupOffset = kUnavailableOffset;
-inline constexpr bool kLocationTileMapLookupResolved = false;
+inline constexpr std::uintptr_t kJsonMemberFindOffset = 0x00e38d60;
+inline constexpr std::uint8_t kJsonMemberFindPrologue[16] = {0xfd, 0x7b, 0xbb, 0xa9, 0xf9, 0x0b, 0x00, 0xf9, 0xf8, 0x5f, 0x02, 0xa9, 0xf6, 0x57, 0x03, 0xa9};
+inline constexpr bool kJsonMemberFindResolved = true;
+inline constexpr std::uintptr_t kLogicCommandParseOffset = 0x00e553e4;
+inline constexpr std::uint8_t kLogicCommandParsePrologue[16] = {0xfd, 0x7b, 0xbd, 0xa9, 0xf5, 0x0b, 0x00, 0xf9, 0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00, 0x91};
+inline constexpr bool kLogicCommandParseResolved = true;
+inline constexpr std::uintptr_t kLocationTileMapEnsureOffset = 0x008ae750;
+inline constexpr std::uint8_t kLocationTileMapEnsurePrologue[16] = {0xfd, 0x7b, 0xbd, 0xa9, 0xf6, 0x57, 0x01, 0xa9, 0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00, 0x91};
+inline constexpr bool kLocationTileMapEnsureResolved = true;
+inline constexpr std::uintptr_t kLocationTileMapLookupOffset = 0x00f2edec;
+inline constexpr std::uint8_t kLocationTileMapLookupPrologue[16] = {0xfd, 0x7b, 0xbe, 0xa9, 0xf4, 0x4f, 0x01, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xf3, 0x03, 0x00, 0xaa};
+inline constexpr bool kLocationTileMapLookupResolved = true;
 inline constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = kUnavailableOffset;
 inline constexpr bool kBuffAssetClassNameGetterResolved = false;
 
@@ -161,7 +165,7 @@ inline constexpr std::size_t kGameAppPendingEventFlagsOffset = 0x1c0;  // was 0x
 inline constexpr std::size_t kGameAppPendingEventOffset = 0x1c4;  // was 0x1bc
 
 // Anchors the probe intentionally leaves unavailable on this build.
-inline constexpr const char *kUnresolvedAnchors[] = {"kBuffAssetClassNameGetter", "kJsonMemberFind", "kLocationTileMapEnsure", "kLocationTileMapLookup", "kLogicCommandParse"};
+inline constexpr const char *kUnresolvedAnchors[] = {"kBuffAssetClassNameGetter"};
 
 inline constexpr HookAnchor kRunnerHooks[] = {
     {"kNativeReplayRunner", kNativeReplayRunnerOffset, kNativeReplayRunnerPrologue},

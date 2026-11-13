@@ -513,3 +513,83 @@ Note for live runs: the lab account used for this smoke test was later maxed to
 card level 16. The engine does not normalise levels; replay/battle config must
 pin level 11 for the v1450 baseline, and level 16 is a separate experiment.
 
+### 3.11 The four core anchors — **resolved (MANUAL, caller-verified)**
+
+All four anchors that kept cold configure and live command injection closed are
+now resolved. Each is a `MANUAL` override in `manual-overrides.json`; the
+evidence is structural, not a prologue match.
+
+| Anchor | Old | New | How it was proved |
+| --- | --- | --- | --- |
+| `kJsonMemberFind` | `0x00d0e100` | **`0x00e38d60`** | Same hash-map bucket walk (popcount idiom, modulo, chain) and returns the entry node. Called through the new wrapper `0x139cadc`, which is the old `0x1217934` shape: `add x0,x0,#0x18`, lookup, `[entry+0x20]`, virtual call, `cmp #3`. |
+| `kLogicCommandParse` | `0x00d2fe78` | **`0x00e553e4`** | Old has one caller, the command loop in `GameState::load` at `0x1061d58`. The same loop is at `0x12d9240` in 16.635: `ldr w24,[x21,#0x14]` → get element → parse `0xe553e4` → `LogicCommandAppend 0xe5443c`. Both parse the same `"ct"` key literal. |
+| `kLocationTileMapEnsure` | `0x00857608` | **`0x008ae750`** | Instruction-for-instruction match; only call targets moved (`Lookup`, `0xf2ee20`, `0x7c6d80`, `0xf2ee30`). Caller sets correspond, including the tail branches at `alternateUpdate+0x90/+0x98`. |
+| `kLocationTileMapLookup` | `0x00df8508` | **`0x00f2edec`** | Instruction-for-instruction match (`bl`, `bl`, `ldr [x0,#0x78]`, tail `b`), and new `Ensure` calls it. |
+
+Two ABI notes for anyone touching these:
+
+- `kJsonMemberFind` changed its **key** representation. 15.535 takes a
+  `LibgString` (length at `+4`, data at `+8`); 16.635 takes a 16-byte
+  `StringView {data, size}` (`ldp x8,x1,[x1]`). The map offset `+0x18` and the
+  entry value offset `+0x20` are unchanged. `cr_replay_probe.cpp`'s
+  `lookup_json_member` builds a `StringView` under
+  `CR_PROBE_TARGET_16_635_1`.
+- `kLogicCommandParse`'s entry is `0xe553e4`, **not** `0xe553c0`. The unique
+  window search returned `0xe553c0`, which is the epilogue of the preceding
+  function (`bl 0x11d2304; ldp...; add sp,sp,#0xf0; ret`). This is the same
+  "window recovered a base, not necessarily a function start" failure mode as
+  the tick anchor; always check for a preceding `ret`/epilogue.
+
+After these, the only remaining unavailable anchor is `kBuffAssetClassNameGetter`
+(rich buff telemetry), which does not gate cold configure.
+
+### 3.12 Cold configure is gated by a content-ready byte, not the anchors
+
+Resolving the four anchors did **not** open cold configure, which was an
+unstated assumption in §3.9. On the A51, with the anchors resolved:
+
+- bootstrap reports only `anchor unavailable: kBuffAssetClassNameGetter`;
+- attestation now reports `two_sided_actions: true` (it was false);
+- `configure {"a":1}` still fails with
+  `native content runtime is not initialized yet`.
+
+That error comes from `inspect_content_runtime`, which requires
+`*(root + 0x20)` and a byte equal to `1` at
+`context + kContentPostProcessReadyOffset`. The context getter is correct — the
+new `0x878c00` is `ldr x8,[x19,#0xd00]; cbz; ldr x0,[x8,#0x20]; ret`, the same
+`*(root + 0x20)` shape as old `0x80031c` — so only the flag offset is in doubt.
+
+`kContentPostProcessReadyOffset = 0x6e8` is an empirical 15.535-era literal. It
+does not appear as a displacement or immediate anywhere in either binary
+(only unrelated classes use 0x6e8). Live capture with the new
+`content-window <hex offset> <hex length>` diagnostic shows why it is wrong on
+16.635:
+
+- the content context is published at t≈3.1 s and its pointer stays stable;
+- the `0x500..0x800` window is zeroed, then fills with heap pointers by t≈7 s;
+- the byte at `0x6e8` becomes **`0xa0`** — it is inside an 8-byte pointer
+  (`0x758c876da0`), never a boolean.
+
+Within that window only three bytes settle to `1`: `0x619` and `0x639` (both
+7.2 s) and `0x720` (9.2 s). The first two are pointer bytes
+(`0x758c7f01`); `0x720` is a scalar `1` but it is a generic offset shared by
+many unrelated classes (66 references, many SIMD stores), so it is not
+trustworthy as a content flag.
+
+Conclusion: this needs a **semantic** readiness check rather than another raw
+byte. Options for the next session, in order:
+
+1. Build the 15.535.13 probe (`--input-apk
+   .resource/native/15.535.13/nr_15.535.13_apkpure.apk --target-build
+   15.535.13`), capture the same window, and see what the real ready byte is
+   and which neighbours identify its field. Then map that field into 16.635.
+2. Gate on a content lookup instead: call `g_logic_data_by_global_id` for a
+   known-good id and require non-null (this is what `prewarm_location_tilemap`
+   already does after the gate).
+3. Find the engine's own content-ready function in the loading path.
+
+The `content-window` command is bounded (offset ≤ 0x2000, length ≤ 0x400) and
+read-only; it exists to support this investigation.
+
+
+

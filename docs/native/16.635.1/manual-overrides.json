@@ -68,6 +68,30 @@
       "new_offset": "0x011d32f0",
       "evidence": "Old tick getter 0x01062bc0 is exactly `ldr w0,[x0,#0x60]; ret` (bytes 00 60 40 b9 c0 03 5f d6). New 0x011d32f0 has the identical 8 bytes and starts right after GameStateManager::step returns at 0x011d32ec. The new step body still reads the tick from [x19,#0x60] (0x011d324c) and passes &this->0x60 (0x011d3260), so the field did not move. diff_builds matched 0x011d3c90, which is a different tiny getter (`ldr x0,[x0,#0xb0]; ret`, bytes 00 58 40 f9 c0 03 5f d6) inside a cluster of adjacent accessors; that address has 650 callers versus 132 for the real tick (114 in 15.535). On the A51 the wrong getter returned the low 32 bits of a heap pointer: constant per manager, different per manager (menu 1961712128, battle -2050488320).",
       "note": "The 16-byte prologue window straddles two tiny getters, which is why both the diff and the layout guard accepted it. Re-check any tiny-getter anchor whose 16-byte window contains a ret before byte 8."
+    },
+    {
+      "hook": "kJsonMemberFind",
+      "new_offset": "0x00e38d60",
+      "evidence": "Raw hash-map finder. Old 0xd0e100 hashes the key then walks buckets (the popcount idiom at 0xd0e154, modulo at 0xd0e188) and returns the entry node. New 0xe38d60 has the identical bucket walk (0xe38d9c..0xe38ed8) and also returns x21. Chain: new LogicCommandParse 0xe553e4 calls the wrapper 0x139cadc; 0x139cadc does `add x0,x0,#0x18; stp x1,x2,[sp]; bl 0xe38d60`, then reads [entry+0x20], makes the virtual call at [vtable+0x10] and compares the result to 3 - exactly the old wrapper 0x1217934 -> 0xd0e100 shape.",
+      "note": "The key ABI changed: old takes a LibgString (length at +4, data at +8); new takes a 16-byte StringView {data,size} (`ldp x8,x1,[x1]`). lookup_json_member builds a StringView on the 16.635 build. The map offset +0x18 and the entry value offset +0x20 are unchanged."
+    },
+    {
+      "hook": "kLogicCommandParse",
+      "new_offset": "0x00e553e4",
+      "evidence": "Old 0xd2fe78 has one caller, the command loop in GameState::load at 0x1061d58 (get element, parse, then LogicCommandAppend 0xd2eef0). In 16.635 the same loop is at 0x12d9240: ldr w24,[x21,#0x14]; get element 0x1399d3c; add x8,x29,#0x18; bl 0xe553e4; then LogicCommandAppend 0xe5443c. 0xe553e4 reads the same 'ct' key literal (old 0x2cd8cb, new 0x2e7c4e).",
+      "note": "The unique 16-byte window at old+0xa0 recovers 0xe553c0, which is the epilogue of the previous function (`bl 0x11d2304; ldp...; add sp,sp,#0xf0; ret`). The real entry is 0xe553e4, the next function start."
+    },
+    {
+      "hook": "kLocationTileMapEnsure",
+      "new_offset": "0x008ae750",
+      "evidence": "Instruction-for-instruction match. Old 0x857608 and new 0x8ae750 share the same frame and control flow, with only call targets relocated: bl Lookup (0xdf8508 -> 0xf2edec), bl 0xdf853c -> 0xf2ee20, bl 0x759b08 -> 0x7c6d80, bl 0xdf854c -> 0xf2ee30. The caller sets correspond: old 0xc87730/c89a70/c89a78/c89c58/c89d5c... map to new 0xd9aacc/d9ccb4/d9ccbc/d9d2a8/d9d3ac...",
+      "note": "Old c89a70/c89a78 are tail branches at old alternateUpdate 0xc899e0+0x90/+0x98; new d9ccb4/d9ccbc are at new alternateUpdate 0xd9cc24+0x90/+0x98."
+    },
+    {
+      "hook": "kLocationTileMapLookup",
+      "new_offset": "0x00f2edec",
+      "evidence": "Instruction-for-instruction match. Old 0xdf8508: bl 0xdc25b4, bl 0xdc2600, ldr x0,[x0,#0x78], b 0xdd11fc. New 0xf2edec: bl 0xeeee64, bl 0xeeeeb0, ldr x0,[x0,#0x78], b 0xefe2e8. The two following functions also match (old 0xdf853c/0xdf854c -> new 0xf2ee20/0xf2ee30), and new Ensure 0x8ae750 calls 0xf2edec.",
+      "note": "The unique 16-byte window at old+0x20 recovers exactly this base."
     }
   ]
 }

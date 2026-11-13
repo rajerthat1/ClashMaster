@@ -1718,11 +1718,31 @@ void *lookup_json_member(void *json_object, const char *key) {
   if (json_object == nullptr || key == nullptr || g_json_member_find == nullptr) {
     return nullptr;
   }
+  void *const map = static_cast<std::uint8_t *>(json_object) + 0x18;
+  void *entry = nullptr;
+#if defined(CR_PROBE_TARGET_16_635_1)
+  // 16.635 changed the key ABI: the map lookup takes a 16-byte StringView
+  // {data,size} (ldp x8,x1,[x1] at the target) instead of a LibgString
+  // (length at +4, data at +8).  The map offset (+0x18) and the entry value
+  // offset (+0x20) are unchanged.
+  struct JsonStringView {
+    const char *data;
+    std::int64_t size;
+  };
+  const std::size_t size = std::strlen(key);
+  if (size > static_cast<std::size_t>(INT32_MAX)) {
+    return nullptr;
+  }
+  JsonStringView view{key, static_cast<std::int64_t>(size)};
+  auto find = reinterpret_cast<void *(*)(void *, void *)>(g_json_member_find);
+  entry = find(map, &view);
+#else
   LibgString name;
   if (!initialize_libg_string(key, &name)) {
     return nullptr;
   }
-  void *entry = g_json_member_find(static_cast<std::uint8_t *>(json_object) + 0x18, &name, 1);
+  entry = g_json_member_find(map, &name, 1);
+#endif
   if (entry == nullptr) {
     return nullptr;
   }
@@ -6761,6 +6781,42 @@ void handle_control_command(int socket_fd, const char *command) {
   }
   if (std::strcmp(command, "touch status") == 0) {
     format_probe_native_touch_status(response, sizeof(response));
+    send_control_response(socket_fd, response);
+    return;
+  }
+  if (std::strncmp(command, "content-window ", 15) == 0) {
+    // Diagnostic: read a bounded window of the content context as hex so the
+    // post-process-ready byte can be located on a new build without root.
+    const char *args = command + 15;
+    char *end = nullptr;
+    const unsigned long offset = std::strtoul(args, &end, 16);
+    if (end == args) {
+      send_control_error(socket_fd, "content-window expects <hex offset> <hex length>");
+      return;
+    }
+    const unsigned long length = std::strtoul(end, &end, 16);
+    if (length == 0 || length > 0x400 || offset > 0x2000) {
+      send_control_error(socket_fd, "content-window allows offset <= 0x2000 and length 1..0x400");
+      return;
+    }
+    void *content_root = nullptr;
+    void *content_context = nullptr;
+    inspect_content_runtime(&content_root, &content_context);
+    if (content_context == nullptr) {
+      send_control_error(socket_fd, "content context is not published");
+      return;
+    }
+    const auto *bytes = static_cast<const std::uint8_t *>(content_context) + offset;
+    char hex[0x400 * 2 + 1] = {};
+    for (unsigned long index = 0; index < length; ++index) {
+      std::snprintf(hex + index * 2, 3, "%02x", bytes[index]);
+    }
+    std::snprintf(response, sizeof(response),
+                  "{\"ok\":true,\"root\":\"0x%llx\",\"context\":\"0x%llx\",\"offset\":\"0x%lx\","
+                  "\"length\":\"0x%lx\",\"hex\":\"%s\"}",
+                  static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(content_root)),
+                  static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(content_context)), offset, length,
+                  hex);
     send_control_response(socket_fd, response);
     return;
   }
