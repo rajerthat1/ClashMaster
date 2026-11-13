@@ -771,3 +771,175 @@ python3 tools/native_analysis/cr_elf.py disasm \
 
 
 
+### 3.17 Two-sided decision loop: 160 decisions, 56 actions, one full match
+
+The first multi-decision match ran on the SM-A515U on 2026-11-13 with
+`tools/native_analysis/multi_decision_match.py`. One fresh `MatchConfig`
+match (standard deck, `endTick` 7200) is configured, then every decision
+observes both hands, plays the first affordable slot for each owner, and
+advances 22 ticks across the native command-consumption boundary. Validation
+per action: the played slot must be replaced by the deck's next card, elixir
+must pay the printed cost within the measured regen bound (single
+~0.018/tick, double ~0.036/tick, triple ~0.054/tick), elixir must not go
+negative, and no command may remain queued.
+
+Short gate (600 ticks):
+
+```
+24 decisions, 10 actions, 1.864 s, 0 problems, tick 0 -> 617
+```
+
+Full match (runs to the engine's own end condition):
+
+```
+160 decisions, 56 actions, 13.109 s, 0 problems
+start tick 0 -> final tick 3601, ended true, crowns [0, 1]
+```
+
+Two repeats produced identical results (160 decisions, 56 actions, crowns
+[0, 1], tick 3601) in 13.042 s and 13.120 s. The match ends at 3601 ticks
+because owner 1 takes a princess tower inside regulation; an idle match runs
+the full 6068 ticks to a 0-0 end. `adb logcat -b crash` is empty after every
+run.
+
+The double-elixir transition is visible in the data: decisions before tick
+2400 gain ~0.018/tick between observations and later decisions ~0.036/tick,
+which matches the 2.8 s / 1.4 s per-elixir rates.
+
+Reproduce:
+
+```bash
+adb forward tcp:26789 tcp:26789
+.venv/bin/python tools/native_analysis/multi_decision_match.py \
+    --min-ticks 7000 --max-decisions 400 \
+    --output /tmp/opencode/multi_decision_match_full.json
+adb logcat -b crash -d
+```
+
+### 3.19 Live entity/HP path: 6 towers, damage and unit HP verified
+
+`observe` already exposes the engine object graph: each live object carries
+`owner`, `cardId` (`-1` for towers), arena `x`/`y`, and the hitpoint component
+(`hp`, `maxHp`). The field layout is `read_hitpoints()`: components vector at
+`object+0x18`, count `+0x24`, component `[2]`, current HP `+0x10`, max HP
+`+0x14` (see §3.20 for the 16.635 accessor anchor).
+
+`tools/native_analysis/entity_hp_probe.py` deployed one affordable card per
+owner at the first legal tick and sampled the graph every 40 ticks. On the
+SM-A515U (2026-11-13), 8 samples, 0 problems:
+
+```
+tick 152  towers 6 hp [2400, 1512, 1512, 2400, 1512, 1512]
+          units [(26000000, 690, 690), (26000001, 119, 119), (26000001, 119, 119)]
+tick 192  Knight 690 -> 602
+tick 232  Knight 602 -> 514
+tick 272  Knight 514 -> 426;  Archer 119 -> 65
+tick 312  princess tower 1512 -> 1468;  Knight 426 -> 230
+tick 352  Knight 230 -> 122
+tick 392  both deployed units gone, 6 towers still at their cells
+tick 432  6 towers, princess tower 1468
+```
+
+All six native tower cells are present (king `2400` HP, princesses `1512` at
+level 1). Unit HP decreases under tower fire and the objects leave the graph on
+death. Two `cardId == -1` entries appeared at non-cell positions with no
+hitpoint component (transient, no HP) and are correctly excluded from the tower
+set; `read_native_crowns` only counts the fixed cells. `adb logcat -b crash` is
+empty.
+
+This closes the entity/HP *observability* question for 16.635. The 15.535-only
+rich telemetry hooks (combat events, phase/visibility runtimes) remain disabled
+on this build, so `observe-rich` is still unavailable.
+
+Reproduce:
+
+```bash
+adb forward tcp:26789 tcp:26789
+.venv/bin/python tools/native_analysis/entity_hp_probe.py \
+    --output /tmp/opencode/entity_hp_probe.json
+```
+
+### 3.20 Hitpoint accessor anchor: `0xf2db90 -> 0x0108b474` (EXACT)
+
+The 15.535.13 virtual hitpoint accessor is a 10-instruction leaf:
+
+```
+0x00f2db90: ldrb w9, [x0, #0x30]   ; component-type bitmask
+            tbz  w9, #2, ret       ; HP component present?
+            ldr  w9, [x8, #0x24]   ; component count
+            cmp  w9, #3
+            b.lt ret
+            ldr  x8, [x8, #0x18]   ; component vector
+            ldr  x0, [x8, #0x10]   ; components[2]
+            ret
+```
+
+The same 44-byte body occurs exactly once in 16.635.1 at **`0x0108b474`**,
+so the object tag field (`+0x30` bit 2), vector (`+0x18`), count (`+0x24`) and
+component index (2) are unchanged. Its vtable references relocate with the
+entity tables (old `0x1ebd60, 0x1ec330, …` → new `0x204ee8, 0x205500, …`).
+
+`kHitpointsComponentAccessorOffset` is now a probe constant
+(`0x00f2db90` → `0x0108b474`), resolved `EXACT` by `diff_builds.py` and emitted
+into `native_runner/probe/build_16_635_1_layout.h`. The probe still reads the
+component fields directly (`read_hitpoints`) instead of calling the accessor;
+the anchor exists so future telemetry ports share one verified source.
+
+Reproduce:
+
+```bash
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/15.535.13/reference/libg.so 0xf2db90 0xf2dbbc
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0x108b474 0x108b4a0
+python3 tools/native_analysis/cr_elf.py refs \
+  .resource/native/16.635.1/reference/libg.so 0x108b474
+```
+
+### 3.18 Throughput on the A51: transport is the bottleneck, not the engine
+
+Measured on the SM-A515U (Android 13, arm64-v8a) on 2026-11-13 with
+`tools/native_analysis/native_match_throughput.py` and
+`resident_batch_throughput.py`. All runs report `adb logcat -b crash` empty.
+
+**Single connection, ordinary control API** (one fresh match per `step`):
+
+| mode | match | seconds/match | matches/s | notes |
+| --- | ---: | ---: | ---: | --- |
+| `raw` (one `step` to end) | 6068 ticks | 0.544 | **1.84** | engine-bound ceiling |
+| `batch` (`step 20`) | 6068 ticks | 5.807 | 0.17 | 304 calls, ~19 ms RTT each |
+| `decision` (both owners, 22-tick boundary) | 3601 ticks | 12.987 | 0.077 | 160 decisions, 56 actions, 12.3 decisions/s, 4.3 actions/s |
+
+The engine itself steps 6068 ticks in ~0.54 s (~11.2k ticks/s). Every ordinary
+control command costs ~19 ms through `adb forward`, so per-decision round trips
+dominate: 480 commands explain the 13 s decision match.
+
+**Resident batch channel** (`batch-v1`, 8 configured slots, one framed request
+per batch, ordinary+atomic capture per slot):
+
+| batch shape | total | slot-ticks/s | matches/s (per engine) |
+| --- | ---: | ---: | ---: |
+| 8 slots × 100 ticks × 20 | 4.65 s | 3,443 | 0.57 |
+| 8 slots × 600 ticks × 5 | 4.47 s | 5,374 | **0.89** |
+
+The channel profile attributes almost all of the wall time to receiving the
+per-slot capture (4.43 s of the 4.47 s); send is 0.2 ms and decode 33 ms. The
+batch path removes the per-command RTT but the observation envelope (ordinary
++ atomic JSON for 8 slots, every batch) is now the cost.
+
+**Interpretation for Phase 0.** One A51 probe process sustains ~0.9 matches/s
+with 8 resident slots and full observations, or 1.84 matches/s engine-only.
+The 10 matches/s target therefore needs roughly 6–12 such engine lanes (wider
+PC/cloud hosts, or several devices), not one phone. This is the measured
+single-engine row; multi-engine aggregation remains to be measured. Actions
+also need `ResidentBatchCoordinatorV1` (the `ResidentBatchChannelV1` path with
+policy actions) — the batch step itself is proven here.
+
+Reproduce:
+
+```bash
+.venv/bin/python tools/native_analysis/native_match_throughput.py --matches 5 --mode raw
+.venv/bin/python tools/native_analysis/native_match_throughput.py --matches 3 --mode decision
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py --slots 8 --batches 5 --ticks 600
+```
+

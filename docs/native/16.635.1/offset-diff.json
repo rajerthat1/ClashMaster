@@ -1,6 +1,6 @@
 {
   "summary": {
-    "EXACT": 58,
+    "EXACT": 59,
     "LIKELY": 31,
     "MANUAL": 15,
     "MISSING": 10,
@@ -1296,6 +1296,21 @@
       "delta": "+0x15e09c",
       "confidence": "LIKELY",
       "expected_delta": "+0x15d830",
+      "delta_verified": true
+    },
+    {
+      "hook": "kHitpointsComponentAccessor",
+      "old_offset": "0x00f2db90",
+      "source": "native_runner/probe/cr_replay_probe.cpp",
+      "window": 128,
+      "occurrences": 1,
+      "candidates": [
+        "0x0108b474"
+      ],
+      "new_offset": "0x0108b474",
+      "delta": "+0x15d8e4",
+      "confidence": "EXACT",
+      "expected_delta": "+0x15d8e4",
       "delta_verified": true
     },
     {

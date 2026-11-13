@@ -132,6 +132,9 @@ inline constexpr bool kLogicDataTypeGetterResolved = true;
 inline constexpr std::uintptr_t kProjectileKindGetterOffset = 0x0108530c;
 inline constexpr std::uint8_t kProjectileKindGetterPrologue[16] = {0x80, 0x00, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6, 0xff, 0xc3, 0x02, 0xd1, 0xfd, 0x7b, 0x05, 0xa9};
 inline constexpr bool kProjectileKindGetterResolved = true;
+inline constexpr std::uintptr_t kHitpointsComponentAccessorOffset = 0x0108b474;
+inline constexpr std::uint8_t kHitpointsComponentAccessorPrologue[16] = {0x09, 0xc0, 0x40, 0x39, 0xe8, 0x03, 0x00, 0xaa, 0xe0, 0x03, 0x1f, 0xaa, 0xc9, 0x00, 0x10, 0x36};
+inline constexpr bool kHitpointsComponentAccessorResolved = true;
 
 // Core anchors still AMBIGUOUS/MISSING.  The probe must fail closed
 // (leave the pointer null) instead of using a 15.535.13 address.

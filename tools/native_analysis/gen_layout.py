@@ -77,6 +77,7 @@ CORE_CODE_ANCHORS = (
     "kGameStateContextB",
     "kLogicDataTypeGetter",
     "kProjectileKindGetter",
+    "kHitpointsComponentAccessor",
 )
 # Core functions that are not resolved yet.  They are part of the fail-closed
 # sentinel set so the 16.635 build never points at a 15.535 address.

@@ -142,6 +142,12 @@ constexpr std::uintptr_t kLocationTileMapLookupOffset = probe_target::kLocationT
 constexpr bool kLocationTileMapLookupResolved = probe_target::kLocationTileMapLookupResolved;
 constexpr std::uintptr_t kLogicDataTypeGetterOffset = probe_target::kLogicDataTypeGetterOffset;
 constexpr std::uintptr_t kProjectileKindGetterOffset = probe_target::kProjectileKindGetterOffset;
+// Virtual entity-method that returns the hitpoint component (components[2]).
+// Current HP is component+0x10 and max HP is component+0x14. The probe reads
+// the component directly (read_hitpoints); the accessor offset is pinned so
+// future telemetry ports share the same verified anchor.
+[[maybe_unused]] constexpr std::uintptr_t kHitpointsComponentAccessorOffset =
+    probe_target::kHitpointsComponentAccessorOffset;
 constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = probe_target::kBuffAssetClassNameGetterOffset;
 constexpr bool kBuffAssetClassNameGetterResolved = probe_target::kBuffAssetClassNameGetterResolved;
 constexpr std::uintptr_t kEglSwapBuffersGotOffset = probe_target::kEglSwapBuffersGotOffset;
@@ -220,6 +226,10 @@ constexpr std::uintptr_t kLocationTileMapLookupOffset = 0x00df8508;
 constexpr bool kLocationTileMapLookupResolved = true;
 constexpr std::uintptr_t kLogicDataTypeGetterOffset = 0x00dc2560;
 constexpr std::uintptr_t kProjectileKindGetterOffset = 0x00f27a58;
+// Virtual entity-method returning the hitpoint component (components[2]);
+// current/max HP are component+0x10/+0x14. Byte-identical on 16.635.1 at
+// 0x0108b474. read_hitpoints() reads the same fields directly.
+[[maybe_unused]] constexpr std::uintptr_t kHitpointsComponentAccessorOffset = 0x00f2db90;
 constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = 0x00d961f4;
 constexpr bool kBuffAssetClassNameGetterResolved = true;
 constexpr std::uintptr_t kEglSwapBuffersGotOffset = 0x018e9d88;

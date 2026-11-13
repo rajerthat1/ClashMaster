@@ -146,6 +146,59 @@ byte in the window equal to `1` in the final sample with the time it flipped,
 and the bytes that only ever take 0/1. Use it on 15.535.13 first to establish
 the field's real neighbourhood, then repeat on 16.635.1.
 
+## Live match drivers
+
+These three tools drive a configured match over the probe control socket. They
+are diagnostics, not training APIs; forward the port first
+(`adb forward tcp:26789 tcp:26789`) and check `adb logcat -b crash -d` after a
+run.
+
+### `multi_decision_match.py`
+
+The Phase 0 multi-decision gate: configures one fresh `MatchConfig` match, then
+observes both hands, plays one affordable card per owner, and advances across
+the command boundary. It validates every action against the engine state (the
+played slot is replaced by the deck's next card, elixir pays the cost within
+the measured regen bound, no command is left queued):
+
+```bash
+.venv/bin/python tools/native_analysis/multi_decision_match.py \
+    --min-ticks 600 --output /tmp/opencode/multi_decision_match.json
+```
+
+Pass `--min-ticks 7000` to run the whole regulation match (the engine ends at
+tick 3601 when a tower falls). Recorded results are in FINDINGS §3.17.
+
+### `native_match_throughput.py`
+
+Times N fresh matches in one of three modes and reports matches/s,
+decisions/s and actions/s for one probe connection:
+
+```bash
+.venv/bin/python tools/native_analysis/native_match_throughput.py \
+    --matches 5 --mode raw --output /tmp/opencode/throughput_raw.json
+```
+
+`raw` is one `step` per match (engine-bound ceiling), `batch` repeats
+`step --batch-ticks`, and `decision` runs the `multi_decision_match` loop.
+Recorded numbers are in FINDINGS §3.18. One connection is one slot; do not
+extrapolate resident-slot throughput from it.
+
+### `entity_hp_probe.py`
+
+Verifies the live entity/HP path: `observe` already returns every live object
+with `owner`, `cardId` (`-1` for towers), arena position and the hitpoint
+component values. This tool deploys a card for each owner and samples the graph,
+checking towers are at the native tower cells with sane HP and that units keep
+`0 <= hp <= maxHp`:
+
+```bash
+.venv/bin/python tools/native_analysis/entity_hp_probe.py \
+    --output /tmp/opencode/entity_hp_probe.json
+```
+
+Recorded results are in FINDINGS §3.19.
+
 ## Ghidra scripts
 
 `ghidra_scripts/ExportFunctions.java`, `DecompileAt.java` and

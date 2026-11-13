@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-12 (native-first; 16.635 cold configure and a full headless match verified on the A51)
+# Session handoff — 2026-11-13 (16.635.1 two-sided match, throughput and entity/HP verified on the A51)
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single source for the plan.
 > This file is the starting point for the next session: current state, environment decision,
@@ -151,6 +151,34 @@
     A51: `observe` reports the engine hand `{0,3,7,2}`, and
     `play_immediate(hand_index=0, 9000/10000)` at tick 100 deploys (slot 0
     `26000000` leaves, slot 1 enters; elixir `7.78 → 4.80`; objects `6 → 7`).
+  - **Two-sided multi-decision match verified** (FINDINGS §3.17). A fresh
+    `MatchConfig` match with a 22-tick decision loop for both owners completed
+    160 decisions / 56 actions in 13.1 s with **0 validation problems**, ended
+    at tick 3601 with crowns `[0,1]` (a princess tower fell in regulation).
+    The 600-tick gate run is 24 decisions / 10 actions in 1.9 s. Every action
+    rotated the played slot to the deck's next card and paid the printed cost
+    within the measured elixir regen bound; `adb logcat -b crash` is empty.
+    Three runs were identical (deterministic seed).
+  - **Throughput measured** (FINDINGS §3.18): engine-only 1.84 matches/s
+    (6,068 ticks in 0.54 s); ordinary control `step 20` 0.17 matches/s;
+    decision loop 0.077 matches/s (12.3 decisions/s, 4.3 actions/s); resident
+    batch channel with 8 slots 0.89 matches/s (5,374 slot-ticks/s). The ~19 ms
+    per-command `adb forward` round trip and the per-batch observation envelope
+    are the bottleneck, not the engine. One A51 process is a ~0.9–1.8
+    matches/s lane; 5–10 matches/s aggregate needs several engine lanes.
+  - **Entity/HP path verified live** (FINDINGS §3.19). `observe` exposes every
+    live object with owner, cardId (`-1` = tower), position, `hp`/`maxHp`.
+    On the A51: all 6 native tower cells at 2400/1512 HP, a deployed Knight
+    tracked 690 → 602 → 514 → 426 → 230 → 122 → gone, Archers 119 → 65, a
+    princess tower 1512 → 1468. 8 samples, 0 problems, no crash.
+  - **Hitpoint accessor anchored** (FINDINGS §3.20): the 15.535.13 virtual
+    accessor `0x00f2db90` occurs byte-identically once in 16.635.1 at
+    **`0x0108b474`** (EXACT; 7 vtable references relocate too). Added as
+    `kHitpointsComponentAccessorOffset`, emitted in the generated layout header;
+    `read_hitpoints()` still reads the component fields directly.
+  - **New live tools** under `tools/native_analysis/` (README updated):
+    `multi_decision_match.py`, `native_match_throughput.py`,
+    `entity_hp_probe.py`, `resident_batch_throughput.py`.
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
     `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
@@ -250,24 +278,36 @@ part-time; with his notes it can be weeks.
   `play_immediate(HandAction(0, hand_index=0, 9000, 10000))` at tick 100
   replaces deck slot 0 (`26000000`) with slot 1 (`26000001`), drops elixir
   `7.78 → 4.80`, and raises the object count `6 → 7`.
+- **A two-sided multi-decision match runs on 16.635.1** (§3.17): 160 decisions,
+  56 actions for both owners, 0 validation problems, a full regulation match
+  ending at tick 3601 (crowns `[0,1]`), deterministic across three runs, no
+  crash. Every action rotates the hand slot, pays the printed cost (within the
+  measured single/double-elixir regen bounds) and changes the object graph.
+- **Entity/HP and tower HP are live** (§3.19): `observe` returns the object
+  graph with `owner`, `cardId` (`-1` = tower), position and `hp`/`maxHp`; the
+  six native tower cells and damage to units and a princess tower were tracked
+  on-device with 0 problems.
+- **One-probe throughput** (§3.18): engine-only 1.84 matches/s; 8 resident
+  slots 0.89 matches/s with full observations; the ~19 ms control round trip
+  and the per-batch observation envelope dominate.
 - **The four core anchors are resolved on 16.635** (FINDINGS §3.11) and
   on-device attestation reports `two_sided_actions: true`; only
   `kBuffAssetClassNameGetter` (rich telemetry) remains unavailable.
+- **The hitpoint accessor is pinned** (§3.20): `0x00f2db90 → 0x0108b474`, an
+  EXACT byte-identical match, now in the generated layout header.
 - The 16.635 crforge tests pass: 14 attestation/catalog tests, 6 bridge tests.
 
 ## What is not proven
 
-- **Longer action sequences and two-sided decisions.** One `play_immediate`
-  now works on the final hand-reader APK, and one manual inject deployed a
-  card; a multi-decision match (both owners, regeneration, ability actions) has
-  not been run yet.
-- The 16.635 game semantics behind `observe`: entity/HP (`hpComponentAccessor`),
-  tower HP, and the Character/Projectile/AreaEffect/component vtables still need
-  manual review, and the recovered GameState constructor field *roles* need
-  live-golden confirmation.
-- The 16.635.1 probe's **throughput** on-device. Hook installation, the absence
-  of prologue mismatch, cold configure and full-match stepping are now proven
-  (§3.10, §3.13); matches/s was not measured.
+- **Ability actions.** Card plays are proven two-sided; `AbilityAction` /
+  `queue_ability_action_at` has not been exercised on 16.635 in this loop.
+- **Multi-engine aggregate throughput.** One A51 process is measured; 5–10
+  matches/s aggregate across several engine lanes has not been demonstrated.
+- **The rich telemetry envelopes** (`observe-rich`: combat events, phase,
+  visibility, remaining, tower-troop) stay disabled on 16.635 because their
+  hook tables are still 15.535 layouts. The Character/Projectile/AreaEffect/
+  component vtables still need manual review, and the recovered GameState
+  constructor field *roles* still need live-golden confirmation.
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
   level 11) transfers across the 15.535 → 16.635 rule change, and how it behaves at maxed levels.
 - That a learned X-Bow bot beats a competent scripted bot and then humans.
@@ -294,37 +334,49 @@ part-time; with his notes it can be weeks.
 
 ## Next session: start here
 
-### NEXT ACTION — multi-decision match, throughput, then entity/HP   [FINDINGS §3.13–3.16]
+### NEXT ACTION — scripted X-Bow match, then multi-engine throughput   [FINDINGS §3.17–3.20]
 
-Cold configure, three consecutive matches, the content gate, the allocation
-overflow, the command context, the replay ids, the hand reader, and one
-`play_immediate` are all verified on the A51. The next session:
+The multi-decision gate, the throughput baseline and the entity/HP path are
+done on the A51. The next session:
 
-1. **Multi-decision match.** Run a full `MatchConfig` match with a decision
-   loop for both owners (step to the next boundary, observe, play both hands,
-   repeat) for at least 500 ticks. Confirm every action changes the expected
-   hand/elixir/object state and no `SIGSEGV` appears in
-   `adb logcat -b crash`.
-2. **Throughput.** Time N headless matches on-device and fill the Phase 0
-   matches/s row.
-3. **Entity/HP path.** Port `hpComponentAccessor`, tower HP, and review the
-   Character/Projectile/AreaEffect/component vtables; confirm the recovered
-   GameState constructor field roles with live goldens (§3.8).
+1. **Scripted X-Bow on 16.635.** Build the FirstLight-Zero deck as a
+   `MatchConfig` (verify the 16.635 form availability and tower-troop IDs
+   first), add a deterministic placement policy (X-Bow at the bridge, Tesla
+   behind it, Fireball/Log on value, Skeletons/Spirit cycle), and run one full
+   self-play match through the decision loop. Record the match result and
+   per-decision latency. This is the first milestone in `ROADMAP.md`.
+2. **Ability actions.** Extend the decision loop with `AbilityAction` for a
+   ready champion (Hero Knight) and confirm the engine receipts and any
+   cooldown/charge telemetry on 16.635.
+3. **Multi-engine throughput.** Start a second probe/engine instance and
+   measure aggregate matches/s with the resident batch channel (currently
+   0.89 matches/s per A51 process). Decide whether the training host is the
+   laptop, cloud, or a device pool. Also drive real actions through
+   `ResidentBatchCoordinatorV1`, not just empty steps.
+4. **Static, non-blocking:** port the rich telemetry hook tables (15.535 →
+   16.635) using the vtable diff, or explicitly retire `observe-rich` for
+   16.635. The four core anchors and the hitpoint accessor are already done.
 
 `command-check <json>` is available on the probe control socket: it parses one
 command and returns the engine's execute code (0 = deployed, 9 = not in hand,
 13 = insufficient elixir, 22 = placement/opening blocked). It is a diagnostic,
 not a training API.
 
-Then the remaining static work is the entity/HP path (`hpComponentAccessor`),
-tower HP, and manual review of the Character/Projectile/AreaEffect/component
-vtables; the recovered GameState constructor field *roles* still need
-live-golden confirmation (§3.8).
-
 Known transient: `coldReady` can read `false` during the content
 post-process/teardown window right after a match ends, then flips back to `true`.
 If `configure` is issued in that window it returns the stale content error;
 retry once the gate is `true` (a short wait/retry in the harness is reasonable).
+
+Device note (2026-11-13): the A51's adbd dropped to `offline` twice under load
+and recovered after the user disabled USB authorization timeout, disabled
+"Verify apps over USB"/"Verify bytecode", and set a 10-minute display timeout.
+If `adb shell` hangs while `adb devices` works, force-stop and relaunch the
+app; a stale probe control thread can answer with an empty frame
+("invalid native runner response") until the process restarts.
+
+Also note: the probe control server is **single-client**. Close the resident
+batch channel before issuing ordinary commands; an ordinary command issued
+while a batch channel is open times out.
 
 ### 0. Run the built 16.635.1 APK on the A51 — **DONE 2026-11-12**
 
@@ -505,10 +557,14 @@ Fill this with numbers, not opinions:
 | FirstLight-Zero, 15.535 native | Linux + GPU | ~1.6 s | ~9.85 | — | — | Published; extracted engine |
 | FirstLight-Zero, 15.535 native | laptop engines + cloud GPU | ? | ? | ? | ? | 50-round lab run, if APK acquired |
 | crforge end-to-end after F0 | this host | ? | ? | 20–30 (bridge) | 1 reject | Fallback baseline |
-| native 16.635, 1 engine × 8 slots | Windows/MuMu or ARM64 phone/AVD | ? | ? | ? | ? | Probe port required |
-| native 16.635, 2 engines × 16 slots | same | ? | ? | ? | ? | Target ~10 matches/s |
+| native 16.635, engine-only (1 step) | A51 arm64 phone | 0.54 s | 1.84 (1 lane) | — | 0 | FINDINGS §3.18 |
+| native 16.635, ordinary control, decision loop | A51 arm64 phone | 13.0 s | 0.077 | 12.3 | 0 | 160 decisions / 56 actions; RTT-bound (§3.18) |
+| native 16.635, 1 engine × 8 resident slots | A51 arm64 phone | — | 0.89 | — | 0 | 5,374 slot-ticks/s, full observations (§3.18) |
+| native 16.635, 2 engines × 16 slots | same | ? | ? | ? | ? | Target ~10 matches/s; open |
 
 Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <1 → crforge primary.**
+One A51 process is a ~0.9–1.8 matches/s lane, so the aggregate target needs
+several engine lanes; the single-lane number alone does not decide it.
 
 ## Current crforge state (fallback)
 
@@ -527,6 +583,10 @@ Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <
 | `ROADMAP_CRFORGE.md` | Optional crforge fallback/CI roadmap |
 | `native_runner/probe/` | Native hook source; 16.635 port target |
 | `tools/native_analysis/capture_content_window.py` | Live content-context window capture (content-ready gate, FINDINGS §3.12) |
+| `tools/native_analysis/multi_decision_match.py` | Two-sided decision loop + per-action validation (FINDINGS §3.17) |
+| `tools/native_analysis/native_match_throughput.py` | Single-connection match/decision throughput (FINDINGS §3.18) |
+| `tools/native_analysis/resident_batch_throughput.py` | 8-slot resident batch-channel throughput (FINDINGS §3.18) |
+| `tools/native_analysis/entity_hp_probe.py` | Live entity/tower HP verification (FINDINGS §3.19) |
 | `native_runner/probe/build_probe.sh` | Linux probe build (`--target-build`) |
 | `build_offline_apk.sh` | Linux single-process patched APK build/sign |
 | `deploy_a51.sh` | Install on the A51 and stream probe logs |
