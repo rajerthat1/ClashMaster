@@ -225,6 +225,8 @@
     registers until the project is fully re-analysed. Rerun with
     `-analysisTimeoutPerFile 7200`.
 - **Commits (pushed to `origin/main`):**
+  - `ab94103` — `feat(native): drive real card actions through the resident batch channel`
+  - `894b7bf` — `docs: record the scripted X-Bow, ability and Champion-layout session`
   - `da27d5f` — `feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1`
   - `c7ec5ea` — `docs(native): record the rebuilt 16.635 deployable and A51 re-verification`
   - `ec2ca52` — `feat(native): verify 16.635 two-sided matches, throughput and entity HP`
