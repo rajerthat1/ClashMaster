@@ -91,20 +91,94 @@ void initialize_engine_instance() {
        engine_id, g_engine_instance_port);
 }
 
-bool engine_instance_pin_current_lane() {
-  const long online = sysconf(_SC_NPROCESSORS_ONLN);
-  if (g_engine_instance_id < 0 || g_engine_instance_id >= online || g_engine_instance_id >= CPU_SETSIZE) {
-    LOGE("engine %d cannot bind a lane: MuMu exposes %ld CPUs", g_engine_instance_id, online);
+// The MuMu cluster exposes exactly one vCPU per engine, so engine N -> cpu N is
+// the natural isolation mapping.  Physical phones are heterogeneous (the A51
+// runs 4x A53 at 1.74 GHz on cpu0-3 and 4x A73 at 2.31 GHz on cpu4-7), so
+// binding engine 0 to cpu 0 leaves the control lane on the slow cluster.
+// `debug.cr.engine_cpu_map` overrides the mapping without a rebuild:
+//   "4,5,6,7" -> engine 0..3 pin to cpu 4..7 (big cluster on the A51)
+//   "none"    -> do not pin; let the scheduler place the control thread
+// Unset keeps the MuMu-compatible engine N -> cpu N behaviour.
+bool engine_instance_read_cpu_override(std::int32_t engine_id, std::int32_t *cpu, bool *disabled) {
+  *cpu = -1;
+  *disabled = false;
+  char value[PROP_VALUE_MAX] = {};
+  const int length = __system_property_get("debug.cr.engine_cpu_map", value);
+  if (length <= 0) {
     return false;
   }
+  if (std::strcmp(value, "none") == 0) {
+    *disabled = true;
+    return true;
+  }
+  const char *cursor = value;
+  std::int32_t index = 0;
+  while (*cursor != '\0') {
+    errno = 0;
+    char *end = nullptr;
+    const long parsed = std::strtol(cursor, &end, 10);
+    if (errno != 0 || end == cursor || parsed < 0 || parsed >= CPU_SETSIZE) {
+      LOGE("debug.cr.engine_cpu_map has an invalid entry at index %d: %s", index, cursor);
+      return false;
+    }
+    if (index == engine_id) {
+      *cpu = static_cast<std::int32_t>(parsed);
+      return true;
+    }
+    ++index;
+    if (*end != ',') {
+      break;
+    }
+    cursor = end + 1;
+  }
+  LOGI("debug.cr.engine_cpu_map has no entry for engine %d; using engine index", engine_id);
+  return false;
+}
+
+bool engine_instance_apply_affinity(std::int32_t cpu, bool pin) {
   cpu_set_t affinity;
   CPU_ZERO(&affinity);
-  CPU_SET(g_engine_instance_id, &affinity);
+  if (pin) {
+    CPU_SET(cpu, &affinity);
+  } else {
+    const long online = sysconf(_SC_NPROCESSORS_ONLN);
+    for (long index = 0; index < online && index < CPU_SETSIZE; ++index) {
+      CPU_SET(index, &affinity);
+    }
+  }
   if (sched_setaffinity(0, sizeof(affinity), &affinity) != 0) {
-    LOGE("engine %d could not bind control lane to cpu %d: %d", g_engine_instance_id, g_engine_instance_id, errno);
+    LOGE("engine %d could not set control lane affinity (pin=%d cpu=%d): %d", g_engine_instance_id,
+         pin ? 1 : 0, cpu, errno);
     return false;
   }
-  g_engine_instance_cpu = g_engine_instance_id;
+  g_engine_instance_cpu = pin ? cpu : -1;
+  return true;
+}
+
+bool engine_instance_pin_current_lane() {
+  const long online = sysconf(_SC_NPROCESSORS_ONLN);
+  std::int32_t cpu = g_engine_instance_id;
+  bool disabled = false;
+  const bool overridden = engine_instance_read_cpu_override(g_engine_instance_id, &cpu, &disabled);
+  if (disabled) {
+    if (!engine_instance_apply_affinity(-1, false)) {
+      return false;
+    }
+    LOGI("engine %d control lane affinity override=none (online=%ld)", g_engine_instance_id, online);
+    return true;
+  }
+  if (!overridden) {
+    cpu = g_engine_instance_id;
+  }
+  if (cpu < 0 || cpu >= online || cpu >= CPU_SETSIZE) {
+    LOGE("engine %d cannot bind a lane: %ld CPUs online, requested cpu %d", g_engine_instance_id, online, cpu);
+    return false;
+  }
+  if (!engine_instance_apply_affinity(cpu, true)) {
+    return false;
+  }
+  LOGI("engine %d control lane bound to cpu %d%s (online=%ld)", g_engine_instance_id, cpu,
+       overridden ? " via debug.cr.engine_cpu_map" : "", online);
   return true;
 }
 
@@ -117,9 +191,35 @@ bool engine_instance_has_resident_slots() {
   return false;
 }
 
+void engine_instance_affinity_text(char *buffer, std::size_t size) {
+  if (buffer == nullptr || size == 0) {
+    return;
+  }
+  cpu_set_t affinity;
+  CPU_ZERO(&affinity);
+  if (sched_getaffinity(0, sizeof(affinity), &affinity) != 0) {
+    std::snprintf(buffer, size, "unavailable");
+    return;
+  }
+  std::size_t used = 0;
+  buffer[0] = '\0';
+  for (int cpu = 0; cpu < CPU_SETSIZE && used + 8 < size; ++cpu) {
+    if (!CPU_ISSET(cpu, &affinity)) {
+      continue;
+    }
+    const int written = std::snprintf(buffer + used, size - used, "%s%d", used == 0 ? "" : ",", cpu);
+    if (written <= 0) {
+      break;
+    }
+    used += static_cast<std::size_t>(written);
+  }
+}
+
 void engine_instance_send_status(int socket_fd) {
   char response[1024] = {};
   std::size_t used = 0;
+  char affinity_text[256] = {};
+  engine_instance_affinity_text(affinity_text, sizeof(affinity_text));
   JsonWriter writer(response, sizeof(response), used);
   writer.begin_object();
   writer.field("ok", true);
@@ -132,6 +232,7 @@ void engine_instance_send_status(int socket_fd) {
   writer.field("port", g_engine_instance_port);
   writer.field("assignedCpu", g_engine_instance_cpu);
   writer.field("currentCpu", sched_getcpu());
+  writer.field("affinity", static_cast<const char *>(affinity_text));
   writer.field("onlineCpus", sysconf(_SC_NPROCESSORS_ONLN));
   writer.field("residentMode", g_resident_mode_active);
   writer.field("occupied", engine_instance_has_resident_slots());
@@ -142,6 +243,36 @@ void engine_instance_send_status(int socket_fd) {
 
 bool handle_engine_instance_command(int socket_fd, const char *command) {
   if (std::strcmp(command, "engine-status") == 0) {
+    engine_instance_send_status(socket_fd);
+    return true;
+  }
+  constexpr char kAffinityPrefix[] = "engine-affinity";
+  if (std::strncmp(command, kAffinityPrefix, sizeof(kAffinityPrefix) - 1) == 0 &&
+      (command[sizeof(kAffinityPrefix) - 1] == ' ' || command[sizeof(kAffinityPrefix) - 1] == '\0')) {
+    const char *argument = command + sizeof(kAffinityPrefix) - 1;
+    while (*argument == ' ') {
+      ++argument;
+    }
+    const long online = sysconf(_SC_NPROCESSORS_ONLN);
+    if (std::strcmp(argument, "none") == 0) {
+      if (!engine_instance_apply_affinity(-1, false)) {
+        send_control_response(socket_fd, "{\"ok\":false,\"error\":\"affinity update failed\"}");
+        return true;
+      }
+    } else {
+      errno = 0;
+      char *end = nullptr;
+      const long parsed = std::strtol(argument, &end, 10);
+      if (errno != 0 || end == argument || *end != '\0' || parsed < 0 || parsed >= online ||
+          parsed >= CPU_SETSIZE) {
+        send_control_response(socket_fd, "{\"ok\":false,\"error\":\"engine-affinity expects 'none' or an online cpu\"}");
+        return true;
+      }
+      if (!engine_instance_apply_affinity(static_cast<std::int32_t>(parsed), true)) {
+        send_control_response(socket_fd, "{\"ok\":false,\"error\":\"affinity update failed\"}");
+        return true;
+      }
+    }
     engine_instance_send_status(socket_fd);
     return true;
   }

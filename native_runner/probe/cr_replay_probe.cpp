@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/socket.h>
+#include <sys/system_properties.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/stat.h>
