@@ -123,6 +123,28 @@ falling back to a 15.535.13 address:
     --out native_runner/probe/build_16_635_1_layout.h
 ```
 
+## Live content-ready capture (`capture_content_window.py`)
+
+The probe gates cold `configure` on a single byte at
+`content_context + kContentPostProcessReadyOffset`. That offset is a 15.535-era
+literal and is wrong for 16.635 (the byte lands inside a heap pointer). The
+probe exposes a bounded, read-only `content-window <hex offset> <hex length>`
+command to locate the real byte without root; this script drives it across a
+fresh boot and reports which bytes settle to `1`:
+
+```bash
+adb forward tcp:26789 tcp:26789
+adb shell am force-stop nullsroyale.rel.free
+adb shell monkey -p nullsroyale.rel.free -c android.intent.category.LAUNCHER 1
+.venv/bin/python tools/native_analysis/capture_content_window.py \
+    --seconds 120 --output /tmp/opencode/content_capture.json
+```
+
+`--watch` (default `0x6e8`) prints that byte over time; the summary lists every
+byte in the window equal to `1` in the final sample with the time it flipped,
+and the bytes that only ever take 0/1. Use it on 15.535.13 first to establish
+the field's real neighbourhood, then repeat on 16.635.1.
+
 ## Ghidra scripts
 
 `ghidra_scripts/ExportFunctions.java`, `DecompileAt.java` and

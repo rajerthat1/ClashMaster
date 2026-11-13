@@ -589,7 +589,8 @@ byte. Options for the next session, in order:
 3. Find the engine's own content-ready function in the loading path.
 
 The `content-window` command is bounded (offset ≤ 0x2000, length ≤ 0x400) and
-read-only; it exists to support this investigation.
+read-only; it exists to support this investigation. Driver:
+`tools/native_analysis/capture_content_window.py` (usage in the tools README).
 
 
 

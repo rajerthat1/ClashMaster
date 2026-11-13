@@ -58,9 +58,9 @@
   - **Linux build toolchain installed; 16.635.1 APK built and verified:**
     `.resource/android-tools/` has NDK r27c, build-tools r34 and apktool 2.12.1
     (all hashes verified against Google/the pinned apktool SHA-256).
-    `builds/cr-ai-16.635.1.apk` (841 MB, SHA-256 `9415681a…f200`, signed with
+    `builds/cr-ai-16.635.1.apk` (841 MB, SHA-256 `d5563f87…13ea`, signed with
     the local `CN=Firstlight CR Local Build` key) bundles
-    `libcrprobe.so 01cd0986…755b` and the reference `libg.so 0b5802…e4eaa`.
+    `libcrprobe.so 9012e19f…9551` and the reference `libg.so 0b5802…e4eaa`.
     `builds/` is gitignored; rebuild from the APK if it is cleaned. This is a
     **single-process** APK (no engine-cluster Application/activities), the A51
     no-root path.
@@ -214,22 +214,28 @@ part-time; with his notes it can be weeks.
 - The **16.635.1 probe compiles** on Linux (NDK r27c), and the patched APK
   **builds, signs, verifies, installs and runs on the A51**:
   `builds/cr-ai-16.635.1.apk` carries the exact `libg.so 0b5802…e4eaa` and
-  `libcrprobe.so 01cd0986…755b`. All ten hooks (9 runner + touch) install with
+  `libcrprobe.so 9012e19f…9551`. All ten hooks (9 runner + touch) install with
   no prologue mismatch, and a live battle steps at 20 Hz with a correct tick
   (`call=N tick=N`) — FINDINGS §3.10. The 9 runner hooks + touch are wired
   behind the generated build header (§3.9) and the GameState constructor store
   map is recovered (§3.8). `native_runner/supported_engine.json` is still
   15.535.13 by design; the 16.635 build is pinned separately in
   `docs/native/16.635.1/build.json`.
+- **The four core anchors are resolved on 16.635** (FINDINGS §3.11) and
+  on-device attestation reports `two_sided_actions: true`; only
+  `kBuffAssetClassNameGetter` (rich telemetry) remains unavailable.
 - The 16.635 crforge tests pass: 14 attestation/catalog tests, 6 bridge tests.
 
 ## What is not proven
 
+- **Cold configure on 16.635.** The anchors are resolved, but the content-ready
+  gate still refuses (`kContentPostProcessReadyOffset = 0x6e8` is wrong for this
+  build) — FINDINGS §3.12. This is the next action.
+- The live reader/executor loop on 16.635.1 (blocked on the content gate above;
+  the anchors it previously depended on are done).
 - The 16.635.1 probe's **throughput** on-device. Hook installation, the absence
   of prologue mismatch, and live stepping are now proven (§3.10); a battle was
   played but matches/s was not measured.
-- The live reader/executor loop on 16.635.1 (blocked on the four unresolved
-  core anchors in FINDINGS §3.9).
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
   level 11) transfers across the 15.535 → 16.635 rule change, and how it behaves at maxed levels.
 - That a learned X-Bow bot beats a competent scripted bot and then humans.
@@ -255,6 +261,53 @@ part-time; with his notes it can be weeks.
 - crforge tables: `~/.crforge/tables/16.635.8` and `.3`.
 
 ## Next session: start here
+
+### NEXT ACTION — unblock cold configure (content gate)   [FINDINGS §3.12]
+
+Cold `configure` is no longer blocked by the four core anchors (they are
+resolved and verified; §3.11). It is blocked by the content-ready byte:
+`kContentPostProcessReadyOffset = 0x6e8` is a 15.535-era literal and on 16.635
+that address is inside a heap pointer (`0xa0`), so `configure` returns
+`native content runtime is not initialized yet`.
+
+Recommended path (most rigorous): capture the same window on 15.535.13, where
+the gate worked, to see what the real byte and its field look like.
+
+```bash
+# 1. Build the 15.535.13 probe APK.  No docs/native/15.535.13/build.json
+#    exists, so the libg check is skipped; the probe defaults to 15.535.13.
+./build_offline_apk.sh \
+    --input-apk .resource/native/15.535.13/nr_15.535.13_apkpure.apk \
+    --target-build 15.535.13 \
+    --output-apk builds/cr-ai-15.535.13.apk
+
+# 2. Switch the phone to it.  The APKPure build is signed differently from the
+#    local key, so expect INSTALL_FAILED_UPDATE_INCOMPATIBLE: uninstall first
+#    (`adb uninstall nullsroyale.rel.free`).  The package name is the same
+#    (nullsroyale.rel.free), and uninstalling wipes update/ data.
+adb install -r builds/cr-ai-15.535.13.apk
+adb shell am force-stop nullsroyale.rel.free
+adb forward tcp:26789 tcp:26789
+adb shell monkey -p nullsroyale.rel.free -c android.intent.category.LAUNCHER 1
+
+# 3. Capture across boot (~2 minutes).
+.venv/bin/python tools/native_analysis/capture_content_window.py \
+    --seconds 120 --output /tmp/opencode/content_15.json
+```
+
+On 15.535 the capture should show `coldReady=true` once the collection screen is
+up, and `--watch 0x6e8` should read `01`. Use the neighbours in the window to
+identify the field's shape, then find the same field (and its writer, if code
+touches it) in 16.635 and add a MANUAL-style field entry.
+
+If the field cannot be mapped, the fallback is a semantic gate: replace the
+byte check in `inspect_content_runtime` with a content lookup
+(`g_logic_data_by_global_id(context, id) != nullptr` for a known-good id), which
+is the same check `prewarm_location_tilemap` already performs after the gate.
+
+Regression gate for either fix: `configure {"a":1}` must stop returning
+`native content runtime is not initialized yet`, then a real replay configure,
+then a full match. Reinstall the 16.635 build afterwards.
 
 ### 0. Run the built 16.635.1 APK on the A51 — **DONE 2026-11-12**
 
@@ -457,6 +510,7 @@ Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <
 | `ROADMAP.md` | The plan: decision, Phases 0–4, QA harness, gates |
 | `ROADMAP_CRFORGE.md` | Optional crforge fallback/CI roadmap |
 | `native_runner/probe/` | Native hook source; 16.635 port target |
+| `tools/native_analysis/capture_content_window.py` | Live content-context window capture (content-ready gate, FINDINGS §3.12) |
 | `native_runner/probe/build_probe.sh` | Linux probe build (`--target-build`) |
 | `build_offline_apk.sh` | Linux single-process patched APK build/sign |
 | `deploy_a51.sh` | Install on the A51 and stream probe logs |
