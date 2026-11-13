@@ -281,7 +281,7 @@ bool resident_construct_slot(std::int32_t slot_id, const char *replay_json, char
                   slot_id);
     return false;
   }
-  void *const manager = g_game_state_new(0x230);
+  void *const manager = g_game_state_new(kGameStateManagerAllocationSize);
   if (manager == nullptr) {
     release_json_object(replay_root);
     g_resident_bound_slot = -1;

@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-12 (native-first; 16.635 APK deployed and verified on the A51)
+# Session handoff — 2026-11-12 (native-first; 16.635 cold configure and a full headless match verified on the A51)
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single source for the plan.
 > This file is the starting point for the next session: current state, environment decision,
@@ -124,12 +124,33 @@
     `kJsonMemberFind` changed its key ABI to a
     16-byte `StringView {data,size}`; the probe builds it under
     `CR_PROBE_TARGET_16_635_1`.
-  - **Cold configure is still closed by the content gate, not the anchors**
-    (FINDINGS §3.12): `configure` returns `native content runtime is not
-    initialized yet`, because `kContentPostProcessReadyOffset = 0x6e8` is wrong
-    for 16.635 (the byte there is inside a heap pointer). A bounded read-only
-    `content-window <offset> <length>` probe command was added to investigate;
-    see §3.12 for the capture and the candidate approaches.
+  - **Cold configure is open** (FINDINGS §3.13). The content-ready byte moved
+    `0x6e8 → 0x720`; the mapping is proved structurally through the
+    content-context constructor (`0xdcc180` old vs `0xef92f8` new, with the
+    adjacent bool `0x6e9 → 0x721`) and confirmed live on 15.535.13, where a boot
+    capture flips only `+0x6e8` (`00 → 01`) at `coldReady`. The byte is now
+    build-pinned through the generated layout header. On the A51 the 16.635
+    probe reports `coldReady` at `t≈8 s`, `configure {"a":1}` reaches the shape
+    rejection (not the content gate), a real `native_match.json` configure
+    succeeds (`matchReady: true`), 6,068 headless steps complete the match in
+    ~3 s, and `observe` returns a non-empty observation.
+  - **GameStateManager allocation size fixed** (FINDINGS §3.14): the probe asked
+    for `0x230` bytes, but the 16.635 constructor stores at `+0x238`, so the
+    second headless reset corrupted the heap and crashed in the destroy path.
+    The size is now build-pinned (`0x230 → 0x240`) and used by both the cold
+    configure worker and resident slots. Three consecutive 6,068-tick matches
+    then ran on the A51 without a crash.
+  - **Command context and replay ids fixed** (FINDINGS §3.15): the command
+    context moved `0x208 → 0x210`; card plays use `ct=153` (was 86) and
+    abilities `ct=189` (was 2). The probe and `NativeClashEnv` now select the
+    ids from the target/client version.
+  - **Live hand offset fixed and verified** (FINDINGS §3.16): the authoritative
+    hand is `player+0x210` / count `player+0x21c`; the old `player+0x220`
+    vector is the next/cycle queue. The final APK
+    (`builds/cr-ai-16.635.1.apk`, SHA-256 `16dcc47d…3da9`) was installed on the
+    A51: `observe` reports the engine hand `{0,3,7,2}`, and
+    `play_immediate(hand_index=0, 9000/10000)` at tick 100 deploys (slot 0
+    `26000000` leaves, slot 1 enters; elixir `7.78 → 4.80`; objects `6 → 7`).
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
     `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
@@ -213,14 +234,22 @@ part-time; with his notes it can be weeks.
   the gap is `BattleEnvV1` observation assembly and JPype conversion, not crforge.
 - The **16.635.1 probe compiles** on Linux (NDK r27c), and the patched APK
   **builds, signs, verifies, installs and runs on the A51**:
-  `builds/cr-ai-16.635.1.apk` carries the exact `libg.so 0b5802…e4eaa` and
-  `libcrprobe.so 9012e19f…9551`. All ten hooks (9 runner + touch) install with
-  no prologue mismatch, and a live battle steps at 20 Hz with a correct tick
-  (`call=N tick=N`) — FINDINGS §3.10. The 9 runner hooks + touch are wired
-  behind the generated build header (§3.9) and the GameState constructor store
-  map is recovered (§3.8). `native_runner/supported_engine.json` is still
-  15.535.13 by design; the 16.635 build is pinned separately in
-  `docs/native/16.635.1/build.json`.
+  `builds/cr-ai-16.635.1.apk` carries the exact `libg.so 0b5802…e4eaa`. All ten
+  hooks (9 runner + touch) install with no prologue mismatch, and a live battle
+  steps at 20 Hz with a correct tick (`call=N tick=N`) — FINDINGS §3.10. The 9
+  runner hooks + touch are wired behind the generated build header (§3.9) and
+  the GameState constructor store map is recovered (§3.8).
+  `native_runner/supported_engine.json` is still 15.535.13 by design; the
+  16.635 build is pinned separately in `docs/native/16.635.1/build.json`.
+- **16.635.1 cold configure and repeated headless matches work on the A51**
+  (§3.13–3.14): `coldReady` at `t≈8 s`, a real `native_match.json` configure
+  reports `matchReady: true`, and three consecutive 6,068-tick matches run in
+  ~4 s each with no crash.
+- **The automatic action path works on 16.635.1** (§3.15–3.16): after
+  `create_match`, `observe` reports the engine hand, and
+  `play_immediate(HandAction(0, hand_index=0, 9000, 10000))` at tick 100
+  replaces deck slot 0 (`26000000`) with slot 1 (`26000001`), drops elixir
+  `7.78 → 4.80`, and raises the object count `6 → 7`.
 - **The four core anchors are resolved on 16.635** (FINDINGS §3.11) and
   on-device attestation reports `two_sided_actions: true`; only
   `kBuffAssetClassNameGetter` (rich telemetry) remains unavailable.
@@ -228,14 +257,17 @@ part-time; with his notes it can be weeks.
 
 ## What is not proven
 
-- **Cold configure on 16.635.** The anchors are resolved, but the content-ready
-  gate still refuses (`kContentPostProcessReadyOffset = 0x6e8` is wrong for this
-  build) — FINDINGS §3.12. This is the next action.
-- The live reader/executor loop on 16.635.1 (blocked on the content gate above;
-  the anchors it previously depended on are done).
+- **Longer action sequences and two-sided decisions.** One `play_immediate`
+  now works on the final hand-reader APK, and one manual inject deployed a
+  card; a multi-decision match (both owners, regeneration, ability actions) has
+  not been run yet.
+- The 16.635 game semantics behind `observe`: entity/HP (`hpComponentAccessor`),
+  tower HP, and the Character/Projectile/AreaEffect/component vtables still need
+  manual review, and the recovered GameState constructor field *roles* need
+  live-golden confirmation.
 - The 16.635.1 probe's **throughput** on-device. Hook installation, the absence
-  of prologue mismatch, and live stepping are now proven (§3.10); a battle was
-  played but matches/s was not measured.
+  of prologue mismatch, cold configure and full-match stepping are now proven
+  (§3.10, §3.13); matches/s was not measured.
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
   level 11) transfers across the 15.535 → 16.635 rule change, and how it behaves at maxed levels.
 - That a learned X-Bow bot beats a competent scripted bot and then humans.
@@ -262,52 +294,37 @@ part-time; with his notes it can be weeks.
 
 ## Next session: start here
 
-### NEXT ACTION — unblock cold configure (content gate)   [FINDINGS §3.12]
+### NEXT ACTION — multi-decision match, throughput, then entity/HP   [FINDINGS §3.13–3.16]
 
-Cold `configure` is no longer blocked by the four core anchors (they are
-resolved and verified; §3.11). It is blocked by the content-ready byte:
-`kContentPostProcessReadyOffset = 0x6e8` is a 15.535-era literal and on 16.635
-that address is inside a heap pointer (`0xa0`), so `configure` returns
-`native content runtime is not initialized yet`.
+Cold configure, three consecutive matches, the content gate, the allocation
+overflow, the command context, the replay ids, the hand reader, and one
+`play_immediate` are all verified on the A51. The next session:
 
-Recommended path (most rigorous): capture the same window on 15.535.13, where
-the gate worked, to see what the real byte and its field look like.
+1. **Multi-decision match.** Run a full `MatchConfig` match with a decision
+   loop for both owners (step to the next boundary, observe, play both hands,
+   repeat) for at least 500 ticks. Confirm every action changes the expected
+   hand/elixir/object state and no `SIGSEGV` appears in
+   `adb logcat -b crash`.
+2. **Throughput.** Time N headless matches on-device and fill the Phase 0
+   matches/s row.
+3. **Entity/HP path.** Port `hpComponentAccessor`, tower HP, and review the
+   Character/Projectile/AreaEffect/component vtables; confirm the recovered
+   GameState constructor field roles with live goldens (§3.8).
 
-```bash
-# 1. Build the 15.535.13 probe APK.  No docs/native/15.535.13/build.json
-#    exists, so the libg check is skipped; the probe defaults to 15.535.13.
-./build_offline_apk.sh \
-    --input-apk .resource/native/15.535.13/nr_15.535.13_apkpure.apk \
-    --target-build 15.535.13 \
-    --output-apk builds/cr-ai-15.535.13.apk
+`command-check <json>` is available on the probe control socket: it parses one
+command and returns the engine's execute code (0 = deployed, 9 = not in hand,
+13 = insufficient elixir, 22 = placement/opening blocked). It is a diagnostic,
+not a training API.
 
-# 2. Switch the phone to it.  The APKPure build is signed differently from the
-#    local key, so expect INSTALL_FAILED_UPDATE_INCOMPATIBLE: uninstall first
-#    (`adb uninstall nullsroyale.rel.free`).  The package name is the same
-#    (nullsroyale.rel.free), and uninstalling wipes update/ data.
-adb install -r builds/cr-ai-15.535.13.apk
-adb shell am force-stop nullsroyale.rel.free
-adb forward tcp:26789 tcp:26789
-adb shell monkey -p nullsroyale.rel.free -c android.intent.category.LAUNCHER 1
+Then the remaining static work is the entity/HP path (`hpComponentAccessor`),
+tower HP, and manual review of the Character/Projectile/AreaEffect/component
+vtables; the recovered GameState constructor field *roles* still need
+live-golden confirmation (§3.8).
 
-# 3. Capture across boot (~2 minutes).
-.venv/bin/python tools/native_analysis/capture_content_window.py \
-    --seconds 120 --output /tmp/opencode/content_15.json
-```
-
-On 15.535 the capture should show `coldReady=true` once the collection screen is
-up, and `--watch 0x6e8` should read `01`. Use the neighbours in the window to
-identify the field's shape, then find the same field (and its writer, if code
-touches it) in 16.635 and add a MANUAL-style field entry.
-
-If the field cannot be mapped, the fallback is a semantic gate: replace the
-byte check in `inspect_content_runtime` with a content lookup
-(`g_logic_data_by_global_id(context, id) != nullptr` for a known-good id), which
-is the same check `prewarm_location_tilemap` already performs after the gate.
-
-Regression gate for either fix: `configure {"a":1}` must stop returning
-`native content runtime is not initialized yet`, then a real replay configure,
-then a full match. Reinstall the 16.635 build afterwards.
+Known transient: `coldReady` can read `false` during the content
+post-process/teardown window right after a match ends, then flips back to `true`.
+If `configure` is issued in that window it returns the stale content error;
+retry once the gate is `true` (a short wait/retry in the harness is reasonable).
 
 ### 0. Run the built 16.635.1 APK on the A51 — **DONE 2026-11-12**
 
@@ -371,15 +388,14 @@ the four ambiguous core anchors, and naming the entity fields.
    `0x008ae750`, `kLocationTileMapLookup` `0x00f2edec`. On the A51 the
    bootstrap now reports only `kBuffAssetClassNameGetter` unavailable and
    attestation flips `two_sided_actions` to **true**.
-7b. **Cold configure is still closed, but by the content gate, not the anchors**
-   (FINDINGS §3.12). `configure` fails with `native content runtime is not
-   initialized yet` because `kContentPostProcessReadyOffset = 0x6e8` is a
-   15.535-era literal: on 16.635 that byte is inside a heap pointer (`0xa0`),
-   and no displacement/immediate `0x6e8` exists in either binary. The probe now
-   has a bounded read-only `content-window <offset> <length>` diagnostic that
-   was used to establish this. Next: build the 15.535 probe (APK at
-   `.resource/native/15.535.13/nr_15.535.13_apkpure.apk`) and compare the same
-   window, or gate on a known `LogicDataByGlobalId` lookup instead of a byte.
+7b. **Cold configure is resolved** (FINDINGS §3.13). The content-ready byte
+   moved `0x6e8 → 0x720` and is now build-pinned in the generated layout header.
+   The 15.535 boot capture flips only `+0x6e8` at `coldReady`; the 16.635
+   content-context constructor proves the new offset (`0xdcc180` vs `0xef92f8`,
+   adjacent bool `0x6e9 → 0x721`). The same session also fixed the
+   GameStateManager allocation size `0x230 → 0x240` (FINDINGS §3.14), which had
+   overflowed the heap and crashed the second reset. Next: repeated matches and
+   the queued-action path (see NEXT ACTION above).
 8. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. The
    lock is stale; remove it only if no Ghidra process is running. If analysis
    timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use

@@ -163,6 +163,9 @@ inline constexpr std::size_t kReplayBattleControllerSpeedOffset = 0x74;  // was 
 inline constexpr std::size_t kReplayBattleControllerSuspendedOffset = 0x17c;  // was 0x18c
 inline constexpr std::size_t kGameAppPendingEventFlagsOffset = 0x1c0;  // was 0x1b8
 inline constexpr std::size_t kGameAppPendingEventOffset = 0x1c4;  // was 0x1bc
+inline constexpr std::size_t kContentPostProcessReadyOffset = 0x720;  // was 0x6e8
+inline constexpr std::size_t kGameStateManagerAllocationSize = 0x240;  // was 0x230
+inline constexpr std::size_t kGameStateCommandContextOffset = 0x210;  // was 0x208
 
 // Anchors the probe intentionally leaves unavailable on this build.
 inline constexpr const char *kUnresolvedAnchors[] = {"kBuffAssetClassNameGetter"};

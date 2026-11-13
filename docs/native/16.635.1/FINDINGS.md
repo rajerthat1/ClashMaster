@@ -576,21 +576,198 @@ Within that window only three bytes settle to `1`: `0x619` and `0x639` (both
 many unrelated classes (66 references, many SIMD stores), so it is not
 trustworthy as a content flag.
 
-Conclusion: this needs a **semantic** readiness check rather than another raw
-byte. Options for the next session, in order:
-
-1. Build the 15.535.13 probe (`--input-apk
-   .resource/native/15.535.13/nr_15.535.13_apkpure.apk --target-build
-   15.535.13`), capture the same window, and see what the real ready byte is
-   and which neighbours identify its field. Then map that field into 16.635.
-2. Gate on a content lookup instead: call `g_logic_data_by_global_id` for a
-   known-good id and require non-null (this is what `prewarm_location_tilemap`
-   already does after the gate).
-3. Find the engine's own content-ready function in the loading path.
+Conclusion at the time: this looked like it needed a **semantic** readiness check
+rather than another raw byte. The 15.535.13 capture resolved it as a raw byte
+after all — see §3.13.
 
 The `content-window` command is bounded (offset ≤ 0x2000, length ≤ 0x400) and
 read-only; it exists to support this investigation. Driver:
 `tools/native_analysis/capture_content_window.py` (usage in the tools README).
+
+### 3.13 Content-ready byte resolved: `0x6e8 → 0x720` (MANUAL)
+
+The 15.535.13 probe was built with
+`./build_offline_apk.sh --input-apk
+.resource/native/15.535.13/nr_15.535.13_apkpure.apk --target-build 15.535.13
+--output-apk builds/cr-ai-15.535.13.apk` and installed on the A51. A full
+`0x0..0x2000` window capture across a warm boot (content already downloaded)
+shows exactly one byte flipping at `coldReady`:
+
+```
+t=7.21  coldReady=false   +0x06e8: 00
+t=7.79  coldReady=true    +0x06e8: 01
+```
+
+Only `+0x6e8` changes from `0` to `1`; the other transitions at `+0xb48` and
+`+0xb69` are pointer stores (they become non-zero with it). So the gate byte is
+the field at `context + 0x6e8` and the old probe literal was right for 15.535.
+
+That byte is initialized by the content-context constructor, which gives the
+16.635 mapping:
+
+| | 15.535.13 | 16.635.1 |
+| --- | --- | --- |
+| context constructor | `0xdcc92c` (alloc `0xb70`) | `0xef9ad8` (alloc `0x10c0`) |
+| zero-init body | `0xdcc180` | `0xef92f8` |
+| ready byte store | `strb wzr,[x0,#0x6e8]` at `0xdcc19c` | `strb wzr,[x19,#0x720]` at `0xef9314` |
+| adjacent bool | `strb wzr,[x0,#0x6e9]` at `0xdcc95c` | `strb wzr,[x0,#0x721]` at `0xef8f98` |
+| lookup array | `0xad8` (219 entries) | `0x1028` (226 entries) |
+
+`0xef91cc` (called by `0xef8f80`) also writes `strb wzr,[x19,#0x720]`, matching
+the second `0x6e8` write in the old constructor at `0xdcca00`. The rest of the
+zero-init blocks line up one-for-one, so this is a structural mapping, not a
+byte coincidence.
+
+This also explains the earlier observation that `0x720` settles to `1` at 9.2 s
+in the 16.635 capture: it was the real flag, not a generic offset. The old
+`0x6e8` now holds a heap pointer on 16.635, which is why the gate could never
+pass.
+
+Reproduce:
+
+```bash
+# old ready-byte store
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/15.535.13/reference/libg.so 0xdcc180 0xdcc1b0
+# new ready-byte store
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0xef92f8 0xef9320
+# new adjacent bool
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0xef8f80 0xef8fa0
+```
+
+The offset is recorded in `field-offsets.json` and emitted into
+`native_runner/probe/build_16_635_1_layout.h` by `gen_layout.py`; the probe uses
+the generated constant under `CR_PROBE_TARGET_16_635_1`.
+
+**On-device verification (2026-11-12, SM-A515U).** The 16.635.1 probe was
+rebuilt with the corrected offset, installed, and launched:
+
+- the context publishes at `t≈2 s` and `coldReady` flips to `true` at `t≈8 s`;
+- `content-window 6e8 8` reads a heap pointer (`807fb79475000000`), while
+  `content-window 720 8` starts with `01` — the gate byte;
+- `configure {"a":1}` now stops at `native replay configuration was rejected`
+  (the expected shape rejection), not `native content runtime is not
+  initialized yet`;
+- a real fresh-match configure from `native_runner/data/native_match.json`
+  returns `{"ok":true,"configured":true,"generation":1,"tick":0}`, status
+  reports `ready: true`, `matchReady: true`, `configLocationId: 15000199`;
+- 6,068 headless steps run in ~3 s, the match ends (`ended: true`), and
+  `observe` returns a non-empty observation (`objects`, `players`,
+  `crownsRaw`, …).
+
+Cold configure on 16.635.1 is unblocked. The next gap is the action/executor
+path (queued card deploys), not the content gate.
+
+### 3.14 GameStateManager allocation size: `0x230 → 0x240`
+
+The probe calls the engine allocator directly when it builds a fresh headless
+manager, so the requested size must match the 16.635 object. The 15.535-era
+literal was `0x230`. The 16.635 constructor writes an 8-byte zero at `+0x238`:
+
+```
+0x011d1f44: str xzr, [x19, #0x238]
+```
+
+so a `0x230` allocation overflows the block by 16 bytes. On the A51 this
+surfaced as a delayed `SIGSEGV` (`fault addr 0x64000000dc`) on the *second*
+headless reset, inside the GameState destroy path: the constructor had already
+written past the allocation, and teardown then followed a corrupted field.
+
+The allocation is now build-pinned as `kGameStateManagerAllocationSize`
+(`0x230` old, `0x240` new) in `field-offsets.json`, emitted into
+`build_16_635_1_layout.h`, and used by both the cold configure worker and the
+resident multi-match constructor.
+
+Reproduce:
+
+```bash
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0x11d1e68 0x11d1f60
+```
+
+### 3.15 Command context and replay command ids: card `86 → 153`, ability `2 → 189`
+
+Two independent 15.535-era constants blocked the action path:
+
+1. **Command context field.** `parse_logic_command` read the manager's command
+   context from `+0x208`. The 16.635 constructor stores it at `+0x210`
+   (`str x24,[x19,#0x210]`; context B moves `0x210 → 0x218`). The probe now
+   uses `kGameStateCommandContextOffset` from the generated header.
+2. **Replay wire ids.** The harness and probe emitted `ct=86` for a card play
+   and `ct=2` for an ability. For 16.635.1 the replay command types are
+   **153** (card play) and **189** (ability), per `docs/capture_format.md` §2.3.
+   The probe's deploy/mirror/ability formatters now use
+   `kCardPlayCommandType`/`kAbilityCommandType`; `NativeClashEnv` selects the
+   card type from the probe's `status.clientVersion` (`153` for 16.635,
+   `86` otherwise).
+
+The parse function's own signature is unchanged: `x0 = JSON object`,
+`x1 = command context`, `x8 = &result`. Its 16.635 caller computes the context
+through `0x011d48a4` (`ldr x0,[x0,#0x210]; ret`), confirming the field move.
+
+Reproduce:
+
+```bash
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0x11d48a4 0x11d48ac
+python3 tools/native_analysis/cr_elf.py calls \
+  .resource/native/16.635.1/reference/libg.so 0xe553e4
+```
+
+### 3.16 Live hand model: hand is `player+0x210`, not `player+0x220`
+
+The probe's hand reader was still using the 15.535 std::vector at
+`player+0x220`. On 16.635 that vector is the **next/cycle queue**, which is why
+`observe` showed four plausible cards that were the complement of the engine's
+actual hand.
+
+The engine's command validator searches `player+0x210` for the played deck
+slot (`0x109c8b4(player+0x208, deckSlot)`), and the hand accessor
+`0x1094d1c(player, handIndex)` resolves `player+0x210[handIndex]` through the
+deck. On the A51 with a fresh match:
+
+| tick | engine hand (`+0x210`) | probe's old `+0x220` reading |
+| ---: | --- | --- |
+| 40 | `{0,2,3,7}` | `{1,4,5,6}` |
+| 200 | `{0,2,3,7}` | `{1,4,5,6}` |
+
+`read_player_state` now reads `data = *(player+0x210)`, `count = *(player+0x21c)`
+under `CR_PROBE_TARGET_16_635_1`, and uses the `std::vector` at `0x220` as the
+cycle queue. `resolve_hand_deploy_request`, `observe`, and
+`play_immediate` then select the deck slot the engine actually offered.
+
+A manual inject of the engine-hand slot 0 at tick 100 (card `26000000`,
+`px=9000`, `py=10000`) deployed successfully: elixir `7.78 → 4.87` (cost 3) and
+the object count `6 → 7`. Cards are rejected (engine code `0x16`) before the
+opening playable tick, which is why an action at tick 40 is a no-op until the
+command's boundary (`FIRST_PLAYABLE_TICK` = 90) is reached.
+
+**On-device confirmation of the final hand reader (2026-11-13).** The rebuilt
+APK (`builds/cr-ai-16.635.1.apk`, SHA-256 `16dcc47d…3da9`) was installed and a
+fresh `MatchConfig` match produced:
+
+```
+tick 40   hand [(0,26000000),(3,28000001),(7,26000018),(2,26000005)]
+tick 100  elixir 7.78, objects 6
+play_immediate(hand_index=0, 9000,10000) -> ok
+tick 101  hand [(1,26000001),(3,28000001),(7,26000018),(2,26000005)]
+          elixir 4.80, objects 7
+```
+
+The retired slot 0 (`26000000`) was replaced by slot 1 (`26000001`), elixir
+fell by the card's 3, and a new object appeared. The automatic
+`observe`/`play_immediate` action path now works on 16.635.1.
+
+Reproduce:
+
+```bash
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0x109c8b4 0x109c8e8
+python3 tools/native_analysis/cr_elf.py disasm \
+  .resource/native/16.635.1/reference/libg.so 0x1094d1c 0x1094d40
+```
 
 
 

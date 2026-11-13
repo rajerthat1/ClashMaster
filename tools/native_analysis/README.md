@@ -126,11 +126,12 @@ falling back to a 15.535.13 address:
 ## Live content-ready capture (`capture_content_window.py`)
 
 The probe gates cold `configure` on a single byte at
-`content_context + kContentPostProcessReadyOffset`. That offset is a 15.535-era
-literal and is wrong for 16.635 (the byte lands inside a heap pointer). The
-probe exposes a bounded, read-only `content-window <hex offset> <hex length>`
-command to locate the real byte without root; this script drives it across a
-fresh boot and reports which bytes settle to `1`:
+`content_context + kContentPostProcessReadyOffset`. The 15.535.13 value is
+`0x6e8`; on 16.635.1 the field moved to `0x720` (FINDINGS §3.13), so the byte is
+build-pinned through the generated layout header. The probe exposes a bounded,
+read-only `content-window <hex offset> <hex length>` command to locate or verify
+the byte without root; this script drives it across a fresh boot and reports
+which bytes settle to `1`:
 
 ```bash
 adb forward tcp:26789 tcp:26789

@@ -2522,6 +2522,7 @@ class NativeClashEnv:
         self._persistent_transport_supported: bool | None = None
         self._persistent_connection: socket.socket | None = None
         self._persistent_reader: Any | None = None
+        self._client_version: str | None = None
 
     @staticmethod
     def _read_only_request(command: str) -> bool:
@@ -2535,6 +2536,21 @@ class NativeClashEnv:
             "touch status",
             "attest",
         }
+
+    def _card_play_command_type(self) -> int:
+        """Return the replay wire id for a card play on the connected client.
+
+        15.535.13 uses ``ct`` 86; 16.635.1 uses 153
+        (``docs/capture_format.md`` §2.3). The probe reports its client version
+        in ``status`` so one harness can drive both builds.
+        """
+
+        if self._client_version is None:
+            try:
+                self._client_version = str(self.status().get("clientVersion") or "")
+            except RunnerError:
+                self._client_version = ""
+        return 153 if self._client_version.startswith("16.635") else 86
 
     def _close_persistent_transport_locked(self) -> None:
         reader = self._persistent_reader
@@ -2968,7 +2984,7 @@ class NativeClashEnv:
 
             account_id = int(player["accountId"])
             command = {
-                "ct": 86,
+                "ct": self._card_play_command_type(),
                 "c": {
                     "t": boundary - LIVE_COMMAND_AGE_TICKS,
                     "t2": boundary,
@@ -3264,7 +3280,7 @@ class NativeClashEnv:
             account_id = int(player["accountId"])
             consumption_boundary = max(FIRST_PLAYABLE_TICK, int(before["tick"]))
             command = {
-                "ct": 86,
+                "ct": self._card_play_command_type(),
                 "c": {
                     "t": consumption_boundary - LIVE_COMMAND_AGE_TICKS,
                     "t2": consumption_boundary,

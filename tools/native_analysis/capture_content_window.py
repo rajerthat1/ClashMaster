@@ -3,10 +3,10 @@
 
 Used to locate the engine's "content post-process ready" byte on a new build.
 The probe's cold-configure gate reads a single byte at
-``context + kContentPostProcessReadyOffset``; on 16.635 that hard-coded 15.535
-offset lands inside a heap pointer (FINDINGS §3.12). This tool dumps a bounded
-window of the context over time so the byte that actually settles to 1 can be
-found empirically, without root.
+``context + kContentPostProcessReadyOffset``: 0x6e8 on 15.535 and 0x720 on
+16.635 (FINDINGS §3.13). This tool dumps a bounded window of the context over
+time so the byte that actually settles to 1 can be found or verified
+empirically, without root.
 
 Forward the probe control port first, e.g.::
 

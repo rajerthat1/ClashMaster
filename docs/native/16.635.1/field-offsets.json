@@ -38,6 +38,24 @@
       "old": "0x1bc",
       "new": "0x1c4",
       "evidence": "pending setter 0x7c79d8: str w1,[x0,#0x1c4] (old 0x75a6dc: str w1,[x19,#0x1bc])"
+    },
+    {
+      "name": "kContentPostProcessReadyOffset",
+      "old": "0x6e8",
+      "new": "0x720",
+      "evidence": "content-context ctor: old 0xdcc92c zeroes 0x6e8/0x6e9 and calls 0xdcc180 (strb wzr,[x0,#0x6e8]); new 0xef9ad8 calls 0xef8f80 (strb wzr,[x0,#0x721]) and 0xef91cc/0xef92f8 (strb wzr,[x19,#0x720]). Live 15.535 boot capture flips only +0x6e8 00->01 at coldReady"
+    },
+    {
+      "name": "kGameStateManagerAllocationSize",
+      "old": "0x230",
+      "new": "0x240",
+      "evidence": "GameState constructor 0x11d1e68 stores str xzr,[x19,#0x238], so a 0x230 allocation overflows by 0x10 and corrupts the heap; matches the recovered constructor store map (FINDINGS §3.8)"
+    },
+    {
+      "name": "kGameStateCommandContextOffset",
+      "old": "0x208",
+      "new": "0x210",
+      "evidence": "GameState constructor 0x11d1e68: str x24,[x19,#0x210] stores the command context (old 0x1060ba8: str x2,[x19,#0x208]); context B moves 0x210 -> 0x218"
     }
   ]
 }

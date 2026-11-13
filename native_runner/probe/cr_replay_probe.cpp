@@ -233,6 +233,18 @@ constexpr std::uint32_t kTranslatedSha256InitializerCall = 0x97eba894u;
 constexpr std::uint32_t kAarch64Nop = 0xd503201fu;
 constexpr std::uintptr_t kGameStateContextRootSlotOffset = 0x019ad878;
 #endif
+// Logic command type ids are part of the replay wire format, not the binary
+// layout: 15.535 uses 86/2 for card/ability, 16.635 uses 153/189
+// (docs/capture_format.md §2.3).
+constexpr int kCardPlayCommandType = kProbeTargetIs16_635_1 ? 153 : 86;
+constexpr int kAbilityCommandType = kProbeTargetIs16_635_1 ? 189 : 2;
+constexpr const char *kMirrorDeployCommandFormat =
+    kProbeTargetIs16_635_1
+        ? "{\"ct\":153,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
+          "\"px\":%d,\"py\":%d,\"sid\":-1,\"sel\":{\"os\":%u,\"pd\":%u}}}%n"
+        : "{\"ct\":86,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
+          "\"px\":%d,\"py\":%d,\"sid\":-1,\"sel\":{\"os\":%u,\"pd\":%u}}}%n";
+
 // Vtable anchors are still 15.535.13 values.  The probe only compares them
 // against an object's vtable, so an unmatched build simply withholds the
 // envelope instead of calling through a stale pointer.
@@ -266,7 +278,15 @@ constexpr const char *kRichTelemetrySchema = "native-rich-telemetry.v3";
 // ID instead of falling back to either raw tuple or the compacting vector slot.
 constexpr std::int32_t kNativeObjectIdEntityKeyTag = -2;
 constexpr std::int32_t kUniqueReadyAbilityEntityKeyTag = -3;
+#if defined(CR_PROBE_TARGET_16_635_1)
+constexpr std::size_t kContentPostProcessReadyOffset = probe_target::kContentPostProcessReadyOffset;
+constexpr std::size_t kGameStateManagerAllocationSize = probe_target::kGameStateManagerAllocationSize;
+constexpr std::size_t kGameStateCommandContextOffset = probe_target::kGameStateCommandContextOffset;
+#else
 constexpr std::size_t kContentPostProcessReadyOffset = 0x6e8;
+constexpr std::size_t kGameStateManagerAllocationSize = 0x230;
+constexpr std::size_t kGameStateCommandContextOffset = 0x208;
+#endif
 #if !defined(CR_PROBE_TARGET_16_635_1)
 constexpr std::uint8_t kReplayJsonSetterPrologue[16] = {
     0xfd, 0x7b, 0xbe, 0xa9, 0xf4, 0x4f, 0x01, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xf4, 0x03, 0x01, 0xaa,
@@ -1815,7 +1835,7 @@ bool parse_logic_command(void *manager, const char *command_json, void **logic_c
   }
 
   void *command_context = nullptr;
-  std::memcpy(&command_context, static_cast<std::uint8_t *>(manager) + 0x208, sizeof(command_context));
+  std::memcpy(&command_context, static_cast<std::uint8_t *>(manager) + kGameStateCommandContextOffset, sizeof(command_context));
   void *logic_command = nullptr;
   if (command_context != nullptr) {
     cr_call_logic_command_parse(json_object, command_context, &logic_command, g_logic_command_parse);
@@ -1826,6 +1846,27 @@ bool parse_logic_command(void *manager, const char *command_json, void **logic_c
 }
 
 void remember_enqueued_mirror_descriptor(void *manager, const char *command_json);
+
+// Diagnostic: parse one command and run its Execute slot exactly as the native
+// command queue does, but do not enqueue it.  Returns the engine's result code
+// so a rejected live action can be classified without guessing.
+bool check_logic_command(void *manager, const char *command_json, std::int32_t *code_out) {
+  if (code_out == nullptr) {
+    return false;
+  }
+  *code_out = -1;
+  void *logic_command = nullptr;
+  if (!parse_logic_command(manager, command_json, &logic_command) || logic_command == nullptr) {
+    return false;
+  }
+  auto **vtable = *reinterpret_cast<void ***>(logic_command);
+  using Execute = std::int32_t (*)(void *, void *, std::int32_t, std::int32_t);
+  *code_out = reinterpret_cast<Execute>(vtable[3])(logic_command, manager, 3, 0);
+  // Mirror the queue's non-zero-result teardown: destructor, then delete.
+  reinterpret_cast<void (*)(void *)>(vtable[0])(logic_command);
+  reinterpret_cast<void (*)(void *)>(vtable[2])(logic_command);
+  return true;
+}
 
 bool inject_logic_command(void *manager, const char *command_json) {
   if (manager == nullptr || g_logic_command_append == nullptr) {
@@ -1842,7 +1883,7 @@ bool inject_logic_command(void *manager, const char *command_json) {
     remember_enqueued_mirror_descriptor(manager, command_json);
   }
   void *command_context = nullptr;
-  std::memcpy(&command_context, static_cast<std::uint8_t *>(manager) + 0x208, sizeof(command_context));
+  std::memcpy(&command_context, static_cast<std::uint8_t *>(manager) + kGameStateCommandContextOffset, sizeof(command_context));
   LOGI("injected command parse=%s manager=%p queue=%p context=%p", succeeded ? "success" : "failure", manager,
        command_queue, command_context);
   return succeeded;
@@ -2882,9 +2923,25 @@ bool read_player_state(void *world, std::int32_t owner, PlayerStateView *result)
   result->account_id_low = read_object_field<std::uint32_t>(result->identity, 0x04);
   result->elixir_raw = read_object_field<std::int32_t>(result->player, 0x2f8);
   result->crowns_raw = 0;
-  return read_native_vector(result->deck, 0x20, kMaxDeckCards, &result->deck_slots) &&
+  const bool deck_valid = read_native_vector(result->deck, 0x20, kMaxDeckCards, &result->deck_slots);
+#if defined(CR_PROBE_TARGET_16_635_1)
+  // 16.635 moved the live hand to a HandModel whose data pointer is at
+  // player+0x210 and count at player+0x21c (the engine's own lookup helper
+  // 0x109c8b4 reads the same fields through player+0x208).  The std::vector at
+  // player+0x220 is the next/cycle queue; reading it as the hand selected
+  // cards the engine had not offered.
+  result->hand.data = read_object_field<void *>(result->player, 0x210);
+  result->hand.count = read_object_field<std::int32_t>(result->player, 0x21c);
+  result->hand.capacity = result->hand.count;
+  const bool hand_valid = result->hand.count >= 0 && result->hand.count <= kMaxHandCards &&
+                          (result->hand.count == 0 || result->hand.data != nullptr);
+  return deck_valid && hand_valid &&
+         read_native_vector(result->player, 0x220, kMaxCycleCards, &result->cycle);
+#else
+  return deck_valid &&
          read_native_vector(result->player, 0x220, kMaxHandCards, &result->hand) &&
          read_native_vector(result->player, 0x230, kMaxCycleCards, &result->cycle);
+#endif
 }
 
 struct CardStateView {
@@ -5990,11 +6047,8 @@ void remember_enqueued_mirror_descriptor(void *manager, const char *command_json
   int command_tick = 0, command_tick2 = 0, px = 0, py = 0, consumed_chars = 0;
   unsigned int account_high = 0, effective_card = 0, packed = 0;
   unsigned long long account_low = 0;
-  const int fields = std::sscanf(command_json,
-      "{\"ct\":86,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
-      "\"px\":%d,\"py\":%d,\"sid\":-1,\"sel\":{\"os\":%u,\"pd\":%u}}}%n",
-      &command_tick, &command_tick2, &account_high, &account_low, &px, &py,
-      &effective_card, &packed, &consumed_chars);
+  const int fields = std::sscanf(command_json, kMirrorDeployCommandFormat, &command_tick, &command_tick2, &account_high,
+                                 &account_low, &px, &py, &effective_card, &packed, &consumed_chars);
   if (fields != 8 || consumed_chars <= 0 || command_json[consumed_chars] != '\0') return;
   const int deck_slot = static_cast<int>((packed >> 22) & 0x3fU) - 1;
   if (deck_slot < 0 || deck_slot >= kCombatMaxDeckSlots || (packed & 0x0fU) != 0) return;
@@ -6037,9 +6091,10 @@ bool format_deploy_command(const DeployRequest &request, std::int32_t command_ti
     return false;
   }
   const int written = std::snprintf(command_json, command_json_size,
-                                    "{\"ct\":86,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
+                                    "{\"ct\":%d,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
                                     "\"px\":%d,\"py\":%d,\"sid\":-1,\"sel\":{\"os\":%u,\"pd\":%u}}}",
-                                    command_tick, command_tick + static_cast<std::int32_t>(kLiveCommandAgeTicks),
+                                    kCardPlayCommandType, command_tick,
+                                    command_tick + static_cast<std::int32_t>(kLiveCommandAgeTicks),
                                     request.player_id_high, static_cast<unsigned long long>(request.player_id),
                                     request.position_x, request.position_y, request.card_id, request.card_parameter);
   return written > 0 && static_cast<std::size_t>(written) < command_json_size;
@@ -6052,10 +6107,10 @@ bool format_ability_command(const AbilityRequest &request, std::int32_t command_
     return false;
   }
   const int written = std::snprintf(command_json, command_json_size,
-                                    "{\"ct\":2,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,"
+                                    "{\"ct\":%d,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,"
                                     "\"idLo\":%u,\"cgid\":%d}}",
-                                    command_tick, command_tick + 1, request.player_id_high, request.player_id_low,
-                                    request.champion_game_id);
+                                    kAbilityCommandType, command_tick, command_tick + 1, request.player_id_high,
+                                    request.player_id_low, request.champion_game_id);
   return written > 0 && static_cast<std::size_t>(written) < command_json_size;
 }
 
@@ -6784,6 +6839,16 @@ void handle_control_command(int socket_fd, const char *command) {
     send_control_response(socket_fd, response);
     return;
   }
+  if (std::strncmp(command, "command-check ", 14) == 0) {
+    // Diagnostic: parse and execute one semantic command against the current
+    // headless manager without enqueueing it, then report the engine code.
+    std::int32_t code = -1;
+    const bool parsed = check_logic_command(g_controlled_manager, command + 14, &code);
+    std::snprintf(response, sizeof(response), "{\"ok\":true,\"parsed\":%s,\"code\":%d}",
+                  parsed ? "true" : "false", code);
+    send_control_response(socket_fd, response);
+    return;
+  }
   if (std::strncmp(command, "content-window ", 15) == 0) {
     // Diagnostic: read a bounded window of the content context as hex so the
     // post-process-ready byte can be located on a new build without root.
@@ -6888,7 +6953,7 @@ void handle_control_command(int socket_fd, const char *command) {
       }
     }
     std::snprintf(response, sizeof(response),
-                  "{\"ok\":true,\"coldReady\":%s,\"contentReady\":%s,\"contentPublished\":%s,"
+                  "{\"ok\":true,\"clientVersion\":\"%s\",\"coldReady\":%s,\"contentReady\":%s,\"contentPublished\":%s,"
                   "\"contentRoot\":\"%p\",\"contentContext\":\"%p\","
                   "\"mode\":\"%s\",\"nativeRenderReady\":%s,"
                   "\"nativeRenderSequence\":%llu,\"nativeRenderProcessed\":%llu,\"nativeRenderLoaded\":%llu,"
@@ -6914,7 +6979,8 @@ void handle_control_command(int socket_fd, const char *command) {
                   "\"tilemapEnsureCalls\":%u,\"locationData\":\"%p\",\"tilemap\":\"%p\","
                   "\"configCommandWords\":[\"%016llx\",\"%016llx\",\"%016llx\","
                   "\"%016llx\",\"%016llx\",\"%016llx\",\"%016llx\",\"%016llx\"]}",
-                  cold_ready ? "true" : "false", cold_ready ? "true" : "false", content_published ? "true" : "false",
+                  kProbeTargetVersion, cold_ready ? "true" : "false", cold_ready ? "true" : "false",
+                  content_published ? "true" : "false",
                   content_root, content_context,
                   native_render_mode ? "native-render"
                   : "headless",
@@ -8387,7 +8453,7 @@ void *native_controlled_worker_main(void *opaque) {
       pthread_mutex_unlock(&g_control_mutex);
       return nullptr;
     }
-    void *const manager = g_game_state_new(0x230);
+    void *const manager = g_game_state_new(kGameStateManagerAllocationSize);
     if (manager == nullptr) {
       LOGE("native controlled worker could not allocate GameStateManager");
       pthread_mutex_lock(&g_control_mutex);
