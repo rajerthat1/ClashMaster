@@ -1,36 +1,43 @@
-# crforge — modular roadmap (fallback / CI oracle)
+# crforge — ultrafast simulator / CI oracle (reference only)
 
-Status: **optional, not the critical path**, revised 2026-11-12
-Role: deterministic Linux trainer fallback and CI/parity oracle.
-Primary plan: [`ROADMAP.md`](ROADMAP.md) — native engine route (E).
+Status: **optional, off the critical path**, revised 2026-11-13
+Role: deterministic ultrafast simulator, differential-test oracle, and CI
+reference. **Not a trainer.**
+Primary plan: [`ROADMAP.md`](ROADMAP.md) — cr-native Linux runtime.
 
-**Do not start this work just because it is already built.** Activate it only when a trigger below fires.
+**Use it for quick sanity checks, CI, and differential testing. Do not train the
+primary policy here and do not extend `observe-rich` on the critical path.**
 
 ---
 
 ## 0. What this is
 
-crforge is a Java reimplementation of the 16.635.1 client / 16.635.8 data rules. It runs without Android, KVM, a game client, or a GPU, which makes it valuable as:
+crforge is a Java reimplementation of the 16.635.1 client / 16.635.8 data rules.
+It runs without Android, KVM, a game client, or a GPU, which makes it valuable as:
 
 1. a **deterministic CI oracle** for the same `BattleEnvV1` contract;
-2. a **fallback trainer** when the native 16.635 probe is blocked or too slow;
-3. a **second implementation** for differential testing (lane flips, side swaps, entity identity).
+2. an **ultrafast simulator** for quick policy/rule sanity checks;
+3. a **second implementation** for differential testing (lane flips, side swaps,
+   entity identity).
 
-It is **not** the primary trainer. The native engine route has no fidelity gap and already has a proven X-Bow self-play recipe; crforge's remaining cost is open-ended `observe-rich` fidelity.
+It is **not** the primary trainer. The cr-native Linux runtime runs the real
+engine and is the training path; crforge's remaining cost is open-ended
+`observe-rich` fidelity.
 
 ---
 
-## 1. Activation triggers
+## 1. When to use it
 
-| Condition | Action |
+| Use | Action |
 | --- | --- |
-| Native 16.635 probe blocked > 4 weeks | crforge becomes the **fallback trainer**; native stays the live oracle |
-| Native throughput < 1 match/s aggregate | crforge becomes the **primary trainer**; native stays live/eval |
-| Native throughput 1–5 matches/s | crforge handles **bulk PPO**; native handles live/eval |
-| Native throughput ≥ 5 matches/s | crforge is **CI only**; do not extend `observe-rich` |
-| CI needs a deterministic no-Android test | Use crforge regardless of the primary trainer |
+| CI needs a deterministic no-Android test | Use crforge |
+| Quick check of a policy/rule change | Use crforge |
+| Differential test vs the real engine | Use crforge |
+| Bulk PPO / self-play training | **Use cr-native, not crforge** |
+| `observe-rich` extension | Deferred unless a concrete parity need appears |
 
-The Phase 0 decision memo in `ROADMAP.md` is the authority. If it says native is the trainer, this document is maintenance-only.
+The single plan in `ROADMAP.md` is the authority. This document is a technical
+reference for the simulator.
 
 ---
 
@@ -51,7 +58,9 @@ The Phase 0 decision memo in `ROADMAP.md` is the authority. If it says native is
 
 ## 3. Scope if activated
 
-Only implement the path needed for X-Bow training. Do **not** build the full `observe-rich` envelope unless crforge becomes the primary trainer and native is dead.
+Only implement the path needed for X-Bow sanity checks and CI. Do **not** build
+the full `observe-rich` envelope unless a concrete parity need appears; crforge is
+not the trainer.
 
 ### F0 — close legality (hours)
 
@@ -90,7 +99,8 @@ Enough for a deck specialist: tick/result, elixir, hand/next/cycle, towers, enti
 
 ## 4. CI role (always)
 
-Even when native is the primary trainer, keep crforge as a pinned, deterministic test target:
+Keep crforge as a pinned, deterministic test target alongside the cr-native
+engine:
 
 - [ ] Golden trace: seed + actions → per-tick observation hash; diff on every bridge change.
 - [ ] Differential parity: same deck/actions on crforge and native; compare entity counts, target choices, death ticks, tower HP, elixir.

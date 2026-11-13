@@ -8,30 +8,34 @@ CNN + LSTM recipe and v1450 checkpoint are the starting point. Training is **3a 
 3b matchup pool** (General/IL/Hog/scripted/live). The FirstLight_CR V4 / Everlight 16.8M models are
 generalists, opponents, and fallbacks.
 
-**Current phase:** **native-engine route (Option E)**. The real Clash Royale engine runs headless
-through FirstLight's probe/runner; the target client is **16.635.1**. Frida/static analysis is used
-to port the probe; an extracted `libg.so` headless process is preferred for speed. **crforge is a
-fallback and CI oracle only**, not the critical path.
+**Current phase:** **cr-native Linux runtime**. The original x86_64 `libg.so` runs in a plain
+Linux process (Android 31 Bionic userland, no AVD/QEMU/KVM) through
+[`cr-native-linux-bionic`](https://github.com/IMAX9D/cr-native-linux-bionic), with
+[`cr-native-sandbox`](https://github.com/IMAX9D/cr-native-sandbox) for `NativeRoyaleEnv`, self-play
+and PPO. Target version **15.535.29**. The A51 / 16.635.1 probe is the parity and live reference.
+**crforge is the ultrafast simulator / CI oracle**, not the critical path.
 
-**Next milestone:** a scripted X-Bow bot playing live on Null's 16.635.1, then a learned X-Bow bot
-that beats it and is ready for a main-ladder canary.
+**Next milestone:** verify the runtime and 4 workers, measure engine-only throughput, then train the
+X-Bow specialist in self-play.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
 below. Project-specific additions:
 
-- **[ROADMAP.md](ROADMAP.md)** — the single source: engine decision, Phases 0–4 + main-ladder gate, QA harness.
-- **[ROADMAP_CRFORGE.md](ROADMAP_CRFORGE.md)** — optional crforge fallback / CI roadmap.
+- **[ROADMAP.md](ROADMAP.md)** — the single plan: runtime bring-up, API/deck, throughput, training,
+  parity/live, QA harness.
+- **[ROADMAP_CRFORGE.md](ROADMAP_CRFORGE.md)** — ultrafast simulator / CI oracle (reference only).
+- **[docs/native/LINUX_BIONIC_RUNTIME.md](docs/native/LINUX_BIONIC_RUNTIME.md)** — runtime details,
+  bundle hashes, install/smoke commands.
 - **[HANDOFF.md](HANDOFF.md)** — current state, measured facts, next actions.
 - **Sync upstream:** `./scripts/sync-upstream.sh`, or manually
   `git fetch upstream && git merge upstream/main && git push origin main`.
 - **Replay dataset:** `IL_Replay` is **retired as a training corpus** in this fork. The X-Bow
   specialist is trained by self-play, with live captures for behavior cloning and validation. The
   IL/General/Everlight checkpoints are kept as opponents, baselines, and fallbacks.
-- **15.535 vs 16.635:** the upstream 15.535.13 / 15.535.86 install below is the **offline training
-  lab** (run it on Windows/MuMu or a Linux AVD). Live play and the probe target are 16.635.1; see
-  `ROADMAP.md`. The laptop handles demos/live/light training; use the student cloud GPU credits
-  for PPO.
+- **Versions:** training runs on the frozen **15.535.29 x86_64** runtime; **16.635.1** is the
+  live/parity reference on the A51. Do not mix versions, bundles or `libg` hashes in one artifact.
+  The laptop handles bring-up/demos; use the student cloud credits for the larger x86 host and PPO.
 - **Remotes:** `origin` = this repo, `upstream` = `Jaasssoooonnnnn/FirstLight_CR`,
   `fork` = `rajerthat1/FirstLight_CR` (pristine mirror for upstream PRs).
 

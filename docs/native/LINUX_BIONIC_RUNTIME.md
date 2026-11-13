@@ -1,6 +1,6 @@
-# Linux Bionic runtime — the off-the-shelf Track B engine
+# Linux Bionic runtime — the engine host
 
-Status: **evaluated 2026-11-13; recommended first Track B step**
+Status: **evaluated 2026-11-13; the chosen engine host**
 Sources:
 - <https://github.com/IMAX9D/cr-native-linux-bionic>
 - <https://github.com/IMAX9D/cr-native-sandbox>
@@ -44,7 +44,7 @@ Both bundles are GitHub release assets; they are not in git. The runtime is
 version-pinned and fails closed on hash/version mismatch. It is **not**
 compatible with the 160402002 ARM64 build or our 16.635.1 client.
 
-## Why this matters for Track B
+## Why this matters
 
 - It is exactly the "extracted engine on Linux" we planned, already built and
   attested. **No loader, Bionic shim or app bootstrap to write** for 15.535.29.
@@ -53,8 +53,7 @@ compatible with the 160402002 ARM64 build or our 16.635.1 client.
   `base.apk`, `libg.so` and assets.
 - It provides the full worker lifecycle: `verify-bundle`, `install`, `doctor`,
   `start`, `status`, `smoke`, `stop`, with per-slot isolation and hash checks.
-- `cr-native-sandbox` gives us a working native API and training stack to
-  measure against while our 16.635.1 path matures.
+- `cr-native-sandbox` gives us a working native API and training stack.
 
 ## Throughput reality
 
@@ -147,15 +146,14 @@ So:
   `ss`/`/proc/PID/cmdline`.
 - Runtime and assets are user-supplied; do not commit them.
 
-## How this changes the roadmap
+## How this fits the plan
 
 | Step | Before | With this runtime |
 | --- | --- | --- |
-| B0–B3 (loader, shim, bootstrap, matches) | 4–8 weeks | **1–2 days** (install + doctor + smoke) |
-| Engine-only 10 matches/s | uncertain | 5–8 workers on a 8–16 vCPU host |
-| Full training 10 matches/s | 2–4 months | 3–6 weeks: measure, then optimize the observation path or scale the host |
-| 16.635.1 support | the long pole | still our custom loader/A51 path |
+| Loader, shim, bootstrap, first match | 4–8 weeks | **1–2 days** (install + doctor + smoke) |
+| Engine-only 10 matches/s | uncertain | 5–8 workers on an 8–16 vCPU host |
+| Full training 10 matches/s | 2–4 months | 3–6 weeks: measure, then optimize observations or scale the host |
+| 16.635.1 support | the long pole | A51 parity only; port later if the 15.535.29 gap matters |
 
-**Decision:** make this the first Track B action. If it passes `doctor` and the
-smoke test, use it as the Linux training host and keep the custom 16.635.1
-loader as the later parity path.
+**Decision:** this is the engine host. If it passes `doctor` and the smoke test,
+all training runs here. The A51/16.635.1 probe is the parity/live reference.
