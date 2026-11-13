@@ -88,10 +88,14 @@
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
     `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
-    project has a stale lock and was last modified at 19:32; check whether
-    auto-analysis finished before using it. If not, rerun with
+    project has a stale lock and was last modified at 19:32; **auto-analysis
+    did not finish** — there is no function at `0x11d1e68` and
+    `0x11d2250`/`0x11d225c` are mis-split. `DecompileAnchors.java` can force a
+    function at a known address, but the decompiler loses AArch64 argument
+    registers until the project is fully re-analysed. Rerun with
     `-analysisTimeoutPerFile 7200`.
 - **Commits (local until pushed):**
+  - `63b8a93` — `feat(native): wire 16.635 probe hooks and recover GameState store map`
   - `3a7d308` — `feat(native): recover replay controller and generate 16.635 layout header`
   - `ca6994f` — `feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling`
   - `98d94ad` — `docs: update handoff for the next session`
@@ -99,7 +103,8 @@
   - `32d76f3` — `feat(crforge): add bridge, catalog, attestation, and F0 fixes`
 - The accidental root `LICENSE` deletion was restored and is not part of any commit.
 - **Working tree is clean.** The replay-controller recovery, verified overrides,
-  field offsets, seeded vtable report, and layout header are committed.
+  field offsets, seeded vtable report, layout header, build-selectable probe
+  wiring, and GameState constructor store map are committed.
 - `ROADMAP.md` now has the **3a mirror bootstrap / 3b matchup pool** split.
 - `ROADMAP_CRFORGE.md` is the optional fallback/CI roadmap. `ROADMAP_NULLS16_PROBE.md` was folded
   into `ROADMAP.md` Phase 1 and removed.
@@ -156,8 +161,10 @@ part-time; with his notes it can be weeks.
 - crforge raw engine: **8,371 decisions/s at 256 envs**. The bridge is **20–30 decisions/s**;
   the gap is `BattleEnvV1` observation assembly and JPype conversion, not crforge.
 - The **16.635.1 APK** is local (`nr_16.635.1_release_951fe421.apk`, `libg` `0b5802…`), and the
-  static port now has every replay-runner anchor plus the non-code import/data
-  anchors resolved (FINDINGS §3.5–§3.7). The probe is still **not rebuilt** for
+  static port has every replay-runner anchor plus the non-code import/data
+  anchors resolved (FINDINGS §3.5–§3.7). The core hooks are wired behind the
+  generated build header (FINDINGS §3.9) and the GameState constructor store
+  map is recovered (§3.8), but the probe is still **not built or run** for
   16.635; `native_runner/supported_engine.json` is still 15.535.13.
 - The 16.635 crforge tests pass: 14 attestation/catalog tests, 6 bridge tests.
 
