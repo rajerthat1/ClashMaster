@@ -4,6 +4,25 @@
 > This file is the starting point for the next session: current state, environment decision,
 > and the exact next actions.
 
+## Current focus — Track B
+
+**We are working on Track B: the Linux `libg.so` loader on 16.635.1.** The A51
+is a verified golden reference and a fallback lane, not the 10 matches/s host.
+Do not start new phone multi-engine work; the 2–3 engine result is a fallback
+data point (capacity ~4.3 matches/s, limited to one top-app big-core lane plus
+background lanes on cpu0–1, ~690 MB per engine).
+
+Immediate Track B steps (details in [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md)):
+
+1. Choose the loader: try `clapha-engine`; otherwise `project-qemu` + `PenguDroid`.
+2. Native ARM64 Linux if available; otherwise `qemu-aarch64` user-mode on Linux.
+3. Load `libg.so` from `.resource/native/16.635.1/reference/libg.so`
+   (`0b5802…e4eaa`) and reach `DT_INIT`/`JNI_OnLoad` (gate B0).
+4. Content is already extracted:
+   `.resource/cluster/decoded-16.635.1-pristine/assets/` (`assets.scdb`,
+   `csv_logic/`, `fingerprint.json`, content version 16.635.1). Do not wait for
+   the 15.535 update screen; the APK content is enough for B0–B3.
+
 ## State
 
 - **Extracted-engine plan written (2026-11-13, later session).**
@@ -413,11 +432,15 @@ part-time; with his notes it can be weeks.
 
 ## Next session: start here
 
-### NEXT ACTION — real actions through the resident batch channel, then multi-engine throughput   [FINDINGS §3.17–3.22]
+### NEXT ACTION — Track B: Linux `libg.so` loader, gate B0   [ROADMAP_EXTRACTED.md]
+
+**Track B is the current work.** Start with the loader smoke test: native ARM64
+Linux if available, otherwise `qemu-aarch64` user-mode, load the 16.635.1
+`libg.so`, and reach `DT_INIT`/`JNI_OnLoad`. The phone items below are complete
+or fallback only; do not start new phone multi-engine work.
 
 The multi-decision gate, the scripted X-Bow match, ability actions, the
-throughput baseline and the entity/HP path are done on the A51. The next
-session:
+throughput baseline and the entity/HP path are done on the A51. Context:
 
 1. **Real actions through the resident batch channel — DONE** (FINDINGS
    §3.23). `resident_batch_throughput.py --actions` sends real
@@ -425,17 +448,19 @@ session:
    produced 64 valid receipts at 1.73 matches/s / 28 actions/s. Ability
    actions through the batch protocol are supported by the wire format but not
    exercised yet (the resident capture has no rich ability telemetry).
-2. **Multi-engine throughput — phone measurement done; host plan written.**
-   The single-process A51 APK exposes one lane; with the new affinity override
-   that lane is **1.80 matches/s** on a big core (0.62 on a little core, 0.82
-   unpinned). Android cpusets (background engines get cpu0–1) and the 3.6 GB
-   RAM / ~690 MB per engine make the phone a ~2–4 lane device at best. The
-   10 matches/s plan now lives in [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md):
-   **Track B (primary)** is the clapha-type Linux `libg.so` loader (2–3 months
-   part-time; 6–10 weeks if `clapha-engine` is obtainable), **Track A
-   (fallback)** is the FirstLight Linux AVD (4–6 weeks part-time, first gate in
-   2–3 days). Decision rule unchanged: ≥5 matches/s aggregate → native primary;
-   1–5 → split; <1 → crforge primary.
+2. **Multi-engine throughput — phone measurement done; PAUSED (fallback).**
+   On the A51 after a reboot, 2 engines showed lane rates of **1.55 + 3.76**
+   matches/s (the 3.10 in that report is the pre-fix makespan metric; capacity
+   is 5.31). The 3.76 lane is ~2× the controlled single-lane 1.80 and is not
+   confirmed. With 3 engines the fixed tool reports **4.34 matches/s capacity**
+   (`0.90 + 1.10 + 2.34`, makespan 2.69): only the top-app engine gets the big
+   cores, the others share cpu0–1, and three engines already use ~1.5 GB of the
+   3.6 GB device. This is the phone ceiling; do not chase it further. The
+   10 matches/s plan is **Track B** in
+   [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md): the clapha-type Linux
+   `libg.so` loader (2–3 months part-time; 6–10 weeks if `clapha-engine` is
+   obtainable). **Track A** (FirstLight Linux AVD) is the fallback (4–6 weeks
+   part-time, first gate in 2–3 days).
 3. **Scripted X-Bow polish (non-blocking).** The v0 baseline is verified; the
    next improvements are real defensive placement/spell value, elixir reserve
    across pending plays, and v1450 style comparison. Do not block throughput
