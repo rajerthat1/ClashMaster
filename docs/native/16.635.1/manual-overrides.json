@@ -62,6 +62,12 @@
       "new_offset": "0x01b61d00",
       "evidence": "The new ContextA getter (0x878c00) loads this global: adrp x19,#0x1b61000; ldr x8,[x19,#0xd00].",
       "note": "Data slot holding the root pointer."
+    },
+    {
+      "hook": "kGameStateTick",
+      "new_offset": "0x011d32f0",
+      "evidence": "Old tick getter 0x01062bc0 is exactly `ldr w0,[x0,#0x60]; ret` (bytes 00 60 40 b9 c0 03 5f d6). New 0x011d32f0 has the identical 8 bytes and starts right after GameStateManager::step returns at 0x011d32ec. The new step body still reads the tick from [x19,#0x60] (0x011d324c) and passes &this->0x60 (0x011d3260), so the field did not move. diff_builds matched 0x011d3c90, which is a different tiny getter (`ldr x0,[x0,#0xb0]; ret`, bytes 00 58 40 f9 c0 03 5f d6) inside a cluster of adjacent accessors; that address has 650 callers versus 132 for the real tick (114 in 15.535). On the A51 the wrong getter returned the low 32 bits of a heap pointer: constant per manager, different per manager (menu 1961712128, battle -2050488320).",
+      "note": "The 16-byte prologue window straddles two tiny getters, which is why both the diff and the layout guard accepted it. Re-check any tiny-getter anchor whose 16-byte window contains a ret before byte 8."
     }
   ]
 }

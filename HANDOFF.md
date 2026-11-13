@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-12 (native-first; 16.635 APK ready to deploy)
+# Session handoff — 2026-11-12 (native-first; 16.635 APK deployed and verified on the A51)
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single source for the plan.
 > This file is the starting point for the next session: current state, environment decision,
@@ -58,9 +58,9 @@
   - **Linux build toolchain installed; 16.635.1 APK built and verified:**
     `.resource/android-tools/` has NDK r27c, build-tools r34 and apktool 2.12.1
     (all hashes verified against Google/the pinned apktool SHA-256).
-    `builds/cr-ai-16.635.1.apk` (841 MB, SHA-256 `2658a768…6636`, signed with
+    `builds/cr-ai-16.635.1.apk` (841 MB, SHA-256 `9415681a…f200`, signed with
     the local `CN=Firstlight CR Local Build` key) bundles
-    `libcrprobe.so 82117903…9d85` and the reference `libg.so 0b5802…e4eaa`.
+    `libcrprobe.so 01cd0986…755b` and the reference `libg.so 0b5802…e4eaa`.
     `builds/` is gitignored; rebuild from the APK if it is cleaned. This is a
     **single-process** APK (no engine-cluster Application/activities), the A51
     no-root path.
@@ -94,8 +94,25 @@
     `0x218 → 0x220`; new zero fields at `0x208`, `0x228`, `0x238`. Full table in
     `docs/native/16.635.1/gamestate-constructor.json`. The *roles* still need
     live-golden confirmation.
-  - **Still open:** the built APK has **not run on the A51 yet** — that is the
-    next action (§0). Then confirm the constructor field roles from named live
+  - **On-device smoke test passed (FINDINGS §3.10).** `builds/cr-ai-16.635.1.apk`
+    installs and runs on the A51 (**SM-A515U**, Android 13 / SDK 33, arm64-v8a):
+    all 9 runner hooks + touch install with **no `prologue mismatch`**, the five
+    `anchor unavailable` lines print, and a live battle runs without a crash.
+    On-device attestation matches the target `libg.so` (`0b5802…e4eaa`,
+    build ID `179ac4bd…1c30`) and reports `content_version 16.635.93`,
+    `content_fingerprint_sha256 553c8f15…04b4`, `hook_install_ok true`,
+    `content_ready false`, `production_ready false`.
+  - **Tick getter corrected (FINDINGS §3.10).** `kGameStateTick` was mapped to
+    the pointer getter `0x011d3c90` (`ldr x0,[x0,#0xb0]; ret`), so the step log
+    reported the low 32 bits of a heap pointer. The real getter is
+    **`0x011d32f0`** (`ldr w0,[x0,#0x60]; ret`), byte-identical to the 15.535
+    getter and immediately after `step`'s `ret`. After rebuild, a live battle
+    logs `call=1 tick=1 … call=100 tick=100` at 20 Hz. The fix is a MANUAL
+    override in `manual-overrides.json`; `offset-diff.json` and the layout
+    header were regenerated. `diff_builds.py` now flags tiny-getter
+    `tiny_shape_mismatch` and `gen_layout.py` refuses such a row unless a
+    MANUAL override clears it.
+  - **Still open:** confirm the constructor field roles from named live
     goldens and do the entity/HP (`hpComponentAccessor`) work. The
     Character/Projectile/AreaEffect/component vtables still need manual review.
     The remaining `AMBIGUOUS` core anchors (`kJsonMemberFind`,
@@ -151,7 +168,7 @@
 | --- | --- | --- |
 | **Static analysis / offset diff** | **Linux now** | Ghidra/REA/LIEF/Capstone work on x86_64; no Frida needed |
 | **Probe + APK build/sign** | **Linux now** | NDK r27c, build-tools r34 and apktool live under `.resource/android-tools/`; `build_offline_apk.sh` and `build_probe.sh` mirror the PowerShell path |
-| **Dynamic Frida / offset verification** | **User's Samsung A51 (SM-A515F), arm64-v8a — no root needed** | Native ARM64, so no translation layer. Bootloader is locked and cannot be rooted; use Frida Gadget baked into the already re-signed APK, or instrumented `libcrprobe` + `adb logcat`. `frida-server` and Shizuku both need root and will **not** work on this device |
+| **Dynamic Frida / offset verification** | **User's Samsung A51 (SM-A515U, verified online 2026-11-12), arm64-v8a — no root needed** | Native ARM64, so no translation layer. Bootloader is locked and cannot be rooted; use Frida Gadget baked into the already re-signed APK, or instrumented `libcrprobe` + `adb logcat`. `frida-server` and Shizuku both need root and will **not** work on this device |
 | **Running the ported probe / demos** | **Windows + MuMu** | The probe is a native library loaded by the game; FirstLight supports MuMu. This is the runtime/demo environment |
 | **15.535 FirstLight-Zero lab** | **Windows MuMu** if the 15.535 APK is there | The 15.535 probe is already built; no Frida required |
 | **PPO / heavy training** | **Cloud GPU** (student credits) | Laptop is for engines/demos; use GPU time for the learner and inference server |
@@ -183,18 +200,22 @@ part-time; with his notes it can be weeks.
 - crforge raw engine: **8,371 decisions/s at 256 envs**. The bridge is **20–30 decisions/s**;
   the gap is `BattleEnvV1` observation assembly and JPype conversion, not crforge.
 - The **16.635.1 probe compiles** on Linux (NDK r27c), and the patched APK
-  **builds, signs and verifies**: `builds/cr-ai-16.635.1.apk` carries the exact
-  `libg.so 0b5802…e4eaa` and `libcrprobe.so 82117903…9d85`. The 9 runner hooks +
-  touch are wired behind the generated build header (FINDINGS §3.9) and the
-  GameState constructor store map is recovered (§3.8).
-  `native_runner/supported_engine.json` is still 15.535.13 by design; the
-  16.635 build is pinned separately in `docs/native/16.635.1/build.json`.
+  **builds, signs, verifies, installs and runs on the A51**:
+  `builds/cr-ai-16.635.1.apk` carries the exact `libg.so 0b5802…e4eaa` and
+  `libcrprobe.so 01cd0986…755b`. All ten hooks (9 runner + touch) install with
+  no prologue mismatch, and a live battle steps at 20 Hz with a correct tick
+  (`call=N tick=N`) — FINDINGS §3.10. The 9 runner hooks + touch are wired
+  behind the generated build header (§3.9) and the GameState constructor store
+  map is recovered (§3.8). `native_runner/supported_engine.json` is still
+  15.535.13 by design; the 16.635 build is pinned separately in
+  `docs/native/16.635.1/build.json`.
 - The 16.635 crforge tests pass: 14 attestation/catalog tests, 6 bridge tests.
 
 ## What is not proven
 
-- The 16.635.1 probe **on-device**: hook installation, absence of prologue
-  mismatch, and throughput. The APK is built but has not run on the A51 yet.
+- The 16.635.1 probe's **throughput** on-device. Hook installation, the absence
+  of prologue mismatch, and live stepping are now proven (§3.10); a battle was
+  played but matches/s was not measured.
 - The live reader/executor loop on 16.635.1 (blocked on the four unresolved
   core anchors in FINDINGS §3.9).
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
@@ -223,7 +244,9 @@ part-time; with his notes it can be weeks.
 
 ## Next session: start here
 
-### 0. Run the built 16.635.1 APK on the A51 (do this first)
+### 0. Run the built 16.635.1 APK on the A51 — **DONE 2026-11-12**
+
+Passed; see FINDINGS §3.10. Keep this checklist for the next probe rebuild.
 
 `builds/cr-ai-16.635.1.apk` is built, signed and verified. Enable USB debugging
 on the A51, connect it, accept the host key, then:
@@ -234,12 +257,16 @@ on the A51, connect it, accept the host key, then:
 
 Success gate: `adb devices` shows the phone; the install succeeds; logcat shows
 `probe target client=16.635.1 build16=1`, the ten `hook installed` lines (9
-runner hooks + touch) and the four `anchor unavailable` lines, with **no**
+runner hooks + touch) and the `anchor unavailable` lines, with **no**
 `prologue mismatch` and no crash. If `adb install -r` fails with
 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, uninstall the old nulls build first and
 let the game re-download its update data.
 
-Do not proceed to the analysis below until this smoke test passes.
+**Result (2026-11-12):** all gates passed on the SM-A515U (Android 13). A live
+ladder battle ran; `GameStateManager::step` logged `tick=1,2,3,10,100` for
+`call=1,2,3,10,100` at 20 Hz after the `kGameStateTick` correction. The lab
+account was then maxed to card level 16 — live runs are at 16, so pin level 11
+in the engine config for the v1450 baseline.
 
 ### 0b. Continue the static port
 
@@ -266,10 +293,14 @@ the four ambiguous core anchors, and naming the entity fields.
 5. **Non-code anchors are resolved** (FINDINGS §3.6): GameStateNew/Delete PLT
    stubs, the EGL GOT slot, ContextA, and the context root slot.
 6. **The 9 runner hooks + touch are wired** into `cr_replay_probe.cpp` behind
-   the build header (FINDINGS §3.9). The 16.635 probe and APK are built; the
-   default build is still 15.535.13. Next is the A51 smoke test (§0), then
-   confirming the recovered GameState constructor field roles (FINDINGS §3.8)
-   and the entity/HP (`hpComponentAccessor`) work.
+   the build header (FINDINGS §3.9). The 16.635 probe and APK are built and the
+   A51 smoke test passed (§0 / FINDINGS §3.10); the default build is still
+   15.535.13. Next is confirming the recovered GameState constructor field roles
+   (FINDINGS §3.8) and the entity/HP (`hpComponentAccessor`) work.
+6b. **Tiny-getter anchors need shape checks.** `kGameStateTick` was one function
+   off; the fix is MANUAL. `diff_builds.py` now emits `tiny_shape_mismatch` and
+   `gen_layout.py` refuses it without an override. When adding an anchor that is
+   a two-instruction getter, disassemble it and compare shape, not just bytes.
 7. **Next analysis blockers:** resolve `kJsonMemberFind`, `kLogicCommandParse`,
    `kLocationTileMapEnsure` and `kLocationTileMapLookup` (FINDINGS §3.9). Until
    then the 16.635 build intentionally leaves cold configure and live command

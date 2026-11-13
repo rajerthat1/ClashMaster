@@ -438,3 +438,78 @@ Guard test: `native_runner/tests/test_probe_build_layout.py` re-reads every
 emitted prologue from the reference binary, checks the unresolved-anchor
 flags, compiles the header as C++17, and asserts the probe consumes the header
 instead of repeating literals.
+
+### 3.10 16.635.1 on-device smoke test — **passes; tick getter corrected**
+
+Run on 2026-11-12 against `builds/cr-ai-16.635.1.apk` (probe `01cd0986…755b`)
+on the Samsung **SM-A515U**, Android 13 / SDK 33, `arm64-v8a`, installed with
+`./deploy_a51.sh`.
+
+Attested over `adb forward tcp:26789 tcp:26789`:
+
+- `libg_sha256 0b5802…e4eaa`, `libg_build_id 179ac4bd…1c30` (exact target);
+- `content_version 16.635.93`,
+  `content_fingerprint_sha256 553c8f15…04b4`;
+- `hook_install_ok true`; capabilities `headless`, `native_render`,
+  `snapshot_restore`, `structured_observation` true,
+  `two_sided_actions false`;
+- `content_ready false`, `production_ready false` (expected: cold configure is
+  still closed on the four ambiguous anchors).
+
+The client boots to the Collection screen, all 9 runner hooks + touch install
+with **no `prologue mismatch`**, the five `anchor unavailable` lines print, and
+a live ladder battle runs without a crash.
+
+**Tick bug found here and fixed.** `kGameStateTick` had been diffed to
+`0x011d3c90`, which is a *pointer* getter:
+
+```
+0x011d3c90: ldr x0, [x0, #0xb0]   ; returns this->field_0xb0
+0x011d3c94: ret
+```
+
+Called as `int32_t(*)(void *)` it returned the low 32 bits of a heap pointer:
+constant inside one manager, different across managers (menu `1961712128`,
+battle `-2050488320`). The real getter is **`0x011d32f0`**:
+
+```
+0x011d32f0: ldr w0, [x0, #0x60]   ; bytes 00 60 40 b9 c0 03 5f d6
+0x011d32f4: ret
+```
+
+which is byte-identical to the 15.535 getter at `0x01062bc0` and begins right
+after `GameStateManager::step` returns at `0x011d32ec`. The new step body still
+reads the tick from `[x19, #0x60]` (`0x011d324c`) and passes `&this->0x60`
+(`0x011d3260`), so the field did not move; only the accessor address did.
+`0x011d3c90` has 650 callers versus 132 for `0x011d32f0` (114 in 15.535).
+
+After rebuilding with the corrected offset, the live battle logs
+
+```
+GameStateManager::step … call=1 tick=1
+GameStateManager::step … call=2 tick=2
+GameStateManager::step … call=3 tick=3
+GameStateManager::step … call=10 tick=10
+GameStateManager::step … call=100 tick=100
+```
+
+at 20 Hz, confirming the getter and the manager field. The correction lives in
+`manual-overrides.json` (`kGameStateTick → 0x011d32f0`) and is applied with
+`diff_builds.py --overrides`; `offset-diff.json` and the layout header were
+regenerated, not hand-edited.
+
+Root cause: the diff's multi-window vote used windows *past* the anchor
+(relative 64/128/192/256) that landed in neighbouring functions, and the
+16-byte prologue guard straddled two tiny adjacent getters, so both accepted
+the wrong base. `diff_builds.py` now sets `tiny_shape_mismatch` when a
+two-instruction accessor maps to a different instruction shape, and
+`gen_layout.py` refuses such a row unless a `MANUAL` override clears it. An
+audit of every other tiny-getter anchor (`kProjectileKindGetter`,
+`kBuffComponentTypeGetter`, `kAttackComponentTypeGetter`,
+`kMovementComponentTypeGetter`, `kByteStreamResetChecksum`) found them
+byte-identical and correct.
+
+Note for live runs: the lab account used for this smoke test was later maxed to
+card level 16. The engine does not normalise levels; replay/battle config must
+pin level 11 for the v1450 baseline, and level 16 is a separate experiment.
+

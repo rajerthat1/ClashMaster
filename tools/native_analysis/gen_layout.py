@@ -126,12 +126,31 @@ def is_resolved(row: dict | None) -> bool:
     )
 
 
+def _refuse_tiny_shape_mismatch(name: str, row: dict | None) -> None:
+    """Reject an auto-mapped tiny getter whose instruction shape disagrees.
+
+    ``diff_builds.py`` sets ``tiny_shape_mismatch`` when a two-instruction
+    accessor was mapped to a neighbouring accessor in the same cluster.  Only a
+    human-verified ``MANUAL`` override clears the flag.
+    """
+    if row is None or not row.get("tiny_shape_mismatch"):
+        return
+    if row.get("confidence") == "MANUAL":
+        return
+    raise SystemExit(
+        f"anchor {name} is a tiny getter mapped with a mismatched instruction shape "
+        f"(old={row.get('old_shape')} new={row.get('new_shape')}); "
+        f"confirm it in manual-overrides.json before generating the layout"
+    )
+
+
 def resolve_anchor(name: str, rows: dict[str, dict], binary: Binary) -> tuple[int, list[int], str]:
     row = rows.get(name)
     if not is_resolved(row):
         raise SystemExit(
             f"anchor {name} is not resolved (confidence={None if row is None else row.get('confidence')})"
         )
+    _refuse_tiny_shape_mismatch(name, row)
     offset = int(row["new_offset"], 16)
     if offset % 4:
         raise SystemExit(f"anchor {name} offset 0x{offset:08x} is not instruction-aligned")
@@ -159,6 +178,7 @@ def render_core_anchor(
         ]
         return lines, False
 
+    _refuse_tiny_shape_mismatch(hook, row)
     offset = int(row["new_offset"], 16)
     if offset % 4:
         raise SystemExit(f"anchor {hook} offset 0x{offset:08x} is not instruction-aligned")

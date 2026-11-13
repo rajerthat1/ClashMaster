@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from capstone import CS_OP_REG  # noqa: E402
+
 from cr_elf import Binary  # noqa: E402
 
 GENERATED_LAYOUT_MARKER = "tools/native_analysis/gen_layout.py"
@@ -67,6 +69,43 @@ def search(data: bytes, needle: bytes, limit: int = 5000) -> list[int]:
         hits.append(index)
         start = index + 1
     return hits
+
+
+def tiny_function_shape(binary: Binary, va: int) -> tuple[bool, tuple[str, ...]]:
+    """Classify a two-instruction getter/setter at *va*.
+
+    Returns ``(True, shape)`` when the function ends within its first two
+    instructions.  For such a function the instruction *shapes* are the whole
+    semantic signature: a ``ldr w0,[x0,#0x60]`` getter and a
+    ``ldr x0,[x0,#0xb0]`` getter are different functions even when they sit in
+    the same cluster of tiny accessors.  Deep byte windows from neighbouring
+    functions can still recover a delta-consistent wrong base, so mapped
+    anchors that are tiny getters must also agree on shape.
+    """
+    try:
+        raw = binary.read(va, 8)
+    except SystemExit:
+        return False, ()
+    try:
+        insns = list(binary.dis().disasm(raw, va))
+    except Exception:  # pragma: no cover - capstone is defensive here
+        return False, ()
+    if len(insns) < 2 or not insns[1].mnemonic.startswith("ret"):
+        return False, ()
+
+    shape: list[str] = []
+    for insn in insns[:2]:
+        width = ""
+        if insn.operands and insn.operands[0].type == CS_OP_REG:
+            name = insn.reg_name(insn.operands[0].reg)
+            if name.startswith(("wzr", "xzr")):
+                width = name[0]
+            elif name.startswith("w"):
+                width = "w"
+            elif name.startswith("x"):
+                width = "x"
+        shape.append(f"{insn.mnemonic}:{width}")
+    return True, tuple(shape)
 
 
 def relocate(old: Binary, new: Binary, anchor: OldAnchor) -> dict:
@@ -276,6 +315,23 @@ def main() -> int:
 
     counts: dict[str, int] = {}
     overrides = load_overrides(Path(args.overrides) if args.overrides else None)
+
+    # A tiny (two-instruction) getter has no deep body to match on, so a
+    # delta-consistent base recovered from neighbouring windows can still point
+    # at a different accessor in the same cluster.  Flag those unless a human
+    # has confirmed them with --overrides.
+    for row in rows:
+        if "new_offset" not in row:
+            continue
+        old_tiny, old_shape = tiny_function_shape(old, int(row["old_offset"], 16))
+        if not old_tiny:
+            continue
+        new_tiny, new_shape = tiny_function_shape(new, int(row["new_offset"], 16))
+        if not new_tiny or new_shape != old_shape:
+            row["tiny_shape_mismatch"] = True
+            row["old_shape"] = list(old_shape)
+            row["new_shape"] = list(new_shape)
+
     for row in rows:
         override = overrides.get(row["hook"])
         if override is not None:
@@ -284,6 +340,7 @@ def main() -> int:
             row["delta"] = f"{new_offset - int(row['old_offset'], 16):+#x}"
             row["confidence"] = "MANUAL"
             row.pop("suspect", None)
+            row.pop("tiny_shape_mismatch", None)
             row["manual_evidence"] = override.get("evidence", "")
             if override.get("note"):
                 row["manual_note"] = override["note"]
@@ -291,6 +348,8 @@ def main() -> int:
         flags = ""
         if row["confidence"] == "MANUAL":
             flags = " manual"
+        elif row.get("tiny_shape_mismatch"):
+            flags = " SUSPECT(tiny-shape)"
         elif row.get("delta_verified"):
             flags = " verified"
         elif row.get("delta_constrained"):
