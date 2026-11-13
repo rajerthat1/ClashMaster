@@ -14,7 +14,14 @@ background lanes on cpu0–1, ~690 MB per engine).
 
 Immediate Track B steps (details in [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md)):
 
-1. Choose the loader: try `clapha-engine`; otherwise `project-qemu` + `PenguDroid`.
+0. **Check the turnkey runtime first.** `cr-native-linux-bionic` +
+   `cr-native-sandbox` run the original **x86_64** `libg.so` as a plain Linux
+   process (no AVD, QEMU or KVM) for **15.535.29**, with up to 48 workers. See
+   [`docs/native/LINUX_BIONIC_RUNTIME.md`](docs/native/LINUX_BIONIC_RUNTIME.md).
+   If `verify-bundle`/`doctor`/`smoke` pass, this is the Track B host; the
+   custom 16.635.1 loader becomes the later parity path.
+1. If a custom loader is still needed: try `clapha-engine`; otherwise
+   `project-qemu` + `PenguDroid`.
 2. Native ARM64 Linux if available; otherwise `qemu-aarch64` user-mode on Linux.
 3. Load `libg.so` from `.resource/native/16.635.1/reference/libg.so`
    (`0b5802…e4eaa`) and reach `DT_INIT`/`JNI_OnLoad` (gate B0).
