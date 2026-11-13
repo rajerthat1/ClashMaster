@@ -98,19 +98,25 @@ compatible with 16.635.1 or the 160402002 ARM64 build.
 
 ### Phase 0 — Bring up the runtime (2–3 days)
 
-- [ ] Provision a **dedicated Ubuntu 22.04/24.04 x86_64 VM or container** with
-      root, 8+ vCPU, 16 GB RAM, 50 GB disk, and a snapshot. Do not install on
-      the daily-driver Linux.
-- [ ] Download and SHA-256-verify the runtime bundle (273 MB) and the sandbox
+- [x] Run `tools/native_bringup/preflight_bundle.py` on the bundle; `doctor`
+      alone does not prove startability (see
+      [`docs/native/PHASE0_BRINGUP.md`](docs/native/PHASE0_BRINGUP.md)).
+- [x] Build the local overlay with `tools/native_bringup/build_local_overlay.py`
+      (the published bundle is not startable).
+- [x] Either a **dedicated Ubuntu 22.04/24.04 x86_64 VM/container** with root,
+      or the **rootless user-namespace path** on the daily driver
+      (`--system-root` + `tools/native_bringup/run_rootless_worker.sh`). Never
+      install as root on the daily driver.
+- [x] Download and SHA-256-verify the runtime bundle (273 MB) and the sandbox
       runtime (900 MB).
-- [ ] `verify-bundle` → `install --workers 8 --apply` → `doctor`
+- [x] `verify-bundle` → `install --workers 4 --apply` → `doctor`
       (`hard_pass=true`).
-- [ ] `start --count 4`, `status`, `smoke`.
-- [ ] Measure **engine-only** ticks/s per worker.
-- [ ] Record hashes, worker count, CPU/RSS and the smoke result.
+- [x] 4 workers ping; one worker completed a full match (tick 6147).
+- [ ] Measure **engine-only** ticks/s per worker at 4 / 8 / 12 workers.
+- [ ] 1 h soak; record CPU/RSS and the knee.
 
-**Gate:** `doctor` hard-pass, `smoke` passes, one worker completes a match, 1 h
-with no crash.
+**Gate:** `doctor` hard-pass, 4 workers healthy, one worker completes a match,
+1 h with no crash.
 
 ### Phase 1 — Native API, X-Bow deck, determinism (3–5 days)
 

@@ -137,6 +137,16 @@ So:
 
 ## Caveats
 
+- **Published bundle is not startable (2026-11-13).** `verify-bundle` and
+  `doctor` pass, but a fresh install does not start: `linker64`/`dalvikvm64`
+  lack executable bits, `libandroid_runtime.so` is absent from
+  `public.libraries.txt`, the host JAR/bridge predate the binderless JNI, the
+  worker lacks `assets/assets.scdb` + `data/update/data_manifest.toml`, and the
+  old bridge aborts in the headless UI-locale registration. Build the local
+  overlay with `tools/native_bringup/build_local_overlay.py` and run
+  `preflight_bundle.py` before spending a VM. The same document records the
+  rootless `bwrap` path that cold-starts on a daily driver without root:
+  [`PHASE0_BRINGUP.md`](PHASE0_BRINGUP.md).
 - **15.535.29 only.** The A51 golden is 16.635.93; card/balance data differs.
   Use this for throughput/training, keep 16.635.1 for live parity.
 - The sandbox's `NativeRoyaleEnv` is its own protocol, not our resident

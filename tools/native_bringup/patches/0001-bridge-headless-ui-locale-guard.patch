@@ -1,0 +1,26 @@
+diff --git a/android_probe/native/jni_bridge.cpp b/android_probe/native/jni_bridge.cpp
+index e66e672..31d0b2f 100644
+--- a/android_probe/native/jni_bridge.cpp
++++ b/android_probe/native/jni_bridge.cpp
+@@ -5512,7 +5512,11 @@ Java_royale_nativehost_JniHost_nativePumpManager(
+   const std::array<uint8_t, 26> binderless_ui_locale_container_cave_code = {
+       0x48, 0x85, 0xFF, 0x74, 0x10,        // null container -> cleanup
+       0x48, 0x83, 0x3F, 0x00, 0x74, 0x0A,  // null registry -> cleanup
+-      0xE8, 0x7B, 0x50, 0x2D, 0x00,        // call 0x1AE0270
++      // Skip the UI locale registration at 0x1AE0270 in the binderless
++      // runtime: with a synthetic Context it allocates a bogus pointer-sized
++      // length and terminates the worker.  The registration is
++      // presentation-only, so resume where the original call would.
++      0xE9, 0x35, 0x08, 0xCA, 0xFF,        // skip -> 0x14ABA2A
+       0xE9, 0x30, 0x08, 0xCA, 0xFF,        // valid -> 0x14ABA2A
+       0xE9, 0x2B, 0x08, 0xCA, 0xFF};       // null -> 0x14ABA2A
+   static bool binderless_ui_locale_container_guard_installed = false;
+@@ -5572,7 +5576,7 @@ Java_royale_nativehost_JniHost_nativePumpManager(
+             kBinderlessUiLocaleRegistrationTargetRva ||
+         cave_target != kBinderlessUiLocaleContainerGuardCaveRva ||
+         cave_registration_target !=
+-            kBinderlessUiLocaleRegistrationTargetRva ||
++            kBinderlessUiLocaleContainerValidResumeRva ||
+         null_branch0 != kBinderlessUiLocaleContainerGuardCaveRva + 21 ||
+         null_branch1 != kBinderlessUiLocaleContainerGuardCaveRva + 21 ||
+         null_target != kBinderlessUiLocaleContainerNullTargetRva ||
