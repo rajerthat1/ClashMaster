@@ -1,7 +1,9 @@
 param(
     [string]$InputApk = "",
     [string]$OutputApk = "",
-    [int]$EngineCount = 0
+    [int]$EngineCount = 0,
+    [ValidateSet("15.535.13", "16.635.1")]
+    [string]$TargetBuild = "15.535.13"
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,12 +28,23 @@ $probe = Get-LocalSetting "CR_PROBE" (Join-Path $PSScriptRoot "native_runner/pro
 $builder = Join-Path $PSScriptRoot "native_runner/offline_build.py"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
-Write-Host "[1/4] Verify the user-provided original APK"
-& $python $builder check-input --input-apk $InputApk
+# A target build that is not yet promoted to supported_engine.json (the 16.635.1
+# port) pins its engine payload in docs/native/<build>/build.json instead.
+$targetBuildFile = Join-Path $PSScriptRoot "docs/native/$TargetBuild/build.json"
+$libgSha256 = ""
+if (Test-Path -LiteralPath $targetBuildFile -PathType Leaf) {
+    $libgSha256 = (Get-Content -LiteralPath $targetBuildFile -Raw | ConvertFrom-Json).libg_sha256
+}
+$checkInput = @($builder, "check-input", "--input-apk", $InputApk)
+if ($libgSha256) { $checkInput += @("--libg-sha256", $libgSha256) }
+
+Write-Host "[1/4] Verify the user-provided original APK ($TargetBuild)"
+& $python @checkInput
 if ($LASTEXITCODE -ne 0) { throw "Original APK verification failed." }
 
-Write-Host "[2/4] Build the native probe from source"
-& (Join-Path $PSScriptRoot "native_runner/probe/build_probe.ps1") -NdkRoot $ndk -Output $probe
+Write-Host "[2/4] Build the native probe from source ($TargetBuild)"
+& (Join-Path $PSScriptRoot "native_runner/probe/build_probe.ps1") -NdkRoot $ndk -Output $probe -TargetBuild $TargetBuild
+if ($LASTEXITCODE -ne 0) { throw "Native probe compilation failed." }
 
 Write-Host "[3/4] Decode, patch, build and sign locally"
 $apktool = Join-Path $PSScriptRoot "native_runner/probe/out/tools/apktool_2.12.1.jar"
@@ -50,12 +63,15 @@ if ($LASTEXITCODE -ne 0) { throw "Pristine APK decode failed." }
     -BuildTools $buildTools -Python $python
 
 Write-Host "[4/4] Verify the signed APK payload"
-& $python $builder verify --apk $OutputApk --probe $probe
+$verify = @($builder, "verify", "--apk", $OutputApk, "--probe", $probe)
+if ($libgSha256) { $verify += @("--libg-sha256", $libgSha256) }
+& $python @verify
 if ($LASTEXITCODE -ne 0) { throw "Output APK verification failed." }
 $settings = @"
 CR_DECODED_APK=$decoded
 CR_PROBE=$probe
 CR_OUTPUT_APK=$OutputApk
+CR_TARGET_BUILD=$TargetBuild
 "@
 $settingsPath = Join-Path $work "generated.env"
 [IO.File]::WriteAllText($settingsPath, $settings, [Text.UTF8Encoding]::new($false))

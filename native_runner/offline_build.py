@@ -20,23 +20,35 @@ def supported_engine():
     return json.loads((PACKAGE / "supported_engine.json").read_text(encoding="utf-8"))
 
 
-def apk_matches_release(apk):
+def apk_matches_libg(apk, libg_sha256):
+    """Return whether the APK carries the exact engine payload hash."""
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            payload = archive.read("lib/arm64-v8a/libg.so")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return False
+    return hashlib.sha256(payload).hexdigest() == libg_sha256
+
+
+def apk_matches_release(apk, libg_sha256=None):
     """Accept the pinned download or any re-signed/watermarked copy of the same engine.
 
     Null's rewrites a custom APK Signing Block entry on every download, so no two official
     downloads share a whole-file hash.  The probe, hooks, and attestation depend on the
     ``libg.so`` payload, which is byte-identical across those copies.  A file that matches
     neither the pinned whole-file hash nor the pinned engine payload is rejected.
+
+    ``libg_sha256`` overrides the supported-engine pin for a target build that is not yet
+    promoted to ``supported_engine.json`` (for example the 16.635.1 port).
     """
     release = supported_engine()
+    expected_libg = libg_sha256 or release["libg_sha256"]
     try:
-        if sha256(apk) == release["apk_sha256"]:
+        if libg_sha256 is None and sha256(apk) == release["apk_sha256"]:
             return True
-        with zipfile.ZipFile(apk) as archive:
-            payload = archive.read("lib/arm64-v8a/libg.so")
-    except (OSError, KeyError, zipfile.BadZipFile):
+    except OSError:
         return False
-    return hashlib.sha256(payload).hexdigest() == release["libg_sha256"]
+    return apk_matches_libg(apk, expected_libg)
 
 
 def relative_file(name):
@@ -113,11 +125,12 @@ def patch(source: Path):
     titan.write_text(text, encoding="utf-8")
 
 
-def verify(apk: Path, probe: Path):
+def verify(apk: Path, probe: Path, libg_sha256=None):
     release = supported_engine()
+    expected_libg = libg_sha256 or release["libg_sha256"]
     with zipfile.ZipFile(apk) as archive:
         for name, expected in (
-            ("lib/arm64-v8a/libg.so", release["libg_sha256"]),
+            ("lib/arm64-v8a/libg.so", expected_libg),
             ("lib/arm64-v8a/libcrprobe.so", sha256(probe)),
         ):
             if hashlib.sha256(archive.read(name)).hexdigest() != expected:
@@ -128,9 +141,11 @@ def verify(apk: Path, probe: Path):
         "schema": "firstlight-offline-build.v1",
         "apk_sha256": sha256(apk),
         "probe_sha256": sha256(probe),
+        "libg_sha256": expected_libg,
         "resources": "existing-device-update",
-        "supported_engine": release,
     }
+    if expected_libg == release.get("libg_sha256"):
+        report["supported_engine"] = release
     apk.with_suffix(".build.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("Verified output payload and wrote build receipt", flush=True)
 
@@ -140,6 +155,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("check-input")
     p.add_argument("--input-apk", type=Path, required=True)
+    p.add_argument("--libg-sha256", default="")
     p = sub.add_parser("prepare")
     p.add_argument("--input-apk", type=Path, required=True)
     p.add_argument("--runtime-update", type=Path)
@@ -149,9 +165,11 @@ def main():
     p = sub.add_parser("verify")
     p.add_argument("--apk", type=Path, required=True)
     p.add_argument("--probe", type=Path, required=True)
+    p.add_argument("--libg-sha256", default="")
     args = parser.parse_args()
     if args.command == "check-input":
-        if not apk_matches_release(args.input_apk):
+        expected_libg = args.libg_sha256 or None
+        if not apk_matches_release(args.input_apk, expected_libg):
             raise ValueError("Input APK does not carry the supported engine; supply the unmodified supported APK")
         print("Verified original APK", flush=True)
     elif args.command == "prepare":
@@ -159,7 +177,7 @@ def main():
     elif args.command == "patch":
         patch(args.source)
     else:
-        verify(args.apk, args.probe)
+        verify(args.apk, args.probe, args.libg_sha256 or None)
 
 
 if __name__ == "__main__":

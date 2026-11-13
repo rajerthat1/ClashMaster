@@ -92,6 +92,43 @@ def test_input_apk_rejects_different_engine_payload(tmp_path, monkeypatch):
     assert not build.apk_matches_release(apk)
 
 
+def test_input_apk_accepts_target_build_libg_override(tmp_path, monkeypatch):
+    import native_runner.offline_build as build
+
+    apk = tmp_path / "target.apk"
+    engine = b"16.635-engine-payload"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("lib/arm64-v8a/libg.so", engine)
+    monkeypatch.setattr(
+        build,
+        "supported_engine",
+        lambda: {"apk_sha256": "0" * 64, "libg_sha256": hashlib.sha256(b"15.535").hexdigest()},
+    )
+    assert build.apk_matches_release(apk, hashlib.sha256(engine).hexdigest())
+    assert not build.apk_matches_release(apk)
+
+
+def test_verify_accepts_target_build_libg_override(tmp_path, monkeypatch):
+    import native_runner.offline_build as build
+
+    apk = tmp_path / "target.apk"
+    probe = tmp_path / "probe.so"
+    probe.write_bytes(b"probe")
+    engine = b"16.635-engine-payload"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("lib/arm64-v8a/libg.so", engine)
+        archive.writestr("lib/arm64-v8a/libcrprobe.so", b"probe")
+    monkeypatch.setattr(
+        build,
+        "supported_engine",
+        lambda: {"apk_sha256": "0" * 64, "libg_sha256": hashlib.sha256(b"15.535").hexdigest()},
+    )
+    build.verify(apk, probe, hashlib.sha256(engine).hexdigest())
+    receipt = json.loads(apk.with_suffix(".build.json").read_text())
+    assert receipt["libg_sha256"] == hashlib.sha256(engine).hexdigest()
+    assert "supported_engine" not in receipt
+
+
 def test_input_apk_accepts_pinned_whole_file_hash(tmp_path, monkeypatch):
     import native_runner.offline_build as build
 

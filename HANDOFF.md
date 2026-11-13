@@ -273,7 +273,20 @@ Do this only once §0–1 has candidate offsets worth checking. **Ask the user t
 do not substitute an emulator or translation layer.
 
 - Build/sign the patched 16.635.1 APK (Windows side, where the PowerShell build scripts and
-  NDK/apktool/apksigner live), then `adb install` it to the A51 over USB.
+  NDK/apktool/apksigner live), then `adb install` it to the A51 over USB:
+  ```powershell
+  .\build_offline_engine.ps1 `
+      -InputApk .\nr_16.635.1_release_951fe421.apk `
+      -TargetBuild 16.635.1 `
+      -OutputApk .\builds\cr-ai-16.635.1.apk
+  ```
+  This compiles the probe with `CR_PROBE_TARGET_16_635_1`, decodes/patches/signs the APK, and
+  verifies `libg.so` against `docs/native/16.635.1/build.json`. It does **not** promote
+  `supported_engine.json`; that stays on 15.535.13 until the on-device run passes.
+- First smoke test on the A51: `adb install -r`, launch, then
+  `adb logcat -s CRNativeProbe`. Expect `probe target client=16.635.1 build16=1`, the ten
+  `hook installed` lines (9 runner hooks + touch), and `anchor unavailable` lines for the four
+  unresolved core anchors — but no `prologue mismatch` and no crash.
 - Instrument in one of two no-root ways:
   - **Frida Gadget:** add `libfrida-gadget.so` (arm64) plus an embedded config to the APK and load
     it from the same smali bootstrap that loads `libcrprobe`, ideally before `libg.so`. Connect

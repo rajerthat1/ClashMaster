@@ -383,7 +383,11 @@ verified replay-controller / GameState / import anchors above; see
 5. ~~Wire the 9 runner hooks + touch into `cr_replay_probe.cpp` behind the new
    build header~~ — done (see §3.9). The 16.635 build is selected with
    `-DCR_PROBE_TARGET_16_635_1` (or `build_probe.ps1 -TargetBuild 16.635.1`).
-   It still needs dynamic verification on the native A51.
+   The full APK path is
+   `build_offline_engine.ps1 -TargetBuild 16.635.1`; it pins the engine through
+   `docs/native/16.635.1/build.json` without promoting
+   `supported_engine.json`. It still needs dynamic verification on the native
+   A51.
 6. Name the GameState constructor fields from their accessors (§3.8) and then
    do the entity/HP (`hpComponentAccessor`) work. This is now the blocking
    analysis item: `kJsonMemberFind`, `kLogicCommandParse`,
