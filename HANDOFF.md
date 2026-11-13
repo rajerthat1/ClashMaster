@@ -134,6 +134,7 @@
 | Work | Environment | Why |
 | --- | --- | --- |
 | **Static analysis / offset diff** | **Linux now** | Ghidra/REA/LIEF/Capstone work on x86_64; no Frida needed |
+| **Probe + APK build/sign** | **Linux now** | NDK r27c, build-tools r34 and apktool live under `.resource/android-tools/`; `build_offline_apk.sh` and `build_probe.sh` mirror the PowerShell path |
 | **Dynamic Frida / offset verification** | **User's Samsung A51 (SM-A515F), arm64-v8a — no root needed** | Native ARM64, so no translation layer. Bootloader is locked and cannot be rooted; use Frida Gadget baked into the already re-signed APK, or instrumented `libcrprobe` + `adb logcat`. `frida-server` and Shizuku both need root and will **not** work on this device |
 | **Running the ported probe / demos** | **Windows + MuMu** | The probe is a native library loaded by the game; FirstLight supports MuMu. This is the runtime/demo environment |
 | **15.535 FirstLight-Zero lab** | **Windows MuMu** if the 15.535 APK is there | The 15.535 probe is already built; no Frida required |
@@ -272,21 +273,43 @@ fields.
 Do this only once §0–1 has candidate offsets worth checking. **Ask the user to plug in the A51**;
 do not substitute an emulator or translation layer.
 
-- Build/sign the patched 16.635.1 APK (Windows side, where the PowerShell build scripts and
-  NDK/apktool/apksigner live), then `adb install` it to the A51 over USB:
+- Build/sign the patched 16.635.1 APK (Linux or Windows; both paths exist), then
+  `adb install -r` it to the A51 over USB.
+
+  **Linux (this workspace)** — NDK r27c, build-tools r34 and apktool 2.12.1 are under
+  `.resource/android-tools/`. This builds a single-process APK (no engine-cluster
+  Application/activities), which is the A51 no-root path:
+
+  ```bash
+  ./build_offline_apk.sh \
+      --input-apk nr_16.635.1_release_951fe421.apk \
+      --target-build 16.635.1 \
+      --output-apk builds/cr-ai-16.635.1.apk
+  ```
+
+  The probe is compiled by `native_runner/probe/build_probe.sh` (same flags as the
+  PowerShell script). The build verifies `libg.so` against
+  `docs/native/16.635.1/build.json` and does **not** promote `supported_engine.json`;
+  that stays on 15.535.13 until the on-device run passes.
+
+  **Windows:**
+
   ```powershell
   .\build_offline_engine.ps1 `
       -InputApk .\nr_16.635.1_release_951fe421.apk `
       -TargetBuild 16.635.1 `
       -OutputApk .\builds\cr-ai-16.635.1.apk
   ```
-  This compiles the probe with `CR_PROBE_TARGET_16_635_1`, decodes/patches/signs the APK, and
-  verifies `libg.so` against `docs/native/16.635.1/build.json`. It does **not** promote
-  `supported_engine.json`; that stays on 15.535.13 until the on-device run passes.
-- First smoke test on the A51: `adb install -r`, launch, then
-  `adb logcat -s CRNativeProbe`. Expect `probe target client=16.635.1 build16=1`, the ten
-  `hook installed` lines (9 runner hooks + touch), and `anchor unavailable` lines for the four
-  unresolved core anchors — but no `prologue mismatch` and no crash.
+
+- First smoke test on the A51: `./deploy_a51.sh` installs the APK, launches it, and streams
+  `CRNativeProbe` for 60 seconds (or run `adb install -r` / `adb logcat -s CRNativeProbe`
+  manually). Expect `probe target client=16.635.1 build16=1`, the ten `hook installed` lines
+  (9 runner hooks + touch), and `anchor unavailable` lines for the four unresolved core
+  anchors — but no `prologue mismatch` and no crash.
+- If `adb install -r` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, the local signing key
+  differs from the installed nulls build. Uninstall first; that wipes
+  `/data/data/nullsroyale.rel.free/update/`, so let the game re-download its update before
+  trusting the probe's content fingerprint.
 - Instrument in one of two no-root ways:
   - **Frida Gadget:** add `libfrida-gadget.so` (arm64) plus an embedded config to the APK and load
     it from the same smali bootstrap that loads `libcrprobe`, ideally before `libg.so`. Connect
@@ -343,6 +366,10 @@ Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <
 | `ROADMAP.md` | The plan: decision, Phases 0–4, QA harness, gates |
 | `ROADMAP_CRFORGE.md` | Optional crforge fallback/CI roadmap |
 | `native_runner/probe/` | Native hook source; 16.635 port target |
+| `native_runner/probe/build_probe.sh` | Linux probe build (`--target-build`) |
+| `build_offline_apk.sh` | Linux single-process patched APK build/sign |
+| `deploy_a51.sh` | Install on the A51 and stream probe logs |
+| `.resource/android-tools/` | NDK r27c + build-tools r34 + apktool (gitignored) |
 | `native_runner/cr_native_env.py` | Engine TCP/JSON seam |
 | `native_runner/battle_env.py` | `BattleEnvV1`, attestation, observation assembly |
 | `.resource/FirstLight-Zero/` | X-Bow recipe, v1450 checkpoints, training loop |
