@@ -145,13 +145,41 @@ load it alongside the engine, Track B skips writing a new engine API. The
 blocker is its JNI/Android dependencies and the app bootstrap; a
 `CR_PROBE_STANDALONE` path is a concrete deliverable.
 
+### Content: the update screen is not a blocker
+
+Both APKs already bundle the engine's data under `assets/`:
+`assets/assets.scdb`, `assets/csv_logic/`, `assets/fingerprint.json` and
+`assets/build.tag`. The "update required" loading screen is a server/client
+version gate, not missing data.
+
+| APK | Bundled content | Local path |
+| --- | --- | --- |
+| `nr_16.635.1_release_951fe421.apk` | `fingerprint.json` version **16.635.1**, 18,151 files | already extracted at `.resource/cluster/decoded-16.635.1-pristine/assets` (902 MB) |
+| `nr_15.535.13_apkpure.apk` | `fingerprint.json` version **15.535.3** | extract from the APK if needed |
+
+FirstLight's 15.535 lab used the downloaded **15.535.86** update; the A51's
+live client uses **16.635.93**. For the loader proof-of-concept the bundled
+`assets/` directory is enough — point the engine's asset manager at it. For
+training parity with the live client you may later want the newer downloaded
+update, which lives in the app's private `files/update/` (not readable without
+root). Two ways to get it:
+
+1. build the APK with `android:debuggable="true"`, update-install (data is
+   kept), then `adb shell run-as nullsroyale.rel.free` to tar `files/update`;
+2. `adb backup` — the manifest has `allowBackup="true"` — if the Android 13
+   build still permits it.
+
+The engine only needs a consistent `fingerprint.json` + `csv_logic/` +
+`assets.scdb` set; it does not need the server.
+
 ### Phases
 
 #### B0 — Recon and baseline (2–4 days)
 
-- Decide target build: **15.535.13 first**. FirstLight/daybreak/clapha artifacts
-  target it, and this repo already has a verified 15.535 probe. Port to 16.635.1
-  after the harness works.
+- Target build: **16.635.1 first**. This repo's probe, offsets, actions, HP and
+  ability path are already verified on 16.635.1, the A51 golden is 16.635.1, and
+  its APK content is already extracted. Keep 15.535 only as the
+  clapha/daybreak comparison build.
 - Acquire `clapha-engine` if possible; otherwise clone `project-qemu` +
   `PenguDroid`.
 - Set up an ARM64 rootfs with `qemu-aarch64-static` (or boot an ARM64 cloud VM).
@@ -297,8 +325,10 @@ These apply to any Android host:
 
 ## 5. Shared work
 
-- **Target build.** Start on 15.535.13 for Track B; keep 16.635.1 on the A51 as
-  the golden reference. Port the loader to 16.635 after B3.
+- **Target build.** Track B targets **16.635.1**: the probe, offsets, actions,
+  HP and ability path are already verified there, the A51 golden is 16.635.1,
+  and its APK content is extracted locally. Use 15.535.13 only for
+  clapha/daybreak comparisons.
 - **Probe reuse.** The same resident protocol and offset tables serve both
   tracks.
 - **Data validation.** Card IDs, forms, elixir, tick, abilities and HP must match
@@ -330,8 +360,10 @@ becomes primary.
 1. **Days 1–2:** get `clapha-engine` if possible; otherwise clone `project-qemu`
    + `PenguDroid`; build the ARM64 rootfs; confirm `qemu-aarch64` runs a
    hello-world.
-2. **Days 3–4:** load **15.535.13** `libg.so`; reach `DT_INIT`; log every missing
-   symbol and build the shim list.
+2. **Days 3–4:** load **16.635.1** `libg.so`; reach `DT_INIT`; log every missing
+   symbol and build the shim list. Point the engine's asset manager at
+   `.resource/cluster/decoded-16.635.1-pristine/assets/` (already extracted from
+   the APK; no update download needed).
 3. **Days 5–7:** get `JNI_OnLoad` and the content-context constructor invoked;
    log the first successful internal call.
 4. **Days 8–10:** attempt headless `GameStateManager` creation using the probe's

@@ -10,10 +10,13 @@
   [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md) covers both tracks with
   hardware sizing, costs, gates and timelines: the **clapha-type Linux
   `libg.so` loader** (primary, 2–3 months part-time) and the **FirstLight Linux
-  AVD** (fallback, 4–6 weeks part-time). Decision: start Track B on 15.535.13
-  and keep 16.635.1 on the A51 as the golden reference. The 16.635.1 APK ships
-  only arm64-v8a/armeabi-v7a, so a Linux loader is either native ARM64 or
-  QEMU user-mode.
+  AVD** (fallback, 4–6 weeks part-time). Decision: start Track B on **16.635.1**
+  (its probe/offsets and APK content are already in place; 15.535 stays the
+  clapha/daybreak comparison build). The 16.635.1 APK ships only
+  arm64-v8a/armeabi-v7a, so a Linux loader is either native ARM64 or
+  QEMU user-mode. The APK bundles `assets/assets.scdb`, `assets/csv_logic/` and
+  `assets/fingerprint.json`, so the 15.535 "update required" screen does not
+  block the loader.
 - **A51 lane tuning measured (2026-11-13).** The probe's control lane can now be
   pinned with `debug.cr.engine_cpu_map` (or the live `engine-affinity` command):
   one engine with 8 resident slots is **1.80 matches/s** on a big core, **0.62**
