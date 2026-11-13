@@ -51,13 +51,15 @@ The last is the useful number. FirstLight-Zero's published run did 1,024 episode
 | Engine only, one connection, one `step` | 1 | 0.54 s (6,068 ticks) | **1.84** |
 | Ordinary control, one `step 20` per call | 1 | 5.81 s | 0.17 |
 | Decision loop (observe + play both owners + advance 22) | 1 | 12.99 s | 0.077 |
-| Resident batch channel, 8 slots × 600 ticks × 5 | 8 | — | **0.89** |
+| Resident batch channel, 8 slots × 600 ticks × 5 (empty) | 8 | — | **2.36** |
+| Resident batch channel, 8 slots × 600 ticks × 5 + real actions | 8 | — | **1.73** (28 actions/s) |
 | Scripted X-Bow self-play, decisions every 20 ticks | 1 | 13.5–14.4 s | ~0.07 |
 
 The engine is not the bottleneck: per-command transport (~19 ms via `adb
 forward`) and the per-batch observation envelope are. One phone process is a
-~0.9–1.8 matches/s lane, so 5–10 matches/s aggregate needs several engine
-lanes (wider PC/cloud hosts), not a single device. See FINDINGS §3.17–3.18.
+~1.7–2.4 matches/s lane (empty vs real actions), so 5–10 matches/s aggregate
+needs 3–6 engine lanes (wider PC/cloud hosts), not a single device. See FINDINGS
+§3.17–3.18 and the real-action re-measurement in §3.23.
 
 ### Engine decision tree
 
@@ -152,7 +154,7 @@ The only phase that can change the engine decision.
 - [ ] If the 15.535.13 APK is available (Windows/MuMu or Linux AVD), run FirstLight-Zero for ~50 rounds. Use the cloud GPU for the learner if the laptop is too slow. Record matches/s, decisions/s, CPU, RAM, and whether the X-Bow recipe improves. If the APK is not available, skip to crforge + the 16.635 probe.
 - [ ] Benchmark crforge **end to end** after F0: `BattleEnvV1` decisions/s, not raw `VectorBattle`.
 - [x] Port or verify the 16.635.1 probe when Windows/Android is available: offsets, prologues, `libg` hash, one full match. **Done 2026-11-12/13** — cold configure, repeated headless matches, the two-sided decision loop (FINDINGS §3.13–3.17), entity/HP (§3.19–3.20), the scripted X-Bow self-play gate (§3.21) and Hero ability actions with the Champion layout (§3.22).
-- [ ] Fill the engine decision table: per-slot latency, aggregate matches/s, illegal/truncated/rejected, parity. **Partial** — one A51 probe process measures 1.84 matches/s engine-only and 0.89 matches/s with 8 resident slots (FINDINGS §3.18); multi-engine aggregation is open.
+- [ ] Fill the engine decision table: per-slot latency, aggregate matches/s, illegal/truncated/rejected, parity. **Partial** — one A51 probe process measures 1.84 matches/s engine-only, 2.36 matches/s with 8 resident slots empty, and 1.73 matches/s with real card actions (FINDINGS §3.18, §3.23); multi-engine aggregation is open.
 - [ ] Write a one-page engine decision memo with the numbers.
 
 **The probe is the long pole.** If Jason's 16.635 notes/code transfer, it is weeks. From scratch it is 2–4 months. Time-box the spike: keep the 15.535 lab and crforge fallback moving while it is in progress.

@@ -39,7 +39,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from native_runner.cr_native_env import NativeClashEnv, ResidentNativeClashEnv, RunnerError  # noqa: E402
 from native_runner.match_factory import MatchConfig  # noqa: E402
-from native_runner.resident_batch_channel import ResidentBatchChannelV1  # noqa: E402
+from native_runner.resident_batch_channel import (  # noqa: E402
+    BatchPlayActionV1,
+    ResidentBatchChannelV1,
+)
 
 # One configured regulation match without actions ends at this tick.
 MATCH_TICKS = 6068
@@ -54,6 +57,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batches", type=int, default=20)
     parser.add_argument("--ticks", type=int, default=100, help="ticks advanced per batch")
     parser.add_argument("--training-capture", action="store_true", help="use the slower attested capture envelope")
+    parser.add_argument(
+        "--actions",
+        action="store_true",
+        help="play one affordable card per owner every --action-every batches (real action receipts)",
+    )
+    parser.add_argument(
+        "--action-every",
+        type=int,
+        default=3,
+        help="batches between action rounds (default 3 = ~15 s of game time at 100 ticks/batch)",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
@@ -62,6 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.batches < 1 or args.ticks < 1:
         print("error: batches and ticks must be positive", file=sys.stderr)
+        return 2
+    if args.action_every < 1:
+        print("error: --action-every must be positive", file=sys.stderr)
         return 2
     if args.ticks * args.batches > MATCH_TICKS:
         print(
@@ -96,14 +113,60 @@ def main(argv: list[str] | None = None) -> int:
             args.host, args.port, timeout=args.timeout, training_capture=args.training_capture
         )
         batch_seconds: list[float] = []
+        captures: dict[int, Any] = {}
+        total_actions = 0
+        action_batches = 0
+        sample_receipts: list[dict[str, Any]] = []
         try:
             for index in range(args.batches):
+                actions_by_env: dict[int, tuple[BatchPlayActionV1, ...]] = {
+                    slot.env_id: () for slot in slots
+                }
+                if args.actions and index % args.action_every == 0:
+                    for slot in slots:
+                        capture = captures.get(slot.env_id)
+                        if not capture or not isinstance(capture, dict):
+                            continue
+                        ordinary = capture.get("ordinary", capture)
+                        if not isinstance(ordinary, dict):
+                            continue
+                        env_actions: list[BatchPlayActionV1] = []
+                        for player in ordinary.get("players", []):
+                            elixir = float(player.get("elixir", 0.0))
+                            for card in player.get("hand", []):
+                                if float(card.get("cost", 0.0)) <= elixir:
+                                    env_actions.append(
+                                        BatchPlayActionV1(
+                                            owner=int(player["owner"]),
+                                            hand_index=int(card["handIndex"]),
+                                            x=9000,
+                                            y=10000,
+                                        )
+                                    )
+                                    break
+                        actions_by_env[slot.env_id] = tuple(env_actions)
+                    action_batches += 1
                 started = time.monotonic()
-                result = channel.step_partitioned({slot.env_id: () for slot in slots}, ticks=args.ticks)
+                result = channel.step_partitioned(actions_by_env, ticks=args.ticks)
                 batch_seconds.append(time.monotonic() - started)
                 failures = [outcome for outcome in result.values() if type(outcome).__name__ == "BatchStepFailureV1"]
                 if failures:
                     raise RunnerError(f"batch {index} reported {len(failures)} slot failures")
+                for env_id, outcome in result.items():
+                    if type(outcome).__name__ == "BatchStepResultV1":
+                        total_actions += len(outcome.receipts)
+                        captures[env_id] = outcome.capture
+                        if len(sample_receipts) < 6:
+                            sample_receipts.extend(
+                                {
+                                    "env": env_id,
+                                    "owner": receipt.owner,
+                                    "cardId": receipt.card_id,
+                                    "cost": receipt.cost,
+                                    "executeTick": receipt.execute_tick,
+                                }
+                                for receipt in outcome.receipts
+                            )
             report["profile"] = channel.profile()
         finally:
             channel.close()
@@ -135,6 +198,12 @@ def main(argv: list[str] | None = None) -> int:
             "medianBatchSeconds": round(sorted(batch_seconds)[len(batch_seconds) // 2], 4),
             "engineTicksPerSecond": round(ticks_per_second, 1),
             "slotMatchesPerSecond": round(ticks_per_second / MATCH_TICKS, 3),
+            "actionsEnabled": args.actions,
+            "actionEveryBatches": args.action_every,
+            "actionBatches": action_batches,
+            "totalActions": total_actions,
+            "actionsPerSecond": round(total_actions / total_seconds, 3) if total_seconds else 0.0,
+            "sampleReceipts": sample_receipts,
         }
     )
     print(
@@ -142,6 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         f"(median {report['medianBatchSeconds']:.4f} s/batch)\n"
         f"{ticks_per_second:,.0f} slot-ticks/s = {report['slotMatchesPerSecond']} matches/s"
     )
+    if args.actions:
+        print(
+            f"actions: {total_actions} receipts over {action_batches} action rounds "
+            f"= {report['actionsPerSecond']} actions/s"
+        )
     profile = report.get("profile", {})
     if profile:
         print(

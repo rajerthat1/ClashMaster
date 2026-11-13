@@ -184,13 +184,23 @@
     cooldown `0xb4 → 0xb8`. These are emitted by `gen_layout.py` from
     `docs/native/16.635.1/champion-layout.json`; the 16.635 probe no longer
     falls back to 15.535 Champion addresses.
-  - **Throughput measured** (FINDINGS §3.18): engine-only 1.84 matches/s
-    (6,068 ticks in 0.54 s); ordinary control `step 20` 0.17 matches/s;
-    decision loop 0.077 matches/s (12.3 decisions/s, 4.3 actions/s); resident
-    batch channel with 8 slots 0.89 matches/s (5,374 slot-ticks/s). The ~19 ms
-    per-command `adb forward` round trip and the per-batch observation envelope
-    are the bottleneck, not the engine. One A51 process is a ~0.9–1.8
-    matches/s lane; 5–10 matches/s aggregate needs several engine lanes.
+  - **Throughput measured** (FINDINGS §3.18, re-measured §3.23): engine-only
+    1.84 matches/s (6,068 ticks in 0.54 s); ordinary control `step 20` 0.17
+    matches/s; decision loop 0.077 matches/s (12.3 decisions/s, 4.3 actions/s);
+    resident batch channel with 8 slots **2.36 matches/s empty** and **1.73
+    matches/s with real card actions** (10,512 slot-ticks/s, 28 actions/s) on a
+    warm process. The earlier 0.89 / 5,374 numbers were a colder run; use the
+    within-session comparison. The ~19 ms per-command `adb forward` round trip
+    and the per-batch observation envelope are the bottleneck, not the engine.
+    One A51 process is a ~1.7–2.4 matches/s lane; 5–10 matches/s aggregate needs
+    3–6 engine lanes.
+  - **Resident batch action channel verified** (FINDINGS §3.23).
+    `resident_batch_throughput.py --actions` sends real `BatchPlayActionV1`
+    receipts per owner. 8 slots × 600 ticks × 5 batches produced 64 valid
+    receipts (all status 0, printed costs, scheduled execute ticks) at 1.73
+    matches/s / 28 actions/s. Multi-engine aggregation is still open: the
+    single-process A51 APK exposes one lane; a second lane needs the
+    engine-cluster APK or a second device/user.
   - **Entity/HP path verified live** (FINDINGS §3.19). `observe` exposes every
     live object with owner, cardId (`-1` = tower), position, `hp`/`maxHp`.
     On the A51: all 6 native tower cells at 2400/1512 HP, a deployed Knight
@@ -316,9 +326,11 @@ part-time; with his notes it can be weeks.
   graph with `owner`, `cardId` (`-1` = tower), position and `hp`/`maxHp`; the
   six native tower cells and damage to units and a princess tower were tracked
   on-device with 0 problems.
-- **One-probe throughput** (§3.18): engine-only 1.84 matches/s; 8 resident
-  slots 0.89 matches/s with full observations; the ~19 ms control round trip
-  and the per-batch observation envelope dominate.
+- **One-probe throughput** (§3.18, re-measured §3.23): engine-only 1.84
+  matches/s; 8 resident slots **2.36 matches/s empty** and **1.73 matches/s
+  with real card actions** (28 actions/s, 64 valid receipts) on a warm process.
+  The ~19 ms control round trip and the per-batch observation envelope still
+  dominate; real actions add ~27–36% cost.
 - **A scripted X-Bow 3.0 self-play match runs on 16.635.1** (FINDINGS §3.21):
   full regulation match, 0 validation problems, deterministic seed 11
   (173 decisions / 66 actions / 13.5 s, crowns [1,2]), lower-action seed 12
@@ -384,15 +396,19 @@ The multi-decision gate, the scripted X-Bow match, ability actions, the
 throughput baseline and the entity/HP path are done on the A51. The next
 session:
 
-1. **Drive real actions through `ResidentBatchCoordinatorV1`.** The batch
-   channel currently proves empty steps only. Add card plays (and optionally a
-   ready Hero Knight ability) to the resident batch request so training
-   throughput includes actions, then re-measure 8-slot matches/s.
-2. **Multi-engine throughput.** Start a second probe/engine instance and
-   measure aggregate matches/s with the resident batch channel (currently
-   0.89 matches/s per A51 process). Decide whether the training host is the
-   laptop, cloud, or a device pool. The decision rule is still: ≥5 matches/s
-   aggregate → native primary; 1–5 → split; <1 → crforge primary.
+1. **Real actions through the resident batch channel — DONE** (FINDINGS
+   §3.23). `resident_batch_throughput.py --actions` sends real
+   `BatchPlayActionV1` receipts per owner; 8 slots × 600 ticks × 5 batches
+   produced 64 valid receipts at 1.73 matches/s / 28 actions/s. Ability
+   actions through the batch protocol are supported by the wire format but not
+   exercised yet (the resident capture has no rich ability telemetry).
+2. **Multi-engine throughput.** This is now the critical-path measurement. The
+   single-process A51 APK exposes one lane (~1.7 matches/s with actions), so
+   5–10 matches/s aggregate needs 3–6 lanes. Start a second engine via the
+   engine-cluster APK (MuMu path) or a second device/secondary Android user,
+   then measure aggregate matches/s and decide the training host (laptop,
+   cloud, or device pool). Decision rule: ≥5 matches/s aggregate → native
+   primary; 1–5 → split; <1 → crforge primary.
 3. **Scripted X-Bow polish (non-blocking).** The v0 baseline is verified; the
    next improvements are real defensive placement/spell value, elixir reserve
    across pending plays, and v1450 style comparison. Do not block throughput
@@ -605,8 +621,9 @@ Fill this with numbers, not opinions:
 | crforge end-to-end after F0 | this host | ? | ? | 20–30 (bridge) | 1 reject | Fallback baseline |
 | native 16.635, engine-only (1 step) | A51 arm64 phone | 0.54 s | 1.84 (1 lane) | — | 0 | FINDINGS §3.18 |
 | native 16.635, ordinary control, decision loop | A51 arm64 phone | 13.0 s | 0.077 | 12.3 | 0 | 160 decisions / 56 actions; RTT-bound (§3.18) |
-| native 16.635, 1 engine × 8 resident slots | A51 arm64 phone | — | 0.89 | — | 0 | 5,374 slot-ticks/s, full observations (§3.18) |
-| native 16.635, 2 engines × 16 slots | same | ? | ? | ? | ? | Target ~10 matches/s; open |
+| native 16.635, 1 engine × 8 resident slots (empty) | A51 arm64 phone | — | **2.36** | — | 0 | 14,315 slot-ticks/s, 600-tick batches; warm process (§3.23) |
+| native 16.635, 1 engine × 8 resident slots (real actions) | A51 arm64 phone | — | **1.73** | 28.0 actions/s | 0 | 10,512 slot-ticks/s, 64 valid receipts (§3.23) |
+| native 16.635, 2 engines × 16 slots | same | ? | ? | ? | ? | Target ~10 matches/s; needs cluster APK/second lane; open |
 
 Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <1 → crforge primary.**
 One A51 process is a ~0.9–1.8 matches/s lane, so the aggregate target needs

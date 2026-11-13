@@ -191,6 +191,23 @@ decisions/s and actions/s for one probe connection:
 Recorded numbers are in FINDINGS §3.18. One connection is one slot; do not
 extrapolate resident-slot throughput from it.
 
+### `resident_batch_throughput.py`
+
+Configures N resident slots and advances them through the framed `batch-v1`
+channel, reporting slot-ticks/s, matches/s and the channel's send/ack/receive/
+decode profile. With `--actions` it chooses one affordable hand card per owner
+from each slot's capture and sends real `BatchPlayActionV1` receipts every
+`--action-every` batches:
+
+```bash
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --slots 8 --batches 5 --ticks 600 --actions --action-every 1 \
+    --output /tmp/opencode/resident_8x600x5_actions.json
+```
+
+Real action numbers are in FINDINGS §3.23. The probe control server is
+single-client; keep the batch channel closed while issuing ordinary commands.
+
 ### `entity_hp_probe.py`
 
 Verifies the live entity/HP path: `observe` already returns every live object

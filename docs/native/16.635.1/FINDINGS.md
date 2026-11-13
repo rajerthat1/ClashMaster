@@ -1060,3 +1060,51 @@ adb forward tcp:26789 tcp:26789
     --seed 11 --output /tmp/opencode/scripted_xbow_abilities.json
 adb logcat -b crash -d
 ```
+
+### 3.23 Resident batch channel with real card actions
+
+The resident channel already carried `BatchPlayActionV1`; the throughput tool
+only sent empty action sets. `resident_batch_throughput.py --actions` now reads
+each slot's ordinary capture, chooses one affordable hand card per owner, and
+sends real plays in the framed batch. The channel validates every receipt
+(status 0, matching action index); the tool records card id, cost and execute
+tick.
+
+Re-measured on the SM-A515U (2026-11-13), 8 slots, one warm probe process,
+empty crash buffer. The empty-step baseline was re-run in the same session
+because the earlier §3.18 numbers were lower (0.57 / 0.89 matches/s):
+
+| batch shape | actions | seconds | slot-ticks/s | matches/s | actions/s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 8 × 100 ticks × 20 | none | 2.054 | 7,789 | **1.284** | — |
+| 8 × 100 ticks × 20 | every 3 batches | 3.196 | 5,006 | **0.825** | 30.0 |
+| 8 × 600 ticks × 5 | none | 1.677 | 14,315 | **2.359** | — |
+| 8 × 600 ticks × 5 | every batch | 2.283 | 10,512 | **1.732** | 28.0 |
+
+Real actions cost ~27–36% of channel throughput and the batched capture grows
+with the active object graph (receive time is 1.9 s empty vs 3.0 s with actions
+in the 100-tick shape). The 600-tick shape with actions moved **64 valid
+receipts** (8 slots × 2 owners × 4 action rounds; the first batch only
+configures the capture baseline), all `status 0`, cards `26000000`/`26000001`
+at the printed 3 elixir, executing on schedule (tick 601 onward).
+
+A single warm A51 process is therefore a **~1.7 matches/s lane with real
+actions** (2.36 empty). The 5–10 matches/s aggregate target still needs 3–6
+lanes. On the A51 the single-process APK deliberately exposes one lane; a
+second lane needs the engine-cluster APK (designed for MuMu) or a second
+device/secondary Android user. That remains the open multi-engine work.
+
+Reproduce::
+
+```bash
+adb forward tcp:26789 tcp:26789
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --slots 8 --batches 20 --ticks 100 --output /tmp/opencode/resident_8x100x20_noaction.json
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --slots 8 --batches 20 --ticks 100 --actions --action-every 3 \
+    --output /tmp/opencode/resident_8x100x20_actions.json
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --slots 8 --batches 5 --ticks 600 --actions --action-every 1 \
+    --output /tmp/opencode/resident_8x600x5_actions.json
+adb logcat -b crash -d
+```
