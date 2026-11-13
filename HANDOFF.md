@@ -6,7 +6,8 @@
 
 ## State
 
-- **Static port: the 15.535 reference build is now available and the offset diff is done.**
+- **Static port: the 15.535 reference build, the offset diff, and the replay-runner
+  anchor set are now available.**
   See [`docs/native/16.635.1/FINDINGS.md`](docs/native/16.635.1/FINDINGS.md) (evidence log)
   and [`docs/native/16.635.1/offset-diff.json`](docs/native/16.635.1/offset-diff.json).
   - **15.535.13 APK acquired** from APKPure (757.6 MB, version code 150535013). The APK
@@ -19,20 +20,45 @@
   - **New tools** (all under `tools/native_analysis/`, README has usage):
     `cr_elf.py` (info/strings/xrefs/calls/refs/imm/disasm/symbols, section-stripped
     ELF), `relocate_hooks.py` (all probe prologues), `diff_builds.py` (old→new offset
-    diff with local-delta validation), `match_vtables.py` (vtable matching through
-    `R_AARCH64_RELATIVE` relocations), and Ghidra export/decompile scripts.
-  - **Offset diff result:** 59 `EXACT`, 32 `LIKELY` (11 delta-constrained), 40
-    `AMBIGUOUS` (all vtable/data anchors), 16 `MISSING`. `offset-diff.json` has every
-    row, old/new address, delta and flags.
+    diff with local-delta validation and `--overrides` corrections),
+    `match_vtables.py` (vtable matching through `R_AARCH64_RELATIVE` relocations,
+    including `--seeded` data-vtable recovery), `gen_layout.py` (build-pinned probe
+    header from verified rows), and Ghidra export/decompile scripts.
+  - **Offset diff result:** 59 `EXACT`, 31 `LIKELY`, 10 `MANUAL` (verified
+    manual corrections), 37 `AMBIGUOUS` (mostly vtable/data anchors), 10
+    `MISSING`. `offset-diff.json` has every row, old/new address, delta and
+    flags. Manual corrections live in `manual-overrides.json` with evidence and
+    are applied with `diff_builds.py --overrides`. The tool now ignores the
+    generated 16.635 layout header so it never re-parses new offsets as "old".
+  - **Replay controller trio + runner: resolved** (see FINDINGS §3.5):
+    - Lifecycle `0xc87620 → 0x00d9a2cc`, FullUpdate `0xc88bbc → 0x00d9bba0`,
+      Alternate `0xc899e0 → 0x00d9cc24` (EXACT). The old vtable `0x186e748`
+      maps to new `0x1a20370`; the subclass copy `0x186f6d0` maps to
+      `0x1a21308` (slot 2 `0xdac54c`).
+    - Runner `0xc87ecc → 0x00d9ae04` (entry after `ret` at `0xd9ae00`; load call
+      `0xd9aee4`, step call `0xd9b144`).
+    - Clock global pause guard `0xcb6694 → 0x00dcda40` (same body and call
+      position in fullUpdate).
+  - **Non-code anchors resolved** (see FINDINGS §3.6): `kGameStateNew`
+    `0x0198db50`, `kGameStateDelete` `0x0198db60` (PLT stubs for
+    `_Znwm`/`_ZdlPv`), `kEglSwapBuffersGot` `0x01a9d6b0`, `kGameStateContextA`
+    `0x00878c00`, `kGameStateContextRootSlot` `0x01b61d00`.
+  - **Field shifts verified** (see FINDINGS §3.7): controller suspended
+    `0x18c → 0x17c`, GameApp pending flags `0x1b8 → 0x1c0`, pending event
+    `0x1bc → 0x1c4`. State `0x30`, accumulator `0x44`, speed `0x74` unchanged.
+  - **Probe header generated:** `native_runner/probe/build_16_635_1_layout.h`
+    (9 runner hooks + touch, each offset paired with a 16-byte prologue read
+    from the target; plus verified field offsets). Produced by
+    `tools/native_analysis/gen_layout.py`, which refuses unresolved anchors.
   - **Verified / high-confidence 16.635 anchors:**
     - Touch JNI **`0x0156f790`** (prologue identical to `kGameAppTouchPrologue`);
       internal `GameApp::onTouch` `0x01552b14`.
     - GameState family: constructor `0x011d1e68`, setup `0x011d225c`, destroy
       `0x011d2388`, **load `0x011d2dc4`**, **step `0x011d3174`**, tick `0x011d3c90`,
       deserialize header/body `0x011d45c8`/`0x011d4b14`.
-      - `load` was manually corrected: `diff_builds.py` first confused it with `step`
-        (both share a near-identical body; the prologue changed length). Verified by
-        the old load call site `0xc87f64` and body match.
+      - `step` was manually corrected: `diff_builds.py` first confused it with
+        `load` (both share a near-identical body; the prologue changed length).
+        Verified by the old load call site `0xc87f64` and body match.
       - `step` was found through its caller: old clock `0xc890bc+0xfc` calls step;
         new clock `0xd9c284+0xfc` calls **`0x011d3174`**. Its old body
         (`ldrb w20,[x0,#0x1e8]`) matches.
@@ -48,23 +74,25 @@
     `0x01a50348`, AreaEffect `0x01a4f9a0`, MovementComponent `0x01a55a10`,
     AttackComponent `0x01a558b0` (LIKELY), BuffComponent still unmapped. Runtime/action
     data vtables are mostly `LIKELY`; a few share a base and need manual review.
-  - **Still open:** new replay `lifecycle`/`runner`/`fullUpdate` (old bodies do not
-    match even 48-byte windows; the module was refactored). Old lifecycle and
-    fullUpdate are vtable slots at old data offsets `0x186e748`/`0x186e758`; diff that
-    vtable (and `0x186f6d0`) to recover all three. `GameStateNew/Delete` are PLT thunks
-    to operator new/delete; `kEglSwapBuffersGot` is a GOT slot —
-    both need import/relocation resolution, not code matching.
+  - **Still open:** name the GameState constructor fields (FINDINGS §3.8; the
+    old `+0xa0 → +0xa4` note does not match the disassembly — observed
+    `0x9c → 0xa0`), then do the entity/HP (`hpComponentAccessor`) work. The
+    Character/Projectile/AreaEffect/component vtables still need manual review.
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
-    `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. Check whether
-    auto-analysis finished; if not, rerun with `-analysisTimeoutPerFile 7200`.
-- **Commits on `origin/main`:**
-  - `32d76f3` — `feat(crforge): add bridge, catalog, attestation, and F0 fixes`
+    `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
+    project has a stale lock and was last modified at 19:32; check whether
+    auto-analysis finished before using it. If not, rerun with
+    `-analysisTimeoutPerFile 7200`.
+- **Commits (local until pushed):**
+  - `ee9b108` — `feat(native): recover replay controller and generate 16.635 layout header`
+  - `ca6994f` — `feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling`
+  - `98d94ad` — `docs: update handoff for the next session`
   - `40d9a45` — `docs: refocus roadmap on native 16.635 engine and X-Bow specialist`
-- The accidental root `LICENSE` deletion was restored and is not part of either commit.
-- **Working tree is dirty with this session's uncommitted work** (see `git status`):
-  `HANDOFF.md`, `docs/native/16.635.1/*`, `tools/native_analysis/*`. Commit before the
-  next session if you want the anchors preserved in git.
+  - `32d76f3` — `feat(crforge): add bridge, catalog, attestation, and F0 fixes`
+- The accidental root `LICENSE` deletion was restored and is not part of any commit.
+- **Working tree is clean.** The replay-controller recovery, verified overrides,
+  field offsets, seeded vtable report, and layout header are committed.
 - `ROADMAP.md` now has the **3a mirror bootstrap / 3b matchup pool** split.
 - `ROADMAP_CRFORGE.md` is the optional fallback/CI roadmap. `ROADMAP_NULLS16_PROBE.md` was folded
   into `ROADMAP.md` Phase 1 and removed.
@@ -89,14 +117,20 @@
 | Work | Environment | Why |
 | --- | --- | --- |
 | **Static analysis / offset diff** | **Linux now** | Ghidra/REA/LIEF/Capstone work on x86_64; no Frida needed |
-| **Dynamic Frida / offset verification** | **Rooted ARM64 Android phone** (or ARM64 Linux host) | Windows x86_64 MuMu runs `libg.so` under ARM translation; Frida is unreliable. Linux x86_64 AVD has the same translation problem |
+| **Dynamic Frida / offset verification** | **User's Samsung A51 (SM-A515F), arm64-v8a — no root needed** | Native ARM64, so no translation layer. Bootloader is locked and cannot be rooted; use Frida Gadget baked into the already re-signed APK, or instrumented `libcrprobe` + `adb logcat`. `frida-server` and Shizuku both need root and will **not** work on this device |
 | **Running the ported probe / demos** | **Windows + MuMu** | The probe is a native library loaded by the game; FirstLight supports MuMu. This is the runtime/demo environment |
 | **15.535 FirstLight-Zero lab** | **Windows MuMu** if the 15.535 APK is there | The 15.535 probe is already built; no Frida required |
 | **PPO / heavy training** | **Cloud GPU** (student credits) | Laptop is for engines/demos; use GPU time for the learner and inference server |
 
 **Recommendation:** start the probe port on **Linux with static analysis today**; do the dynamic
-Frida work on a **cheap used rooted ARM64 phone**; run/validate the finished probe on **Windows
-MuMu**; train on the **cloud GPU**. Do not spend days fighting Frida in Windows MuMu.
+work on the **user's Samsung A51** (already available, unrooted — see below); run/validate the
+finished probe on **Windows MuMu**; train on the **cloud GPU**.
+
+**Do not brute-force the translation layer.** Do not spend days making Frida, ptrace, or the
+probe work under MuMu/AVD ARM translation, and do not try to root the A51 or route around it with
+Shizuku. If dynamic verification is actually needed, **stop and ask the user to plug in the A51**.
+The user can attach it on request; the only cost is waiting for them, versus days of dead-end
+translation work.
 
 If Jason's 16.635 notes/code are available, use them first. A port from scratch is 2–4 months
 part-time; with his notes it can be weeks.
@@ -114,8 +148,10 @@ part-time; with his notes it can be weeks.
   bug, isolated to one card/owner sequence; not an engine failure.
 - crforge raw engine: **8,371 decisions/s at 256 envs**. The bridge is **20–30 decisions/s**;
   the gap is `BattleEnvV1` observation assembly and JPype conversion, not crforge.
-- The **16.635.1 APK** is local (`nr_16.635.1_release_951fe421.apk`, `libg` `0b5802…`), but the
-  probe is **not ported**; `native_runner/supported_engine.json` is still 15.535.13.
+- The **16.635.1 APK** is local (`nr_16.635.1_release_951fe421.apk`, `libg` `0b5802…`), and the
+  static port now has every replay-runner anchor plus the non-code import/data
+  anchors resolved (FINDINGS §3.5–§3.7). The probe is still **not rebuilt** for
+  16.635; `native_runner/supported_engine.json` is still 15.535.13.
 - The 16.635 crforge tests pass: 14 attestation/catalog tests, 6 bridge tests.
 
 ## What is not proven
@@ -133,46 +169,49 @@ part-time; with his notes it can be weeks.
   `/dev/kvm`, **no NVIDIA GPU**.
 - Laptop: demos, live play, light training. Start with **1 engine × 8 resident slots**.
 - Cloud GPU: student credits; use for the 15.535 lab and PPO.
-- 15.535.13 APK: **not in this Linux workspace**. If it is on the Windows side, run the lab there.
-- 16.635.1 APK: local in the repo root.
+- 15.535.13 APK: **reference `libg.so` is in this Linux workspace** at
+  `.resource/native/15.535.13/reference/libg.so` (SHA-256 `110aa2b5…9783`).
+  `.resource/` is gitignored; re-extract from the APK if it is cleaned.
+- 16.635.1 APK: local in the repo root; reference `libg.so` at
+  `.resource/native/16.635.1/reference/libg.so` (`0b5802…`).
 - `.venv` has `jpype1`, `gymnasium`, `pettingzoo`. `crforge_env` is not installed; use
   `PYTHONPATH=.resource/crforge/python` or install it editable.
 - crforge tables: `~/.crforge/tables/16.635.8` and `.3`.
 
 ## Next session: start here
 
-### 0. Continue the static port (new)
+### 0. Continue the static port
 
-The 15.535.13 reference binary is present; the long pole is now matching the
-remaining hooks, not acquiring the build.
+The 15.535.13 reference binary is present; the replay controller path is now
+recovered. What remains is porting it into the probe and naming the entity
+fields.
 
 1. Read `docs/native/16.635.1/FINDINGS.md` and `offset-diff.json`. Every verified
    claim has a reproduce command.
-2. **Recover the replay controller trio** (`lifecycle`, `runner`, `fullUpdate`):
-   - old lifecycle/fullUpdate/alternate are slots in the vtable at old
-     `0x186e748` (second copy `0x186f6d0`). Run `match_vtables.py` logic on that
-     data address (or expose it in the probe file list) and read the new slots.
-   - `runner` is not a vtable slot. Its load call is old `0xc87f64` (runner+0x98);
-     new load callers are `0xd9a590`, `0xd9ab18`, `0xd9aee4`. The function
-     containing `0xd9aee4` and step call `0xd9b144` is the new runner; walk back to
-     the previous `ret`/`b` to get its entry.
-3. **Fix the diff tool's near-duplicate confusion.** `kGameStateStep` is still
-   recorded as the load address in `offset-diff.json`; correct it to
-   `0x011d3174`. Either add a manual override file or use caller-relative
-   relocation (old call site + mapped caller) as the second pass.
-4. **Generate the 16.635 probe layout header** from the verified rows: offset +
-   16-byte prologue read from the new binary. Start with the 9 runner hooks +
-   touch; do not emit offsets without a verified new prologue.
-5. **Resolve the non-code anchors:** `GameStateNew/Delete` are PLT thunks to
-   operator new/delete (map through dynsym/GOT); `kEglSwapBuffersGot` is a GOT
-   slot; `kGameStateContextRootSlot`/`kGameStateContextA` are data slots.
-6. **Then** verify the GameState constructor field changes (`+0xa0 → +0xa4`,
-   new fields at `+0x228`) and do the entity/HP (`hpComponentAccessor`) work.
-7. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. If it
+2. **Replay controller trio + runner are resolved** (FINDINGS §3.5): lifecycle
+   `0x00d9a2cc`, fullUpdate `0x00d9bba0`, alternate `0x00d9cc24`, runner
+   `0x00d9ae04`. Regenerate the vtable report if needed:
+   `match_vtables.py OLD NEW --seeded-only --seeded 'replayController=0x186e748:4:4:0xd9cc24'`.
+3. **The diff tool's near-duplicate confusion is fixed.** `kGameStateStep` is
+   `0x011d3174`; `diff_builds.py --overrides docs/native/16.635.1/manual-overrides.json`
+   applies it and the other verified manual anchors. Do not edit
+   `offset-diff.json` by hand.
+4. **The 16.635 probe layout header exists:**
+   `native_runner/probe/build_16_635_1_layout.h` (9 runner hooks + touch, with
+   prologues read from the target). Regenerate with `gen_layout.py` after any
+   anchor change; it refuses unresolved rows.
+5. **Non-code anchors are resolved** (FINDINGS §3.6): GameStateNew/Delete PLT
+   stubs, the EGL GOT slot, ContextA, and the context root slot.
+6. **Next actual work:** port the 9 runner hooks + touch into
+   `cr_replay_probe.cpp` using the new build header, then verify on the native
+   A51. Before trusting live play, name the GameState constructor fields
+   (FINDINGS §3.8) and do the entity/HP (`hpComponentAccessor`) work.
+7. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. The
+   lock is stale; remove it only if no Ghidra process is running. If analysis
    timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use
    `ghidra_scripts/DecompileAt.java` on the anchors above to name them.
-8. Commit this session's work before the next session (`HANDOFF.md`,
-   `docs/native/16.635.1/`, `tools/native_analysis/`).
+8. This session's work is committed as `ee9b108`. Keep the tree clean and
+   re-run the tool commands above after any anchor change.
 
 ### 1. Linux — static probe port (original plan)
 
@@ -197,13 +236,25 @@ remaining hooks, not acquiring the build.
    entity list, DataIDs/forms.
 7. In parallel, run the crforge/QA harness work. It does not need the probe.
 
-### 2. ARM64 phone — dynamic verification (when available)
+### 2. ARM64 phone — dynamic verification (user's Samsung A51; ask them to connect it)
 
-- Install `frida-server`; attach to the game.
+Do this only once §0–1 has candidate offsets worth checking. **Ask the user to plug in the A51**;
+do not substitute an emulator or translation layer.
+
+- Build/sign the patched 16.635.1 APK (Windows side, where the PowerShell build scripts and
+  NDK/apktool/apksigner live), then `adb install` it to the A51 over USB.
+- Instrument in one of two no-root ways:
+  - **Frida Gadget:** add `libfrida-gadget.so` (arm64) plus an embedded config to the APK and load
+    it from the same smali bootstrap that loads `libcrprobe`, ideally before `libg.so`. Connect
+    with `frida -U Gadget`.
+  - **Instrumented probe:** add logging/asserts to `libcrprobe`, rebuild, sign, reinstall, and read
+    `adb logcat`. Slower loop, but no extra tooling.
 - Hook candidate functions; verify reads against the screen.
 - Deploy known cards at known times; compare memory changes to human ground truth.
 - Generate a verified prologue for every hook you keep.
 - Only then rebuild the probe layouts/hook table and sign the APK.
+- `frida-server` and Shizuku are **not** options on this device: locked bootloader, no root, and
+  ADB shell (UID 2000) cannot ptrace a non-debuggable app.
 
 ### 3. Windows MuMu — run and validate
 
@@ -258,7 +309,8 @@ Decision rule: **≥5 matches/s aggregate → native primary. 1–5 → split. <
 
 ## Guardrails
 
-- Do not start dynamic Frida work on Windows MuMu or Linux x86_64 AVD; use an ARM64 environment.
+- Do not start dynamic Frida work on Windows MuMu or Linux x86_64 AVD, and do not attempt to make
+  the translation layer work. Use the user's native ARM64 Samsung A51; ask them to connect it.
 - Do not train on `IL_Replay`.
 - Do not make crforge the critical path.
 - Do not blindly port FirstLight-Zero weights; verify the 16.635 mapping first.

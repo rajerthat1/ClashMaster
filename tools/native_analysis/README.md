@@ -67,7 +67,56 @@ at several relative positions (multi-window vote).
     --out docs/native/16.635.1/offset-diff.json
 ```
 
-Verdicts: `EXACT`, `LIKELY`, `AMBIGUOUS`, `MISSING`.
+Verdicts: `EXACT`, `LIKELY`, `AMBIGUOUS`, `MISSING`. Manual corrections go in a
+JSON file and are applied after the automatic passes, so the report stays
+reproducible instead of being hand-edited:
+
+```bash
+.venv/bin/python tools/native_analysis/diff_builds.py \
+    .resource/native/15.535.13/reference/libg.so \
+    .resource/native/16.635.1/reference/libg.so \
+    --overrides docs/native/16.635.1/manual-overrides.json \
+    --out docs/native/16.635.1/offset-diff.json
+```
+
+An override has this shape:
+
+```json
+{"hook": "kGameStateStep", "new_offset": "0x011d3174", "evidence": "caller-relative match", "note": "..."}
+```
+
+Overridden rows get `confidence: MANUAL` and keep the evidence/note fields.
+
+## `match_vtables.py`
+
+Matches probe vtable anchors through `R_AARCH64_RELATIVE` relocations. It also
+resolves an old *data* vtable through one function known to survive in the same
+slot, which is how the replay controller was recovered:
+
+```bash
+.venv/bin/python tools/native_analysis/match_vtables.py OLD NEW --seeded-only \
+    --seeded 'replayController=0x186e748:4:4:0xd9cc24' \
+    --seeded 'replayControllerSubclass=0x186f6d0:4:4:0xd9cc24' \
+    --out docs/native/16.635.1/replay-controller-vtables.json
+```
+
+`NAME=OLD_BASE:OLD_SLOT:NEW_SLOT:NEW_FUNCTION` finds every new data word holding
+`NEW_FUNCTION`, derives the table base from `NEW_SLOT`, and reports the `-16`
+sub-vtable marker shift and per-slot relocation mapping.
+
+## `gen_layout.py`
+
+Emits the build-pinned probe header from `offset-diff.json` +
+`field-offsets.json`. It refuses an anchor whose 16-byte prologue cannot be read
+from the target binary, so the header never contains an unverified offset:
+
+```bash
+.venv/bin/python tools/native_analysis/gen_layout.py \
+    .resource/native/16.635.1/reference/libg.so \
+    --diff docs/native/16.635.1/offset-diff.json \
+    --fields docs/native/16.635.1/field-offsets.json \
+    --out native_runner/probe/build_16_635_1_layout.h
+```
 
 ## Ghidra scripts
 

@@ -47,6 +47,11 @@ python3 tools/native_analysis/cr_elf.py symbols .resource/native/16.635.1/refere
 | --- | --- |
 | `tools/native_analysis/cr_elf.py` | `info`, `strings`, `xrefs`, `calls`, `refs`, `imm`, `disasm`, `symbols` |
 | `tools/native_analysis/relocate_hooks.py` | match all 15.535 probe prologues against a build |
+| `tools/native_analysis/diff_builds.py` | old→new offset diff; `--overrides` applies verified manual corrections |
+| `tools/native_analysis/match_vtables.py` | vtable matching; `--seeded` resolves a data vtable through one surviving slot |
+| `tools/native_analysis/gen_layout.py` | emit the build-pinned probe header (offset + 16-byte prologue) |
+| `docs/native/16.635.1/manual-overrides.json` | verified non-byte-diff anchors with evidence |
+| `docs/native/16.635.1/field-offsets.json` | struct field shifts confirmed by disassembly |
 | `docs/native/16.635.1/hook-relocation.json` | machine-readable relocation report |
 | `.resource/ghidra_download/ghidra_12.2_PUBLIC` | Ghidra 12.2 headless (JDK 25 at `.resource/jdk25`) |
 
@@ -198,6 +203,119 @@ In 16.635 the same neighborhood still holds battle-event code:
 The region is stable enough to be a good place to resume the packet/action work,
 but no 16.635 action-send offset has been proven yet.
 
+### 3.5 Replay controller — **recovered**
+
+The 15.535 probe hooks a replay controller class whose vtable sits at old
+`0x186e748` (a second subclass copy sits at `0x186f6d0`). The old lifecycle /
+fullUpdate / alternate bodies do not survive as byte windows, so the vtable is
+the authoritative anchor.
+
+`match_vtables.py --seeded` resolves the table through the alternate-update
+function, which *is* an exact match (`0xd9cc24`, old `0xc899e0`, delta
+`+0x113244`):
+
+| Old table | New table | Evidence |
+| --- | --- | --- |
+| `0x186e748` | **`0x1a20370`** | same slot 4 (`0xd9cc24`); slot 8 marker `-16` shifts `7 → 9` |
+| `0x186f6d0` | **`0x1a21308`** | same slot 4; its slot 9/10 overrides match `0xdac268`/`0xdac294` |
+
+New slot layout for the probe's class (`0x1a20370`), aligned to the old table:
+
+| Old slot | Old function | New slot | New function |
+| ---: | --- | ---: | --- |
+| 0 | `0xc87620` lifecycle | 0 | **`0x00d9a2cc`** |
+| 1 | `0xc87548` | 1 | `0x00d9a1e4` |
+| 2 | `0xc88bbc` fullUpdate | 2 | **`0x00d9bba0`** |
+| 3 | `0xc8b294` | 3 | `0x00d9f2f4` |
+| 4 | `0xc899e0` alternate | 4 | `0x00d9cc24` (EXACT) |
+| 5 | `0xc828cc` | 5 | `0x00d94fd8` |
+| 6 | `0xc89a6c` | 6 | `0x00d9f7f8` |
+| − | (none) | 7, 8 | `0x00d9dfc4`, `0x00d9ccb0` (new overrides) |
+| 9 | `0xc868dc` | 11 | `0x00d991bc` |
+| 10 | `0xc86908` | 12 | `0x00d991e8` |
+| 11 | `0x1060b9c` | 13 | `0x11d1e5c` |
+
+The **runner** is not a vtable slot. It is the function at **`0x00d9ae04`**:
+it follows the previous `ret` at `0xd9ae00`, contains the GameState load call at
+`0xd9aee4` and step call at `0xd9b144`, and calls the new GameState ctor/setup/
+destroy/base-destroy (`0x11d1e68` / `0x11d225c` / `0x11d2388` / `0x9fe0b0`).
+The other load call sites (`0xd9a590`, `0xd9ab18`) are inside the lifecycle
+function.
+
+```
+kReplayBattleControllerLifecycle     0x00c87620 -> 0x00d9a2cc
+kReplayBattleControllerFullUpdate    0x00c88bbc -> 0x00d9bba0
+kReplayBattleControllerAlternate     0x00c899e0 -> 0x00d9cc24
+kNativeReplayRunner                  0xc87ecc   -> 0x00d9ae04
+kReplayClockGlobalPauseGuard         0xcb6694   -> 0x00dcda40
+```
+
+The pause guard is matched through fullUpdate: both call it immediately after
+the suspended-byte check and share the same body (`bl [[global]]; ldr [vptr,#0x28];
+blr`).
+
+Reproduce:
+
+```bash
+python3 tools/native_analysis/match_vtables.py OLD NEW --seeded-only \
+    --seeded 'replayController=0x186e748:4:4:0xd9cc24' \
+    --out docs/native/16.635.1/replay-controller-vtables.json
+python3 tools/native_analysis/cr_elf.py disasm NEW 0xd9a2cc 0xd9a320
+python3 tools/native_analysis/cr_elf.py disasm NEW 0xd9bba0 0xd9bc00
+python3 tools/native_analysis/cr_elf.py disasm NEW 0xd9ae04 0xd9ae60
+```
+
+### 3.6 Non-code anchors — **resolved**
+
+These are not code matches. They are PLT thunks, GOT slots, or data slots and
+are resolved through `DT_SYMTAB`/`.rela.plt` and the getter that reads them:
+
+| Probe anchor | Old | 16.635.1 | How |
+| --- | --- | --- | --- |
+| `kGameStateNew` | `0x17e4b20` | **`0x0198db50`** | PLT stub whose GOT slot is `_Znwm`; new runner calls it at `0xd9ae64` |
+| `kGameStateDelete` | `0x17e4b50` | **`0x0198db60`** | PLT stub whose GOT slot is `_ZdlPv`; new runner calls it at `0xd9af3c` |
+| `kEglSwapBuffersGot` | `0x18e9d88` | **`0x01a9d6b0`** | JUMP_SLOT for `eglSwapBuffers` |
+| `kGameStateContextA` | `0x80031c` | **`0x00878c00`** | runner call shape; loads `[[0x1b61d00]]`, returns `+0x20` |
+| `kGameStateContextB` | `0xeaf1c8` | `0x00ff253c` | `adrp/add; ret` constant getter (already EXACT) |
+| `kGameStateContextRootSlot` | `0x19ad878` | **`0x01b61d00`** | the new ContextA getter's `adrp #0x1b61000; ldr [x19,#0xd00]` |
+
+### 3.7 Controller / GameApp field shifts
+
+Read from the recovered functions themselves:
+
+| Probe field | Old | 16.635.1 | Instruction |
+| --- | ---: | ---: | --- |
+| `kReplayBattleControllerStateOffset` | `0x30` | `0x30` | lifecycle `ldr w8,[x0,#0x30]` |
+| `kReplayBattleControllerAccumulatorOffset` | `0x44` | `0x44` | fullUpdate `ldr s0,[x19,#0x44]`; clock load/store |
+| `kReplayBattleControllerSpeedOffset` | `0x74` | `0x74` | fullUpdate `ldr s10,[x19,#0x74]` |
+| `kReplayBattleControllerSuspendedOffset` | `0x18c` | **`0x17c`** | fullUpdate/alternate `ldrb w8,[x19,#0x17c]` |
+| `kGameAppPendingEventFlagsOffset` | `0x1b8` | **`0x1c0`** | pending setter `ldrb w8,[x0,#0x1c0]` |
+| `kGameAppPendingEventOffset` | `0x1bc` | **`0x1c4`** | pending setter `str w1,[x0,#0x1c4]` |
+
+The pending-event setter also gained two new fields at `+0x24b` (byte) and
+`+0x24c` (word); the old function had no equivalent.
+
+### 3.8 GameState constructor — **shape changed, fields not yet named**
+
+Constructor `0x11d1e68` (old `0x1060ba8`). The store sequence changed; do not
+carry 15.535 offsets over:
+
+- old `str wzr,[x19,#0x9c]` → new `str wzr,[x19,#0xa0]` (+4)
+- old `str q1,[x19,#0x220]` → new `str q1,[x19,#0x210]` (−0x10)
+- old `str xzr,[x19,#0x218]` → new `str xzr,[x19,#0x220]` (+8)
+- new-only stores at `+0x1f4`, `+0x1f8`, `+0x208`, `+0x238`
+
+The `+0xa0 → +0xa4` note in the previous handoff does **not** match this
+disassembly (the observed pair is `0x9c → 0xa0`). Treat both as provisional
+until the fields are named from their accessors.
+
+Reproduce:
+
+```bash
+python3 tools/native_analysis/cr_elf.py disasm OLD 0x1060ba8 0x1060e90
+python3 tools/native_analysis/cr_elf.py disasm NEW 0x11d1e68 0x11d2160
+```
+
 ## 4. Hook relocation report
 
 `relocate_hooks.py` matched all 56 prologues extracted from `native_runner/probe`.
@@ -217,15 +335,28 @@ existing 16-byte fingerprints alone.** The 15.535 body bytes are not in this
 workspace, so every non-touch hook needs either (a) Jason's 16.635 notes, or
 (b) a fresh semantic match in Ghidra.
 
+The 15.535 reference build is now present, so `diff_builds.py` supersedes
+prologue-only matching for the replay path: 59 `EXACT`, 31 `LIKELY`, 10
+`MANUAL`, 37 `AMBIGUOUS` and 10 `MISSING` rows. The ten manual rows are the
+verified replay-controller / GameState / import anchors above; see
+`docs/native/16.635.1/manual-overrides.json`.
+
 ## 5. Next steps (in order)
 
-1. Ghidra auto-analysis of `libg.so` (running). Export function boundaries and
-   decompile the anchors in §3.2–§3.4 to turn them into named functions.
-2. Identify `GameStateManager` load/step/tick and the 15.535 4-argument load
-   overload. This is the headless-training critical path.
-3. Map the battle object and `hpComponentAccessor`: find the vtable slot for
-   HP, then verify entity fields (`kind`, `side`, `pos`, `card id`, `level`).
-4. Build a 15.535↔16.635 offset table for the fields that *did* survive
-   (`holder + 0x290` survived; hand internals did not).
-5. Re-run `relocate_hooks.py` after a hook is verified and record the new
-   prologue in the probe's exact-build layout header.
+1. ~~Recover the replay controller trio and the runner~~ — done, see §3.5.
+2. ~~Fix the near-duplicate confusion for `kGameStateStep`~~ — done via
+   `manual-overrides.json`; the report now records `0x011d3174`.
+3. ~~Generate the 16.635 probe layout header~~ — done,
+   `native_runner/probe/build_16_635_1_layout.h` (9 runner hooks + touch, plus
+   verified field offsets).
+4. ~~Resolve the non-code anchors~~ — done, see §3.6.
+5. Port the 9 runner hooks + touch into `cr_replay_probe.cpp` behind the new
+   build header, then verify on the native A51 (§2 of the handoff).
+6. Name the GameState constructor fields from their accessors (§3.8) and then
+   do the entity/HP (`hpComponentAccessor`) work.
+7. Map the gameplay/vtable/data anchors that are still `AMBIGUOUS`: the
+   Character / Projectile / AreaEffect / component vtables in
+   `vtable-diff.json`, then the runtime/action-data pairs that share a base.
+8. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. If it
+   timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use
+   `ghidra_scripts/DecompileAt.java` on the anchors above to name them.

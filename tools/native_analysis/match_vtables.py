@@ -78,6 +78,8 @@ def parse_vtables(probe: Path) -> list[tuple[str, int, int | None]]:
         if path.suffix not in {".h", ".inc", ".cpp"}:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
+        if "tools/native_analysis/gen_layout.py" in text:
+            continue
         for name, value in OFFSET_RE.findall(text):
             if name.endswith("Vtable"):
                 found.setdefault(name, int(value, 16))
@@ -185,12 +187,98 @@ def lcs_align(old: list[int], new: list[int]) -> list[tuple[int, int]]:
     return pairs
 
 
+def read_raw_slots(path: str, address: int, count: int) -> list[int]:
+    data = Path(path).read_bytes()
+    binary = Binary(path)
+    offset = binary.va_to_offset(address)
+    if offset is None:
+        return []
+    return [struct.unpack_from("<Q", data, offset + index * 8)[0] for index in range(count)]
+
+
+def resolve_seeded_vtable(
+    name: str,
+    spec: str,
+    old: Binary,
+    new: Binary,
+    old_relocs: dict[int, int],
+    new_relocs: dict[int, int],
+    relocator: Relocator,
+    slots: int = 32,
+) -> dict:
+    """Resolve an old data vtable through one surviving slot.
+
+    ``spec`` is ``OLD_BASE:OLD_SLOT:NEW_SLOT:NEW_FUNCTION`` (addresses/slots in
+    hex).  The old and new builds are assumed to place the same known function
+    in those slots (e.g. the alternate-update override).  Every new data word
+    holding ``NEW_FUNCTION`` is then a candidate; the table base is derived from
+    the slot index.  The report shows the -16 sub-vtable marker shift and the
+    per-slot relocation mapping so an insertion can be read off directly.
+    """
+    old_base_s, old_slot_s, new_slot_s, new_function_s = spec.split(":")
+    old_base = int(old_base_s, 16)
+    old_slot = int(old_slot_s, 16)
+    new_slot = int(new_slot_s, 16)
+    new_function = int(new_function_s, 16)
+
+    old_words = read_raw_slots(str(old.path), old_base, slots)
+    old_entries = [old_relocs.get(old_base + index * 8, 0) for index in range(slots)]
+    old_marker = old_words.index(0xFFFFFFFFFFFFFFF0) if 0xFFFFFFFFFFFFFFF0 in old_words else None
+
+    candidate_bases = sorted({address - new_slot * 8 for address, value in new_relocs.items() if value == new_function})
+    candidates = []
+    for base in candidate_bases:
+        words = read_raw_slots(str(new.path), base, slots)
+        entries = [new_relocs.get(base + index * 8, 0) for index in range(slots)]
+        marker = words.index(0xFFFFFFFFFFFFFFF0) if 0xFFFFFFFFFFFFFFF0 in words else None
+        mapped = []
+        for index, value in enumerate(old_entries):
+            target = relocator.relocate(value) if value else None
+            if target is not None:
+                matches = [j for j, entry in enumerate(entries) if entry == target]
+                mapped.append({"old_slot": index, "new_slots": matches, "function": f"0x{target:08x}"})
+        candidates.append(
+            {
+                "new_offset": f"0x{base:08x}",
+                "delta": f"{base - old_base:+#x}",
+                "sub_vtable_marker_slot": marker,
+                "missing_slots": [index for index, value in enumerate(entries) if value == 0][:8],
+                "relocated_slots": [f"0x{value:08x}" for value in entries[:16]],
+                "mapped_slots": mapped,
+            }
+        )
+    return {
+        "name": name,
+        "old_offset": f"0x{old_base:08x}",
+        "seed": {
+            "old_slot": old_slot,
+            "new_slot": new_slot,
+            "new_function": f"0x{new_function:08x}",
+        },
+        "old_sub_vtable_marker_slot": old_marker,
+        "candidates": candidates,
+        "confidence": "SEEDED" if candidates else "UNMAPPED",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("old_libg")
     parser.add_argument("new_libg")
     parser.add_argument("--probe", default="native_runner/probe")
     parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--seeded",
+        action="append",
+        default=[],
+        metavar="NAME=OLD_BASE:OLD_SLOT:NEW_SLOT:NEW_FUNCTION",
+        help="resolve an old data vtable through one function known to survive in the same slot",
+    )
+    parser.add_argument(
+        "--seeded-only",
+        action="store_true",
+        help="skip probe vtables and report only --seeded data vtables",
+    )
     args = parser.parse_args()
 
     old = Binary(args.old_libg)
@@ -210,7 +298,7 @@ def main() -> int:
 
     old_code = [(segment.vaddr, segment.end) for segment in old.segments if segment.executable]
     report = []
-    for name, address, end_address in parse_vtables(Path(args.probe)):
+    for name, address, end_address in ([] if args.seeded_only else parse_vtables(Path(args.probe))):
         entries = read_vtable(old_relocs, address, old_code, end_address=end_address)
         mapped = [relocator.relocate(entry) if entry else None for entry in entries]
         entry = {
@@ -267,6 +355,16 @@ def main() -> int:
         print(f"{status:<9} {name:<44} old={entry['old_offset']} new={entry.get('new_offset', '-'):<12} "
               f"slots={entry['slots']} mapped={entry['mapped_slots']} "
               f"matched={entry.get('matched_slots', 0)} score={entry.get('score', 0)}")
+
+    for seeded in args.seeded:
+        name, spec = seeded.split("=", 1)
+        entry = resolve_seeded_vtable(name, spec, old, new, old_relocs, new_relocs, relocator)
+        report.append(entry)
+        print(
+            f"{entry['confidence']:<9} {name:<44} old={entry['old_offset']} "
+            f"new={entry['candidates'][0]['new_offset'] if entry['candidates'] else '-':<12} "
+            f"candidates={len(entry['candidates'])}"
+        )
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

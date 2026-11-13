@@ -45,6 +45,8 @@ def parse_probe(root: Path) -> list[Hook]:
         if path.suffix not in {".h", ".inc", ".cpp"}:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
+        if "tools/native_analysis/gen_layout.py" in text:
+            continue
         offsets = {name: int(value, 16) for name, value in OFFSET_RE.findall(text)}
         for full_name, body in PROLOGUE_RE.findall(text):
             values = [int(value, 16) for value in BYTE_RE.findall(body)]

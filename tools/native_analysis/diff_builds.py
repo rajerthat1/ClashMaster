@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cr_elf import Binary  # noqa: E402
 
+GENERATED_LAYOUT_MARKER = "tools/native_analysis/gen_layout.py"
 OFFSET_RE = re.compile(
     r"(?:constexpr|inline\s+constexpr)\s+std::uintptr_t\s+(\w+)Offset\s*=\s*(0x[0-9a-fA-F]+);"
 )
@@ -46,6 +47,8 @@ def parse_offsets(probe: Path) -> list[OldAnchor]:
         if path.suffix not in {".h", ".inc", ".cpp"}:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
+        if GENERATED_LAYOUT_MARKER in text:
+            continue
         for name, value in OFFSET_RE.findall(text):
             offset = int(value, 16)
             if offset <= 0:
@@ -137,6 +140,28 @@ def relocate(old: Binary, new: Binary, anchor: OldAnchor) -> dict:
     return entry
 
 
+def load_overrides(path: Path | None) -> dict[str, dict]:
+    """Manual corrections for anchors the byte diff cannot separate on its own.
+
+    The file is a JSON object with an ``overrides`` list.  Each entry names a
+    probe anchor and its verified new offset, plus free-form evidence.  This
+    keeps reproducible corrections (e.g. a near-duplicate function pair) in
+    version control instead of editing the generated report by hand.
+    """
+    if path is None:
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("overrides", payload) if isinstance(payload, dict) else payload
+    result: dict[str, dict] = {}
+    for entry in entries:
+        hook = entry.get("hook")
+        new_offset = entry.get("new_offset")
+        if not hook or not new_offset:
+            raise SystemExit(f"{path}: override needs hook and new_offset: {entry!r}")
+        result[hook] = entry
+    return result
+
+
 def _expected_delta(rows: list[dict], old_offset: int) -> int | None:
     """Local delta from the nearest EXACT code anchors."""
     exact = []
@@ -209,6 +234,11 @@ def main() -> int:
     parser.add_argument("new_libg")
     parser.add_argument("--probe", default="native_runner/probe")
     parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--overrides",
+        default="",
+        help="JSON file with verified manual corrections (hook + new_offset + evidence)",
+    )
     args = parser.parse_args()
 
     old = Binary(args.old_libg)
@@ -245,10 +275,23 @@ def main() -> int:
             row["suspect"] = True
 
     counts: dict[str, int] = {}
+    overrides = load_overrides(Path(args.overrides) if args.overrides else None)
     for row in rows:
+        override = overrides.get(row["hook"])
+        if override is not None:
+            new_offset = int(override["new_offset"], 16)
+            row["new_offset"] = f"0x{new_offset:08x}"
+            row["delta"] = f"{new_offset - int(row['old_offset'], 16):+#x}"
+            row["confidence"] = "MANUAL"
+            row.pop("suspect", None)
+            row["manual_evidence"] = override.get("evidence", "")
+            if override.get("note"):
+                row["manual_note"] = override["note"]
         counts[row["confidence"]] = counts.get(row["confidence"], 0) + 1
         flags = ""
-        if row.get("delta_verified"):
+        if row["confidence"] == "MANUAL":
+            flags = " manual"
+        elif row.get("delta_verified"):
             flags = " verified"
         elif row.get("delta_constrained"):
             flags = " constrained"

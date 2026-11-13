@@ -1,9 +1,10 @@
 {
   "summary": {
     "EXACT": 59,
-    "LIKELY": 32,
-    "MISSING": 16,
-    "AMBIGUOUS": 40
+    "LIKELY": 31,
+    "MANUAL": 10,
+    "AMBIGUOUS": 37,
+    "MISSING": 10
   },
   "anchors": [
     {
@@ -64,7 +65,11 @@
       "hook": "kGameStateContextA",
       "old_offset": "0x0080031c",
       "source": "native_runner/probe/cr_replay_probe.cpp",
-      "confidence": "MISSING"
+      "confidence": "MANUAL",
+      "new_offset": "0x00878c00",
+      "delta": "+0x788e4",
+      "manual_evidence": "Runner call shape: old 0xc87f04 bl 0x80031c -> bl 0xdccc70; new 0xd9ae3c bl 0x878c00 -> bl 0xef9c28. Both getters load [[global]] and return +0x20: old [[0x19ad878]], new [[0x1b61d00]].",
+      "manual_note": "Getter for the game-state context root."
     },
     {
       "hook": "kLocationTileMapEnsure",
@@ -124,9 +129,12 @@
         "0x015c8878",
         "0x0161eafc"
       ],
-      "confidence": "AMBIGUOUS",
+      "confidence": "MANUAL",
       "expected_delta": "+0x1131c8",
-      "suspect": true
+      "new_offset": "0x00d9a2cc",
+      "delta": "+0x112cac",
+      "manual_evidence": "Old lifecycle is slot 0 of the vtable at old 0x186e748. The matching new vtable is 0x1a20370 (same slot-4 alternate update 0xd9cc24); new slot 0 is 0xd9a2cc. Disassembly keeps the same switch on [x0,#0x30] and the same GameState load call shape.",
+      "manual_note": "Old body changed enough that no 24-byte window survives, so the vtable is the authoritative anchor."
     },
     {
       "hook": "kNativeReplayRunner",
@@ -144,9 +152,12 @@
         "0x0089f560",
         "0x008ba8a4"
       ],
-      "confidence": "AMBIGUOUS",
+      "confidence": "MANUAL",
       "expected_delta": "+0x1131c8",
-      "suspect": true
+      "new_offset": "0x00d9ae04",
+      "delta": "+0x112f38",
+      "manual_evidence": "New runner contains the GameState load call at 0xd9aee4 (bl 0x11d2dc4) and the step call at 0xd9b144. Its prologue follows the previous ret at 0xd9ae00 and calls the new GameState ctor 0x11d1e68, setup 0x11d225c, destroy 0x11d2388 and base destroy 0x9fe0b0, all matching the old runner 0xc87ecc.",
+      "manual_note": "The other load callers (0xd9a590, 0xd9ab18) are inside the lifecycle function, not the runner."
     },
     {
       "hook": "kReplayBattleControllerFullUpdate",
@@ -158,9 +169,12 @@
         "0x0097e634",
         "0x00ac16f0"
       ],
-      "confidence": "AMBIGUOUS",
+      "confidence": "MANUAL",
       "expected_delta": "+0x1131c8",
-      "suspect": true
+      "new_offset": "0x00d9bba0",
+      "delta": "+0x112fe4",
+      "manual_evidence": "Old fullUpdate is slot 2 of the vtable at old 0x186e748; new vtable 0x1a20370 slot 2 is 0xd9bba0. Structure matches: fmov s8,s0, ldrb [x19,#0x17c] (old #0x18c), same accumulator/speed field reads and the same load-bearing call chain.",
+      "manual_note": "The second copy of the vtable (old 0x186f6d0, new 0x1a21308) has a different slot 2 (0xdac54c) and is a different subclass."
     },
     {
       "hook": "kReplayBattleControllerClock",
@@ -245,9 +259,12 @@
       "hook": "kReplayClockGlobalPauseGuard",
       "old_offset": "0x00cb6694",
       "source": "native_runner/probe/cr_replay_probe.cpp",
-      "confidence": "MISSING",
+      "confidence": "MANUAL",
       "expected_delta": "+0x113244",
-      "suspect": true
+      "new_offset": "0x00dcda40",
+      "delta": "+0x1173ac",
+      "manual_evidence": "Old fullUpdate 0xc88bbc calls 0xcb6694 right after the suspended-byte check; new fullUpdate 0xd9bba0 calls 0xdcda40 in the same position. Both bodies are identical: stp x29,x30; bl [[global]]; blr [vtable+0x28]; then read a global byte.",
+      "manual_note": "Structural match through the recovered fullUpdate."
     },
     {
       "hook": "kJsonMemberFind",
@@ -2220,11 +2237,13 @@
       "candidates": [
         "0x011d2dc4"
       ],
-      "new_offset": "0x011d2dc4",
-      "delta": "+0x170d20",
-      "confidence": "LIKELY",
+      "new_offset": "0x011d3174",
+      "delta": "+0x1710d0",
+      "confidence": "MANUAL",
       "expected_delta": "+0x1710d0",
-      "delta_verified": true
+      "delta_verified": true,
+      "manual_evidence": "Old clock 0xc890bc+0xfc calls step. New clock 0xd9c284+0xfc calls 0x011d3174. The body starts ldrb w20,[x0,#0x1e8], matching the old step body.",
+      "manual_note": "diff_builds.py first confused step with load because both share a near-identical body. load is 0x011d2dc4; step is 0x011d3174."
     },
     {
       "hook": "kGameStateTick",
@@ -2401,13 +2420,21 @@
       "hook": "kGameStateNew",
       "old_offset": "0x017e4b20",
       "source": "native_runner/probe/cr_replay_probe.cpp",
-      "confidence": "MISSING"
+      "confidence": "MANUAL",
+      "new_offset": "0x0198db50",
+      "delta": "+0x1a9030",
+      "manual_evidence": "PLT thunk to operator new. The new dynsym JUMP_SLOT for _Znwm points at GOT 0x1a9caf0; the matching adrp/ldr/add/br stub is 0x198db50. The new runner calls it at 0xd9ae64.",
+      "manual_note": "Not a code match: resolve through dynsym + .rela.plt."
     },
     {
       "hook": "kGameStateDelete",
       "old_offset": "0x017e4b50",
       "source": "native_runner/probe/cr_replay_probe.cpp",
-      "confidence": "MISSING"
+      "confidence": "MANUAL",
+      "new_offset": "0x0198db60",
+      "delta": "+0x1a9010",
+      "manual_evidence": "PLT thunk to operator delete. The new dynsym JUMP_SLOT for _ZdlPv points at GOT 0x1a9caf8; the matching stub is 0x198db60. The new runner calls it at 0xd9af3c.",
+      "manual_note": "Not a code match: resolve through dynsym + .rela.plt."
     },
     {
       "hook": "kCharacterAbilityDataVtable",
@@ -2899,13 +2926,21 @@
       "hook": "kEglSwapBuffersGot",
       "old_offset": "0x018e9d88",
       "source": "native_runner/probe/cr_replay_probe.cpp",
-      "confidence": "MISSING"
+      "confidence": "MANUAL",
+      "new_offset": "0x01a9d6b0",
+      "delta": "+0x1b3928",
+      "manual_evidence": "GOT slot for eglSwapBuffers from the new dynsym JUMP_SLOT relocation (symbol index 407).",
+      "manual_note": "Data address, not code; read the function pointer through this slot."
     },
     {
       "hook": "kGameStateContextRootSlot",
       "old_offset": "0x019ad878",
       "source": "native_runner/probe/cr_replay_probe.cpp",
-      "confidence": "MISSING"
+      "confidence": "MANUAL",
+      "new_offset": "0x01b61d00",
+      "delta": "+0x1b4488",
+      "manual_evidence": "The new ContextA getter (0x878c00) loads this global: adrp x19,#0x1b61000; ldr x8,[x19,#0xd00].",
+      "manual_note": "Data slot holding the root pointer."
     }
   ]
 }

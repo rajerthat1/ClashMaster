@@ -1,0 +1,43 @@
+{
+  "build": "16.635.1",
+  "libg_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
+  "note": "Field offsets confirmed against the 16.635.1 disassembly. Each entry names the old probe constant, the new offset, and the instruction that proves it.",
+  "fields": [
+    {
+      "name": "kReplayBattleControllerStateOffset",
+      "old": "0x30",
+      "new": "0x30",
+      "evidence": "lifecycle 0xd9a2cc: ldr w8,[x0,#0x30] (old 0xc87620: ldr w8,[x0,#0x30])"
+    },
+    {
+      "name": "kReplayBattleControllerAccumulatorOffset",
+      "old": "0x44",
+      "new": "0x44",
+      "evidence": "fullUpdate 0xd9bba0: ldr s0,[x19,#0x44]; clock 0xd9c284: ldr/str s0,[x19,#0x44]"
+    },
+    {
+      "name": "kReplayBattleControllerSpeedOffset",
+      "old": "0x74",
+      "new": "0x74",
+      "evidence": "fullUpdate 0xd9bba0: ldr s10,[x19,#0x74]; lifecycle 0xd9a2cc: str w8,[x19,#0x74]"
+    },
+    {
+      "name": "kReplayBattleControllerSuspendedOffset",
+      "old": "0x18c",
+      "new": "0x17c",
+      "evidence": "fullUpdate 0xd9bba0: ldrb w8,[x19,#0x17c] (old 0xc88bbc: ldrb w8,[x19,#0x18c]); alternate 0xd9cc24 uses the same 0x17c byte"
+    },
+    {
+      "name": "kGameAppPendingEventFlagsOffset",
+      "old": "0x1b8",
+      "new": "0x1c0",
+      "evidence": "pending setter 0x7c79d8: ldrb w8,[x0,#0x1c0] then cbz (old 0x75a6dc: ldrb w8,[x0,#0x1b8])"
+    },
+    {
+      "name": "kGameAppPendingEventOffset",
+      "old": "0x1bc",
+      "new": "0x1c4",
+      "evidence": "pending setter 0x7c79d8: str w1,[x0,#0x1c4] (old 0x75a6dc: str w1,[x19,#0x1bc])"
+    }
+  ]
+}
