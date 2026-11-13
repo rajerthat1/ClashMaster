@@ -216,7 +216,7 @@ function, which *is* an exact match (`0xd9cc24`, old `0xc899e0`, delta
 
 | Old table | New table | Evidence |
 | --- | --- | --- |
-| `0x186e748` | **`0x1a20370`** | same slot 4 (`0xd9cc24`); slot 8 marker `-16` shifts `7 → 9` |
+| `0x186e748` | **`0x1a20370`** | same slot 4 (`0xd9cc24`); the `-16` sub-vtable marker shifts from slot 7 to slot 9 |
 | `0x186f6d0` | **`0x1a21308`** | same slot 4; its slot 9/10 overrides match `0xdac268`/`0xdac294` |
 
 New slot layout for the probe's class (`0x1a20370`), aligned to the old table:
