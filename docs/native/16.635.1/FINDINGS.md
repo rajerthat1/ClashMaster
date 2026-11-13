@@ -336,7 +336,7 @@ Reproduce (`.venv` has Capstone):
 .venv/bin/python tools/native_analysis/cr_elf.py disasm NEW 0x11d1e68 0x11d225c
 ```
 
-The checked-in Ghidra project `/tmp/opencode/ghidra_project` has **not**
+The workspace Ghidra project `/tmp/opencode/ghidra_project` has **not**
 finished auto-analysis: it has no function at `0x11d1e68` and mis-splits
 `0x11d2250`/`0x11d225c`. `ghidra_scripts/DecompileAnchors.java` can force a
 function at a known address, but the decompiler output loses the AArch64
