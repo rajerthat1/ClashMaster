@@ -943,3 +943,12 @@ Reproduce:
 .venv/bin/python tools/native_analysis/resident_batch_throughput.py --slots 8 --batches 5 --ticks 600
 ```
 
+**Rebuilt deployable (2026-11-13).** After the hitpoint-anchor change,
+`./build_offline_apk.sh --input-apk nr_16.635.1_release_951fe421.apk
+--target-build 16.635.1 --output-apk builds/cr-ai-16.635.1.apk` produced
+`19932f9e…0dd9` with probe `3726031a…cf14` and the reference
+`libg.so 0b5802…e4eaa`. The probe bytes are identical to the previously
+installed APK (the anchor is compile-time only), confirming a deterministic
+probe build. The rebuilt APK was installed on the A51 and re-verified: a full
+two-sided match (160 decisions / 56 actions, 0 problems, tick 3601) and the
+entity/HP probe (8 samples, 0 problems), with an empty crash buffer.

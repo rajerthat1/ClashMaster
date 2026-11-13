@@ -327,7 +327,11 @@ part-time; with his notes it can be weeks.
 - Linux build tools: `.resource/android-tools/` (NDK r27c, build-tools r34,
   apktool 2.12.1). `.resource/` and `builds/` are gitignored.
 - Current deployable: `builds/cr-ai-16.635.1.apk` (single-process, local signing
-  key). Rebuild with `./build_offline_apk.sh --target-build 16.635.1`.
+  key; SHA-256 `19932f9e…0dd9`, probe `3726031a…cf14`, reference
+  `libg.so 0b5802…e4eaa`). Rebuilt 2026-11-13 after the hitpoint-anchor change;
+  the probe bytes are unchanged from the previously installed APK, and the
+  rebuilt APK was installed and re-verified (full two-sided match + entity/HP,
+  no crash). Rebuild with `./build_offline_apk.sh --target-build 16.635.1`.
 - `.venv` has `jpype1`, `gymnasium`, `pettingzoo`. `crforge_env` is not installed; use
   `PYTHONPATH=.resource/crforge/python` or install it editable.
 - crforge tables: `~/.crforge/tables/16.635.8` and `.3`.
