@@ -78,9 +78,14 @@
     `0x01a50348`, AreaEffect `0x01a4f9a0`, MovementComponent `0x01a55a10`,
     AttackComponent `0x01a558b0` (LIKELY), BuffComponent still unmapped. Runtime/action
     data vtables are mostly `LIKELY`; a few share a base and need manual review.
-  - **Still open:** name the GameState constructor fields (FINDINGS §3.8; the
-    old `+0xa0 → +0xa4` note does not match the disassembly — observed
-    `0x9c → 0xa0`), then do the entity/HP (`hpComponentAccessor`) work. The
+  - **GameState constructor store map recovered** (FINDINGS §3.8): allocation
+    `0x230 → 0x240`; int `0x9c → 0xa0`; embedded sub-object `0xa0 → 0xa4`;
+    context A `0x208 → 0x210`; context B `0x210 → 0x218`; optional player
+    `0x218 → 0x220`; new zero fields at `0x208`, `0x228`, `0x238`. Full table in
+    `docs/native/16.635.1/gamestate-constructor.json`. The *roles* still need
+    live-golden confirmation.
+  - **Still open:** confirm the constructor field roles from named live goldens,
+    then do the entity/HP (`hpComponentAccessor`) work. The
     Character/Projectile/AreaEffect/component vtables still need manual review.
     The remaining `AMBIGUOUS` core anchors (`kJsonMemberFind`,
     `kLogicCommandParse`, `kLocationTileMapEnsure`, `kLocationTileMapLookup`)
@@ -224,8 +229,8 @@ fields.
    the build header (FINDINGS §3.9). Build with
    `build_probe.ps1 -TargetBuild 16.635.1`; the default build is still
    15.535.13. Next actual work is dynamic verification on the native A51,
-   followed by naming the GameState constructor fields (FINDINGS §3.8) and the
-   entity/HP (`hpComponentAccessor`) work.
+   followed by confirming the recovered GameState constructor field roles
+   (FINDINGS §3.8) and the entity/HP (`hpComponentAccessor`) work.
 7. **Next analysis blockers:** resolve `kJsonMemberFind`, `kLogicCommandParse`,
    `kLocationTileMapEnsure` and `kLocationTileMapLookup` (FINDINGS §3.9). Until
    then the 16.635 build intentionally leaves cold configure and live command
