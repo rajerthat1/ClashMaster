@@ -12,6 +12,8 @@ Data: self-play + live captures. **`IL_Replay` is retired as a training corpus.*
 
 **Next milestone (about 2–3 months after the 16.635 probe is usable):** a **scripted X-Bow bot playing live on Null's 16.635.1**, then a **learned X-Bow bot that beats it** and is ready for a main-ladder canary. The probe port is the long pole; the 15.535 lab and crforge fallback keep moving in parallel.
 
+**Host plan:** moving training off the phone to 10 matches/s is tracked in [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md) (Track B: Linux `libg.so` loader; Track A: Linux AVD fallback).
+
 ---
 
 ## 0. Decision record
@@ -55,11 +57,20 @@ The last is the useful number. FirstLight-Zero's published run did 1,024 episode
 | Resident batch channel, 8 slots × 600 ticks × 5 + real actions | 8 | — | **1.73** (28 actions/s) |
 | Scripted X-Bow self-play, decisions every 20 ticks | 1 | 13.5–14.4 s | ~0.07 |
 
+**Control-lane affinity (2026-11-13, FINDINGS §3.24):** the same 8-slot ×
+600-tick × 5 action run is **1.80 matches/s** with the control lane pinned to a
+big core (cpu7), **0.62** on a little core (cpu0, the old default) and **0.82**
+unpinned. The probe now takes `debug.cr.engine_cpu_map` / `engine-affinity`;
+always pin explicitly on heterogeneous hosts. Android cpusets restrict
+background engine processes to cpu0–1, and one engine is ~690 MB RSS, so a
+3.6 GB phone is a ~2–4 lane device.
+
 The engine is not the bottleneck: per-command transport (~19 ms via `adb
 forward`) and the per-batch observation envelope are. One phone process is a
 ~1.7–2.4 matches/s lane (empty vs real actions), so 5–10 matches/s aggregate
 needs 3–6 engine lanes (wider PC/cloud hosts), not a single device. See FINDINGS
-§3.17–3.18 and the real-action re-measurement in §3.23.
+§3.17–3.18, the real-action re-measurement in §3.23 and the affinity/cpuset
+results in §3.24.
 
 ### Engine decision tree
 

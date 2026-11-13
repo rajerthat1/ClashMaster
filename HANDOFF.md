@@ -6,6 +6,24 @@
 
 ## State
 
+- **Extracted-engine plan written (2026-11-13, later session).**
+  [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md) covers both tracks with
+  hardware sizing, costs, gates and timelines: the **clapha-type Linux
+  `libg.so` loader** (primary, 2–3 months part-time) and the **FirstLight Linux
+  AVD** (fallback, 4–6 weeks part-time). Decision: start Track B on 15.535.13
+  and keep 16.635.1 on the A51 as the golden reference. The 16.635.1 APK ships
+  only arm64-v8a/armeabi-v7a, so a Linux loader is either native ARM64 or
+  QEMU user-mode.
+- **A51 lane tuning measured (2026-11-13).** The probe's control lane can now be
+  pinned with `debug.cr.engine_cpu_map` (or the live `engine-affinity` command):
+  one engine with 8 resident slots is **1.80 matches/s** on a big core, **0.62**
+  on a little core and **0.82** unpinned. Android puts background engine
+  processes in the `background` cpuset (cpu0–1), so only the top engine gets the
+  big cores. A Linux cluster APK builder (`build_cluster_apk.sh`) and launcher
+  (`launch_cluster_a51.sh`) now exist, and
+  `resident_batch_throughput.py --ports` measures concurrent engines. One engine
+  is ~690 MB RSS and the A51 has 3.6 GB, so phone aggregation is memory-bound.
+  See FINDINGS §3.24.
 - **Static port: the 15.535 reference build, the offset diff, and the replay-runner
   anchor set are now available.**
   See [`docs/native/16.635.1/FINDINGS.md`](docs/native/16.635.1/FINDINGS.md) (evidence log)
@@ -404,13 +422,17 @@ session:
    produced 64 valid receipts at 1.73 matches/s / 28 actions/s. Ability
    actions through the batch protocol are supported by the wire format but not
    exercised yet (the resident capture has no rich ability telemetry).
-2. **Multi-engine throughput.** This is now the critical-path measurement. The
-   single-process A51 APK exposes one lane (~1.7 matches/s with actions), so
-   5–10 matches/s aggregate needs 3–6 lanes. Start a second engine via the
-   engine-cluster APK (MuMu path) or a second device/secondary Android user,
-   then measure aggregate matches/s and decide the training host (laptop,
-   cloud, or device pool). Decision rule: ≥5 matches/s aggregate → native
-   primary; 1–5 → split; <1 → crforge primary.
+2. **Multi-engine throughput — phone measurement done; host plan written.**
+   The single-process A51 APK exposes one lane; with the new affinity override
+   that lane is **1.80 matches/s** on a big core (0.62 on a little core, 0.82
+   unpinned). Android cpusets (background engines get cpu0–1) and the 3.6 GB
+   RAM / ~690 MB per engine make the phone a ~2–4 lane device at best. The
+   10 matches/s plan now lives in [`ROADMAP_EXTRACTED.md`](ROADMAP_EXTRACTED.md):
+   **Track B (primary)** is the clapha-type Linux `libg.so` loader (2–3 months
+   part-time; 6–10 weeks if `clapha-engine` is obtainable), **Track A
+   (fallback)** is the FirstLight Linux AVD (4–6 weeks part-time, first gate in
+   2–3 days). Decision rule unchanged: ≥5 matches/s aggregate → native primary;
+   1–5 → split; <1 → crforge primary.
 3. **Scripted X-Bow polish (non-blocking).** The v0 baseline is verified; the
    next improvements are real defensive placement/spell value, elixir reserve
    across pending plays, and v1450 style comparison. Do not block throughput
@@ -645,6 +667,7 @@ several engine lanes; the single-lane number alone does not decide it.
 | Path | Purpose |
 | --- | --- |
 | `ROADMAP.md` | The plan: decision, Phases 0–4, QA harness, gates |
+| `ROADMAP_EXTRACTED.md` | Track B (Linux `libg.so` loader) and Track A (Linux AVD) plan to 10 matches/s |
 | `ROADMAP_CRFORGE.md` | Optional crforge fallback/CI roadmap |
 | `native_runner/probe/` | Native hook source; 16.635 port target |
 | `tools/native_analysis/capture_content_window.py` | Live content-context window capture (content-ready gate, FINDINGS §3.12) |
@@ -657,6 +680,8 @@ several engine lanes; the single-lane number alone does not decide it.
 | `docs/native/16.635.1/champion-layout.json` | Live-confirmed Champion vtables and ability-data field shifts |
 | `native_runner/probe/build_probe.sh` | Linux probe build (`--target-build`) |
 | `build_offline_apk.sh` | Linux single-process patched APK build/sign |
+| `build_cluster_apk.sh` | Linux multi-process engine-cluster APK build/sign |
+| `launch_cluster_a51.sh` | Launch N engine processes on the A51 and wait for cold-ready |
 | `deploy_a51.sh` | Install on the A51 and stream probe logs |
 | `.resource/android-tools/` | NDK r27c + build-tools r34 + apktool (gitignored) |
 | `native_runner/cr_native_env.py` | Engine TCP/JSON seam |

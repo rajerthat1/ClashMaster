@@ -1108,3 +1108,68 @@ adb forward tcp:26789 tcp:26789
     --output /tmp/opencode/resident_8x600x5_actions.json
 adb logcat -b crash -d
 ```
+
+### 3.24 Control-lane affinity, Android cpusets and the phone lane ceiling
+
+The probe used to pin its control lane to `cpu = engine_id`
+(MuMu-compatible, where each engine has one vCPU). On a heterogeneous phone
+that is the **slow** cluster: the SM-A515U has 4× Cortex-A53 at 1.74 GHz on
+cpu0–3 and 4× Cortex-A73 at 2.31 GHz on cpu4–7. Engine 0 therefore ran the
+whole resident channel on a little core.
+
+`engine_instance.inc` now supports two overrides:
+
+- `debug.cr.engine_cpu_map` system property, read once when the control thread
+  starts: `"4,5,6,7"` maps engine 0..3 to cpu 4..7; `"none"` leaves the thread
+  unpinned. Unset keeps `engine N -> cpu N`.
+- `engine-affinity <cpu|none>` control command, applied live to the control
+  thread (no restart); `engine-status` now also returns `affinity`.
+
+Measured on the A51 (16.635.1, one engine, 8 resident slots × 600 ticks × 5
+batches, real actions):
+
+| Control-lane affinity | slot-ticks/s | matches/s | actions/s |
+| --- | ---: | ---: | ---: |
+| `0` (A53 little core) | 3,774 | **0.622** | 10.1 |
+| `7` (A73 big core) | 10,906 | **1.797** | 29.1 |
+| none (scheduler) | 4,996 | **0.823** | 13.3 |
+
+The big-core lane reproduces the earlier §3.23 1.73–1.80 numbers; the default
+`cpu0` mapping was the reason a fresh run measured 0.62. **Pin the control lane
+explicitly on any heterogeneous host.**
+
+A Linux cluster APK builder (`build_cluster_apk.sh`, mirroring the Windows
+script) and launcher (`launch_cluster_a51.sh`) were added. The cluster APK
+installs and runs on the A51: `:engine0` reports
+`processName=nullsroyale.rel.free:engine0`, `assignedCpu=-1`, and a live match.
+`resident_batch_throughput.py --ports` now measures several engines concurrently
+behind a start barrier.
+
+Two Android limits block phone aggregation:
+
+- **cpusets.** Only the top activity's process gets `/top-app` (cpu0–7). A
+  background engine falls to `/background` (cpu0–1), so its effective
+  `Cpus_allowed_list` shrinks regardless of the requested affinity:
+  engine 0 = `top-app`/`0-7`, engine 1 = `background`/`0-1`.
+- **memory.** One engine with 8 resident slots is ~690 MB RSS
+  (`VmHWM` 726 MB); the A51 has 3.65 GB total and ~1 GB available. More than
+  2–3 engines will hit the low-memory killer.
+
+Operational note: a second engine launched while covered may never reach
+`coldReady`; bringing its activity back to the front flips it. Launch engines
+one at a time, wait for each `coldReady`, then launch the next. Once ready, a
+background engine stays ready.
+
+Reproduce:
+
+```bash
+./build_cluster_apk.sh --input-apk nr_16.635.1_release_951fe421.apk \
+    --target-build 16.635.1 --engine-count 4 \
+    --output-apk builds/cr-engine-cluster-16.635.1.apk
+adb install -r builds/cr-engine-cluster-16.635.1.apk
+./launch_cluster_a51.sh --engines 1 --cpu-map none
+.venv/bin/python tools/native_analysis/resident_batch_throughput.py \
+    --ports 26789 --slots 8 --batches 5 --ticks 600 --actions
+# live A/B without a restart:
+#   engine-affinity 0 | 7 | none   (control command)
+```
