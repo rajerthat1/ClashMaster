@@ -138,6 +138,7 @@ revert.
 | `.resource/cr-native-linux-bionic/` | Runtime CLI source |
 | `.resource/cr-native-sandbox/` | Native env, card catalog, self-play/PPO |
 | `.resource/FirstLight-Zero/` | X-Bow recipe, v1450 benchmark |
+| `.resource/clash-royale-research/` | 160402020 approximate simulator + original-art viewer + assets (side reference) |
 | `.resource/native/16.635.1/reference/libg.so` | A51 parity reference |
 | `docs/native/16.635.1/FINDINGS.md` | 16.635.1 evidence log |
 | `tools/native_analysis/` | A51 probe tools (parity only) |

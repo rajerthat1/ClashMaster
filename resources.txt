@@ -14,6 +14,12 @@ https://github.com/RoyaleGym/RoyaleSim
 https://github.com/RoyaleGym/RoyaleLearn
 https://github.com/RoyaleGym/RoyaleViser
 https://github.com/RoyaleGym/RoyaleImitate
+https://github.com/mirsella/clash-royale
+CREngine:
+https://github.com/IMAX9D/cr-native-sandbox
+https://github.com/IMAX9D/cr-native-linux-bionic
+https://aboufama.github.io/clash-royale-research/
+https://github.com/aboufama/clash-royale-research
 ------------------------------------------------------------
 Utility:
 https://github.com/Pbatch/ClashRoyaleBuildABot

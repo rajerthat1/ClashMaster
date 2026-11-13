@@ -289,7 +289,22 @@ run before this gate.
 
 ---
 
-## 12. Next action
+## 12. Side resources (reference only)
+
+- **`.resource/clash-royale-research`** — build **160402020** approximate
+  reimplementation: deterministic 20 Hz TypeScript engine (70 cards, ~3,500×
+  real time per core), browser viewer with original art/audio, and a paused
+  self-play RL stack. Valuable as a **fast pretraining/sim-to-real sandbox**, a
+  **demo viewer**, and a **mechanics/QA reference** (`docs/FIDELITY.md`,
+  `docs/MECHANICS_BRIEF.md`, native trace tests). It is **not** the real engine,
+  it is a different build, and it is not a Track B replacement. Use it only if a
+  measured sim-to-real check justifies it.
+- **`crforge`** remains the CI/differential oracle. `clash-royale-research` is
+  the faster approximate sandbox, not the fidelity oracle.
+
+---
+
+## 13. Next action
 
 Run **Phase 0** from [`HANDOFF.md`](HANDOFF.md): dedicated VM → verify bundles →
 `doctor` → 4 workers → `smoke` → engine-only throughput. Report the numbers
