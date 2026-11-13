@@ -3,6 +3,7 @@
   "client": "16.635.1",
   "package": "nullsroyale.rel.free",
   "abi": "arm64-v8a",
+  "apk_version_code": 160635001,
   "apk": "nr_16.635.1_release_951fe421.apk",
   "apk_sha256": "8e28cabe420e5c28e5d97b47c7aa502f76487e90316deba086f518512f8bd4d8",
   "libg_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
