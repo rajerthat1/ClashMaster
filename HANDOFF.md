@@ -85,7 +85,7 @@
     auto-analysis finished before using it. If not, rerun with
     `-analysisTimeoutPerFile 7200`.
 - **Commits (local until pushed):**
-  - `ee9b108` — `feat(native): recover replay controller and generate 16.635 layout header`
+  - `3a7d308` — `feat(native): recover replay controller and generate 16.635 layout header`
   - `ca6994f` — `feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling`
   - `98d94ad` — `docs: update handoff for the next session`
   - `40d9a45` — `docs: refocus roadmap on native 16.635 engine and X-Bow specialist`
@@ -210,7 +210,7 @@ fields.
    lock is stale; remove it only if no Ghidra process is running. If analysis
    timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use
    `ghidra_scripts/DecompileAt.java` on the anchors above to name them.
-8. This session's work is committed as `ee9b108`. Keep the tree clean and
+8. This session's work is committed as `3a7d308`. Keep the tree clean and
    re-run the tool commands above after any anchor change.
 
 ### 1. Linux — static probe port (original plan)
