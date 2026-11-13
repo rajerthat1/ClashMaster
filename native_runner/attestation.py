@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .contracts import ContractError, RunnerAttestationV1
+from .contracts import ContractError, CrforgeAttestationV1, RunnerAttestationV1
 from .ruleset import RulesetManifestV1
 
 
@@ -29,6 +29,59 @@ def attestation_from_response(value: Mapping[str, Any]) -> RunnerAttestationV1:
         return RunnerAttestationV1.from_mapping(raw)
     except (ContractError, TypeError, ValueError) as error:
         raise RunnerAttestationError(f"native runner returned an invalid attestation: {error}") from error
+
+
+def crforge_attestation_from_response(value: Mapping[str, Any]) -> CrforgeAttestationV1:
+    """Read the crforge block of an ``attest`` reply as a typed contract."""
+
+    raw = value.get("crforge", value.get("crforge_attestation", value))
+    if not isinstance(raw, Mapping):
+        raise RunnerAttestationError("crforge runner response has no crforge attestation object")
+    try:
+        return CrforgeAttestationV1.from_mapping(raw)
+    except (ContractError, TypeError, ValueError) as error:
+        raise RunnerAttestationError(f"crforge runner returned an invalid attestation: {error}") from error
+
+
+def verify_crforge_attestation(
+    attestation: CrforgeAttestationV1 | Mapping[str, Any],
+    manifest: RulesetManifestV1,
+) -> CrforgeAttestationV1:
+    """Require the live crforge identity to equal the checked-in release."""
+
+    if manifest.config.get("engine") != "crforge":
+        raise RunnerAttestationError("ruleset manifest is not a crforge manifest")
+    actual = (
+        attestation
+        if isinstance(attestation, CrforgeAttestationV1)
+        else crforge_attestation_from_response(attestation)
+    )
+    if not actual.production_ready:
+        raise RunnerAttestationError("crforge runner is not production-ready")
+    pinned = manifest.config.get("crforge")
+    if not isinstance(pinned, Mapping):
+        raise RunnerAttestationError("crforge ruleset manifest does not pin a release identity")
+    expected = {
+        "bridge_version": pinned.get("bridge_version"),
+        "catalog_sha256": pinned.get("catalog_sha256"),
+        "client_version": pinned.get("client_version"),
+        "compatible": tuple(pinned.get("compatible") or ()),
+        "content_sha": pinned.get("content_sha"),
+        "data_version": pinned.get("data_version"),
+        "lock_commit": pinned.get("lock_commit"),
+        "protocol_version": pinned.get("protocol"),
+        "schema": pinned.get("schema"),
+        "tables_sha256": pinned.get("tables_sha256"),
+        "vocabulary_sha256": pinned.get("vocabulary_sha256"),
+    }
+    mismatches = [
+        f"{name}: expected {expected_value!r}, got {getattr(actual, name)!r}"
+        for name, expected_value in expected.items()
+        if getattr(actual, name) != expected_value
+    ]
+    if mismatches:
+        raise RunnerAttestationError("crforge runner does not match RulesetManifest: " + "; ".join(mismatches))
+    return actual
 
 
 def verify_runner_attestation(

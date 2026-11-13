@@ -36,6 +36,8 @@ EPISODE_CONFIG_VERSION = "episode-config.v1"
 RASTER_VERSION = "raster.v2"
 RUNNER_ATTESTATION_VERSION = "runner-attestation.v1"
 RUNNER_PROTOCOL_VERSION = "cr-native-control.v1"
+CRFORGE_ATTESTATION_VERSION = "crforge-attestation.v1"
+CRFORGE_PROTOCOL_VERSION = "crforge-control.v1"
 SEMANTIC_PROVENANCE_VERSION = "semantic-provenance.v1"
 SHIELD_STATE_VERSION = "shield-state.v1"
 EFFECT_STATE_VERSION = "effect-state.v1"
@@ -314,6 +316,100 @@ class RunnerAttestationV1(ContractMixin):
         _version(value, RUNNER_ATTESTATION_VERSION)
         data = dict(value)
         data.pop("version", None)
+        return cls(**data)
+
+
+@dataclass(frozen=True, slots=True)
+class CrforgeAttestationV1(ContractMixin):
+    """Identity of the crforge battle core serving a runner endpoint.
+
+    crforge has no ``libg.so`` and no device content pack.  Its identity is the
+    pinned game-data release (client/data version, content SHA, lock commit),
+    the generated tables the JVM loaded, the vocabulary, and the generated
+    FirstLight catalog.  The bridge reports these facts; ``attestation.py``
+    compares them with a checked-in release manifest.
+    """
+
+    protocol_version: str
+    bridge_version: str
+    data_version: str
+    client_version: str
+    content_sha: str
+    lock_commit: str
+    compatible: tuple[str, ...]
+    tables_sha256: str
+    vocabulary_sha256: str
+    catalog_sha256: str
+    schema: str
+    production_ready: bool
+    attestation_digest: str
+    version: str = field(default=CRFORGE_ATTESTATION_VERSION, init=False)
+    VERSION: ClassVar[str] = CRFORGE_ATTESTATION_VERSION
+
+    def __post_init__(self) -> None:
+        if self.protocol_version != CRFORGE_PROTOCOL_VERSION:
+            raise ContractError(f"unsupported crforge protocol: {self.protocol_version!r}")
+        for name in ("bridge_version", "data_version", "client_version"):
+            if not str(getattr(self, name)).strip():
+                raise ContractError(f"{name} must not be empty")
+        if not _lower_hex(self.content_sha, 40) or not _lower_hex(self.lock_commit, 40):
+            raise ContractError("content_sha and lock_commit must be 40-byte lowercase hex")
+        for name in ("tables_sha256", "vocabulary_sha256", "catalog_sha256", "schema"):
+            if not _lower_hex(str(getattr(self, name)), 64):
+                raise ContractError(f"{name} must be a lowercase SHA-256")
+        compatible = tuple(str(item) for item in self.compatible)
+        if not compatible or any(not item for item in compatible):
+            raise ContractError("compatible must name at least one data version")
+        object.__setattr__(self, "compatible", compatible)
+        expected_production_ready = self.data_version in compatible and all(
+            bool(getattr(self, name))
+            for name in (
+                "protocol_version",
+                "bridge_version",
+                "data_version",
+                "client_version",
+                "content_sha",
+                "lock_commit",
+                "tables_sha256",
+                "vocabulary_sha256",
+                "catalog_sha256",
+                "schema",
+            )
+        )
+        if self.production_ready != expected_production_ready:
+            raise ContractError("production_ready disagrees with crforge identity gates")
+        expected_digest = self.calculate_attestation_digest()
+        if self.attestation_digest != expected_digest:
+            raise ContractError(
+                f"crforge attestation digest mismatch: expected {expected_digest}, got {self.attestation_digest}"
+            )
+
+    def identity_dict(self) -> dict[str, Any]:
+        return {
+            "bridge_version": self.bridge_version,
+            "catalog_sha256": self.catalog_sha256,
+            "client_version": self.client_version,
+            "compatible": list(self.compatible),
+            "content_sha": self.content_sha,
+            "data_version": self.data_version,
+            "lock_commit": self.lock_commit,
+            "protocol_version": self.protocol_version,
+            "schema": self.schema,
+            "tables_sha256": self.tables_sha256,
+            "version": self.version,
+            "vocabulary_sha256": self.vocabulary_sha256,
+        }
+
+    def calculate_attestation_digest(self) -> str:
+        return content_hash(self.identity_dict())
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "CrforgeAttestationV1":
+        _version(value, CRFORGE_ATTESTATION_VERSION)
+        data = dict(value)
+        data.pop("version", None)
+        if isinstance(data.get("compatible"), list):
+            data["compatible"] = tuple(data["compatible"])
         return cls(**data)
 
 
@@ -2902,6 +2998,7 @@ def contract_schema_descriptor() -> dict[str, Any]:
         EnvironmentConfigV1,
         EpisodeConfigV1,
         RunnerAttestationV1,
+        CrforgeAttestationV1,
         PlayerStateV1,
         TowerStateV1,
         EntityStateV1,
@@ -2943,6 +3040,7 @@ def contract_schema_descriptor() -> dict[str, Any]:
             "environment": ENVIRONMENT_CONFIG_VERSION,
             "episode": EPISODE_CONFIG_VERSION,
             "runner_attestation": RUNNER_ATTESTATION_VERSION,
+            "crforge_attestation": CRFORGE_ATTESTATION_VERSION,
             "opponent_belief": OpponentBeliefV1.VERSION,
             "target_schema": TargetSchemaV1.VERSION,
             "mechanic_op": MechanicOpV1.VERSION,

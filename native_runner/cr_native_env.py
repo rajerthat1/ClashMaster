@@ -21,9 +21,14 @@ from typing import Any, Iterable, Mapping
 
 
 from .action_movement_runtime import ActionMovementRuntimeError, parse_action_movement_runtime
-from .attestation import attestation_from_response, verify_runner_attestation
+from .attestation import (
+    attestation_from_response,
+    crforge_attestation_from_response,
+    verify_crforge_attestation,
+    verify_runner_attestation,
+)
 from .character_state_runtime import CharacterStateRuntimeError, parse_character_state_runtime
-from .contracts import RunnerAttestationV1
+from .contracts import CrforgeAttestationV1, RunnerAttestationV1
 from .match_factory import MatchConfig
 from .special_movement_runtime import SpecialMovementRuntimeError, parse_special_movement_runtime
 
@@ -162,6 +167,30 @@ CARD_FORM_LABELS = ("BasicForm", "EvoForm", "HeroForm", "AutoChessForm", "FormEn
 
 class RunnerError(RuntimeError):
     """Raised when the native runner rejects a request or is unavailable."""
+
+
+class HandActionRejected(RunnerError):
+    """A card or ability command the engine refused before it was given.
+
+    ``CARD_PENDING`` is the important one: crforge already holds a play for the
+    card, so the request is not a transport fault.  The model-facing environment
+    turns it into an ``action_rejected`` event and keeps the episode running.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        refusal: str,
+        code: int | None = None,
+        owner: int | None = None,
+        hand_index: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.refusal = refusal
+        self.code = code
+        self.owner = owner
+        self.hand_index = hand_index
 
 
 @dataclass(frozen=True, slots=True)
@@ -2625,17 +2654,26 @@ class NativeClashEnv:
 
 
 
-    def attest(self, ruleset_manifest: Any | None = None) -> RunnerAttestationV1:
+    def attest(self, ruleset_manifest: Any | None = None) -> RunnerAttestationV1 | CrforgeAttestationV1:
         """Read the live process identity and optionally bind it to a ruleset.
 
         This attests the files opened/mapped by the Android process. It never
         substitutes hashes from the host workspace for missing runner fields.
+        A crforge manifest selects the bridge's own release attestation.
         """
 
+        if ruleset_manifest is not None and ruleset_manifest.config.get("engine") == "crforge":
+            result = verify_crforge_attestation(self.crforge_attestation(), ruleset_manifest)
+            return result
         result = attestation_from_response(self._request("attest"))
         if ruleset_manifest is not None:
             result = verify_runner_attestation(result, ruleset_manifest)
         return result
+
+    def crforge_attestation(self) -> CrforgeAttestationV1:
+        """Read and validate the bridge's pinned crforge release identity."""
+
+        return crforge_attestation_from_response(self._request("attest"))
 
     def set_rendering(self, enabled: bool) -> dict[str, Any]:
         """Enable or suppress native EGL frame submission for this process."""
@@ -2943,6 +2981,30 @@ class NativeClashEnv:
                 },
             }
             result = self.inject_command(command)
+            if result.get("injected") is False:
+                refusal = str(result.get("refusal") or "REFUSED")
+                code_value = result.get("code")
+                code = int(code_value) if code_value is not None else None
+                if refusal == "MATCH_OVER" or result.get("terminalCanceled") is True:
+                    return {
+                        **result,
+                        "owner": action.owner,
+                        "handIndex": action.hand_index,
+                        "terminalCanceled": True,
+                        "queuedAtTick": _response_int(result.get("tick"), "hand queued tick", minimum=0),
+                        "executeTick": _response_int(
+                            result.get("executeTick", result.get("runTick")),
+                            "hand execute tick",
+                            minimum=1,
+                        ),
+                    }
+                raise HandActionRejected(
+                    f"native engine refused hand slot {action.hand_index} for owner {action.owner}: {refusal}",
+                    refusal=refusal,
+                    code=code,
+                    owner=action.owner,
+                    hand_index=action.hand_index,
+                )
             queued_tick_value = result.get("tick")
             if (
                 queued_tick_value is None
@@ -2958,6 +3020,16 @@ class NativeClashEnv:
             queued_tick = _response_int(queued_tick_value, "hand queued tick", minimum=0)
             if queued_tick >= applied_tick:
                 raise RunnerError("native hand action was not queued before its absolute execute tick")
+            # A runner that models the real 20-tick command delay (crforge) reports
+            # the tick the play actually runs on. Prefer it: otherwise the caller
+            # resolves the pending action long before the engine does and may
+            # re-play the same card into a CARD_PENDING refusal.
+            reported_run_tick = result.get("executeTick", result.get("runTick"))
+            execute_tick = (
+                _response_int(reported_run_tick, "hand execute tick", minimum=1)
+                if reported_run_tick is not None
+                else applied_tick
+            )
             return {
                 **result,
                 "owner": action.owner,
@@ -2971,7 +3043,7 @@ class NativeClashEnv:
                 "formName": descriptor.form_name,
                 "queuedAtTick": queued_tick,
                 "commandAgeBoundaryTick": boundary,
-                "executeTick": applied_tick,
+                "executeTick": execute_tick,
             }
 
     def queue_ability_action_at(self, action: AbilityAction, *, execute_in_ticks: int = 1) -> dict[str, Any]:
@@ -2990,13 +3062,28 @@ class NativeClashEnv:
         result = self._request(
             f"activate-ability {action.owner} {action.object_index} {action.secondary_index} {execute_in_ticks}"
         )
+        if result.get("injected") is False:
+            refusal = str(result.get("refusal") or "REFUSED")
+            code_value = result.get("code")
+            raise HandActionRejected(
+                f"native engine refused ability for owner {action.owner}: {refusal}",
+                refusal=refusal,
+                code=(int(code_value) if code_value is not None else None),
+                owner=action.owner,
+            )
         queued_tick = _response_int(result.get("tick"), "ability queued tick", minimum=0)
+        reported_run_tick = result.get("executeTick", result.get("runTick"))
+        execute_tick = (
+            _response_int(reported_run_tick, "ability execute tick", minimum=1)
+            if reported_run_tick is not None
+            else queued_tick + execute_in_ticks
+        )
         return {
             **result,
             "owner": action.owner,
             "sourceEntityKey": [action.owner, action.object_index, action.secondary_index],
             "queuedAtTick": queued_tick,
-            "executeTick": queued_tick + execute_in_ticks,
+            "executeTick": execute_tick,
         }
 
     def clear_replay_schedule(self) -> dict[str, Any]:

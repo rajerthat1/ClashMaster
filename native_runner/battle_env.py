@@ -27,7 +27,11 @@ from .arena import (
 )
 from .building_placement_profiles import building_placement_profile
 from .card_specs import CardSpecCatalog, build_card_catalog, sha256_file
-from .attestation import RunnerAttestationError, verify_runner_attestation
+from .attestation import (
+    RunnerAttestationError,
+    verify_crforge_attestation,
+    verify_runner_attestation,
+)
 from .contracts import (
     ActionKind,
     ActionMaskV1,
@@ -40,6 +44,7 @@ from .contracts import (
     COMPETITIVE_TOWER_TROOP_IDS,
     CombatEventKind,
     CombatEventV1,
+    CrforgeAttestationV1,
     DaggerDuchessRuntimeStateV1,
     EntityStateV1,
     EVOLUTION_RUNTIME_STATE_FIELDS,
@@ -70,6 +75,7 @@ from .cr_native_env import (
     FIRST_PLAYABLE_TICK,
     AbilityAction,
     HandAction,
+    HandActionRejected,
     NativeClashEnv,
     RunnerError,
 )
@@ -103,7 +109,7 @@ from .rich_telemetry_adapter import (
     project_player_runtime,
     project_runtime,
 )
-from .ruleset import RulesetManifestV1, build_ruleset_manifest
+from .ruleset import RulesetManifestV1, build_crforge_ruleset_manifest, build_ruleset_manifest
 from .semantic_subset import (
     SEMANTIC_BASELINE_DECK,
     SemanticSubsetError,
@@ -310,6 +316,32 @@ def _player(raw: Mapping[str, Any], owner: int) -> Mapping[str, Any]:
         raise BattleEnvError(f"native observation has no owner {owner}") from error
 
 
+def _normalize_run_refusals(receipt: object) -> tuple[Mapping[str, Any], ...]:
+    """Read the bridge's per-tick run refusals from a step receipt."""
+
+    if not isinstance(receipt, Mapping):
+        return ()
+    values = receipt.get("runRefusals")
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes, bytearray)):
+        return ()
+    normalized: list[Mapping[str, Any]] = []
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        try:
+            code = int(value.get("code", 0))
+            owner = int(value.get("owner", -1))
+            tick = int(value.get("tick", -1))
+        except (TypeError, ValueError):
+            continue
+        if code <= 0 or owner not in (0, 1) or tick < 0:
+            continue
+        normalized.append(
+            {"owner": owner, "code": code, "name": str(value.get("name", "")), "tick": tick}
+        )
+    return tuple(normalized)
+
+
 def _diagnostic_hand_snapshot(player: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
     return tuple(
         {
@@ -360,6 +392,27 @@ def _elixir_generated_raw(start_tick: int, end_tick: int) -> float:
     return generated
 
 
+def _runner_engine(native: object) -> str | None:
+    """Best-effort engine detection for an unmanifested local endpoint.
+
+    The native probe does not advertise an engine, so any failure or absence
+    keeps the historical FirstLight manifest. Only an explicit ``crforge``
+    status switches identity, which keeps offline replays on their own path.
+    """
+
+    status = getattr(native, "status", None)
+    if not callable(status):
+        return None
+    try:
+        reply = status()
+    except Exception:
+        return None
+    if not isinstance(reply, Mapping):
+        return None
+    engine = reply.get("engine")
+    return str(engine) if engine else None
+
+
 class BattleEnvV1:
     """Parallel, two-sided, canonical battle environment.
 
@@ -379,6 +432,7 @@ class BattleEnvV1:
         effect_catalog: RuntimeEffectCatalog | None = None,
         ruleset_manifest: RulesetManifestV1 | None = None,
         ruleset_id: str | None = None,
+        engine: str | None = None,
         mode_timeline: GameModeTimelineV1 | None = None,
         warmup_ticks: int = FIRST_PLAYABLE_TICK,
         max_battle_ticks: int = STANDARD_MATCH_TICKS,
@@ -441,10 +495,20 @@ class BattleEnvV1:
         # Tests and remote workers can inject a previously verified ID to avoid
         # re-hashing the local asset pack for every environment instance.
         self.ruleset_manifest = ruleset_manifest
+        if engine is not None and engine not in ("crforge", "native"):
+            raise ValueError("engine must be 'crforge', 'native', or None")
         if ruleset_manifest is None and ruleset_id is None:
-            self.ruleset_manifest = build_ruleset_manifest(
-                catalog=self.card_catalog, environment_config=environment_config
-            )
+            selected_engine = engine or _runner_engine(self.native)
+            if selected_engine == "crforge":
+                self.ruleset_manifest = build_crforge_ruleset_manifest(
+                    catalog=self.card_catalog,
+                    semantic_subset_contract=self.semantic_subset_contract,
+                    environment_config=environment_config,
+                )
+            else:
+                self.ruleset_manifest = build_ruleset_manifest(
+                    catalog=self.card_catalog, environment_config=environment_config
+                )
         self.ruleset_id = self.ruleset_manifest.ruleset_id if self.ruleset_manifest is not None else str(ruleset_id)
         if self.ruleset_manifest is not None:
             manifest_environment = EnvironmentConfigV1.from_mapping(self.ruleset_manifest.config.get("environment"))
@@ -475,7 +539,7 @@ class BattleEnvV1:
         self.episode_config: EpisodeConfigV1 | None = None
         self.match_config: MatchConfig | None = None
         self.episode_id: str | None = None
-        self.runner_attestation: RunnerAttestationV1 | None = None
+        self.runner_attestation: RunnerAttestationV1 | CrforgeAttestationV1 | None = None
         self._episode_start_native_tick = 0
         self._raw: dict[str, Any] | None = None
         self._rich_cache_identity: tuple[int, int, int | None] | None = None
@@ -529,6 +593,7 @@ class BattleEnvV1:
         self._trace: list[ReplayOperationV1] = []
         self._decision_deadline_native: dict[int, int] = {0: 0, 1: 0}
         self._last_advance_event = False
+        self._last_native_run_refusals: tuple[Mapping[str, Any], ...] = ()
         self._placement_mask_cache: dict[tuple[Any, ...], Mapping[str, Any]] = {}
         self._runtime_placement_cache: dict[tuple[Any, ...], tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
         self._ordinary_tower_cache: dict[tuple[int, int, int | None], tuple[TowerStateV1, ...]] = {}
@@ -598,7 +663,7 @@ class BattleEnvV1:
 
         self.agents = []
 
-    def _verify_runner_attestation(self) -> RunnerAttestationV1 | None:
+    def _verify_runner_attestation(self) -> RunnerAttestationV1 | CrforgeAttestationV1 | None:
         """Bind the live endpoint to the manifest before native mutation."""
 
         if self.ruleset_manifest is None:
@@ -606,17 +671,28 @@ class BattleEnvV1:
             # fixtures, but they are not a claim about a live native process.
             self.runner_attestation = None
             return None
-        if not hasattr(self.native, "attest"):
-            raise BattleEnvError("native endpoint has no RunnerAttestationV1 API; refusing a manifested episode")
+        crforge = self.ruleset_manifest.config.get("engine") == "crforge"
+        required = "crforge_attestation" if crforge else "attest"
+        if not hasattr(self.native, required):
+            raise BattleEnvError(
+                f"native endpoint has no {'CrforgeAttestationV1' if crforge else 'RunnerAttestationV1'} "
+                "API; refusing a manifested episode"
+            )
         try:
-            reported = self.native.attest()  # type: ignore[attr-defined]
-            attestation = verify_runner_attestation(reported, self.ruleset_manifest)
+            if crforge:
+                attestation = verify_crforge_attestation(
+                    self.native.crforge_attestation(),  # type: ignore[attr-defined]
+                    self.ruleset_manifest,
+                )
+            else:
+                reported = self.native.attest()  # type: ignore[attr-defined]
+                attestation = verify_runner_attestation(reported, self.ruleset_manifest)
         except (RunnerAttestationError, RunnerError, TypeError, ValueError) as error:
             raise BattleEnvError(f"native runner attestation failed: {error}") from error
         self.runner_attestation = attestation
         return attestation
 
-    def prepare_runner_attestation(self) -> RunnerAttestationV1 | None:
+    def prepare_runner_attestation(self) -> RunnerAttestationV1 | CrforgeAttestationV1 | None:
         """Precompute the immutable live-runner identity before an episode."""
 
         return self._verify_runner_attestation()
@@ -911,6 +987,7 @@ class BattleEnvV1:
         self._trace.clear()
         self._decision_deadline_native = {owner: int(raw["tick"]) for owner in self.possible_agents}
         self._last_advance_event = False
+        self._last_native_run_refusals = ()
         self._tower_object_keys = self._bind_tower_object_keys(self._raw)
         self._activated_king_tower_ids.clear()
         self._tower_troop_runtime_carry.clear()
@@ -2037,6 +2114,13 @@ class BattleEnvV1:
         )
         hand_by_index = {int(card["handIndex"]): card for card in player.get("hand", ())}
         pending_hand_slots = {item.hand_slot for item in pending_cards}
+        # crforge's seat header is authoritative about plays it already holds.
+        # The bridge used not to project this, so a play the model queued could
+        # stay pending in the engine while its own record resolved, reopening
+        # the mask and replaying the card into CARD_PENDING.
+        pending_hand_slots.update(
+            int(slot) for slot in player.get("pendingHandSlots", ()) if 0 <= int(slot) < 4
+        )
         slots: list[bool] = []
         masks: dict[str, Any] = {}
         reasons: dict[str, Any] = {}
@@ -2344,7 +2428,8 @@ class BattleEnvV1:
         # Global early wakes can disclose private opponent transition timing.
         # Production FAIR episodes use fixed, atomic decision boundaries.
         self._last_advance_event = False
-        self.native.step(ticks)
+        receipt = self.native.step(ticks)
+        self._last_native_run_refusals = _normalize_run_refusals(receipt)
         return self._atomic_observation_pair()
 
     def _advance_synchronized_native_render(
@@ -2514,6 +2599,25 @@ class BattleEnvV1:
                         raise BattleEnvError("legal ability source drifted from its static cooldown/charge contract")
                     try:
                         queued = self.native.queue_ability_action_at(ability_action, execute_in_ticks=execute_in)
+                    except HandActionRejected as error:
+                        self._emit_event(
+                            tick=self._canonical_tick(before_native_tick),
+                            event_type="action_rejected",
+                            owner=action.owner,
+                            entity_id=action.source_entity,
+                            data={
+                                "action_id": action.action_id,
+                                "kind": ActionKind.ACTIVATE_ABILITY.value,
+                                "ability_id": state.ability_id,
+                                "reason": f"native_{str(error.refusal).lower()}",
+                                "refusal": error.refusal,
+                                "refusal_code": error.code,
+                                "compound_index": compound_index,
+                                "compound_size": len(normalized[owner]),
+                                "private_to": action.owner,
+                            },
+                        )
+                        continue
                     except RunnerError as error:
                         if str(error) != "could not resolve one ready native champion ability source":
                             raise
@@ -2590,22 +2694,47 @@ class BattleEnvV1:
                 x, y = self._world_target(action)
                 execute_in = max(1, action.execute_offset_ticks or 1)
                 hand_action = HandAction(action.owner, action.hand_slot, x, y)
-                if (
-                    action.metadata.get("model_delay_ignored") is True
-                    and self.episode_config.render_mode == "native-render"
-                ):
-                    queued = self.native.queue_hand_action_next_tick(hand_action)
-                elif action.metadata.get("native_command_age_ticks") is not None:
-                    # The renderer continues during inference.  Policy offsets
-                    # describe time since the decision observation, so do not
-                    # restart the clock when the native queue is reached.
-                    queued = self.native.queue_hand_action_at(
-                        hand_action,
-                        execute_tick=before_native_tick + execute_in,
-                        clamp_late=True,
+                try:
+                    if (
+                        action.metadata.get("model_delay_ignored") is True
+                        and self.episode_config.render_mode == "native-render"
+                    ):
+                        queued = self.native.queue_hand_action_next_tick(hand_action)
+                    elif action.metadata.get("native_command_age_ticks") is not None:
+                        # The renderer continues during inference.  Policy offsets
+                        # describe time since the decision observation, so do not
+                        # restart the clock when the native queue is reached.
+                        queued = self.native.queue_hand_action_at(
+                            hand_action,
+                            execute_tick=before_native_tick + execute_in,
+                            clamp_late=True,
+                        )
+                    else:
+                        queued = self.native.queue_hand_action_at(hand_action, execute_in_ticks=execute_in)
+                except HandActionRejected as error:
+                    # CARD_PENDING means crforge already holds a play for this
+                    # card. It is not a transport fault: record a refusal and
+                    # keep the episode running. The next mask also closes the
+                    # slot from the seat header.
+                    self._emit_event(
+                        tick=self._canonical_tick(before_native_tick),
+                        event_type="action_rejected",
+                        owner=action.owner,
+                        card_id=card_id,
+                        position=(x, y),
+                        data={
+                            "action_id": action.action_id,
+                            "kind": ActionKind.PLAY_CARD.value,
+                            "visible_card_id": card_id,
+                            "reason": f"native_{str(error.refusal).lower()}",
+                            "refusal": error.refusal,
+                            "refusal_code": error.code,
+                            "compound_index": compound_index,
+                            "compound_size": len(normalized[owner]),
+                            "private_to": action.owner,
+                        },
                     )
-                else:
-                    queued = self.native.queue_hand_action_at(hand_action, execute_in_ticks=execute_in)
+                    continue
                 if bool(queued.get("terminalCanceled")):
                     self._emit_event(
                         tick=self._canonical_tick(int(queued["executeTick"])),
@@ -2756,8 +2885,12 @@ class BattleEnvV1:
             self._decision_deadline_native = {owner: after_native_tick for owner in self.possible_agents}
         self._update_beliefs(before_native_tick, after_native_tick)
         resolved_pending = self._resolve_pending(
-            after, int(time.time() * 1000), native_public_card_plays=native_public_card_plays
+            after,
+            int(time.time() * 1000),
+            native_public_card_plays=native_public_card_plays,
+            native_run_refusals=self._last_native_run_refusals,
         )
+        self._last_native_run_refusals = ()
         self._append_native_public_card_plays(
             native_public_card_plays,
             resolved_pending=resolved_pending,
@@ -4009,6 +4142,7 @@ class BattleEnvV1:
         observed_ms: int,
         *,
         native_public_card_plays: Sequence[_NativePublicCardPlay] = (),
+        native_run_refusals: Sequence[Mapping[str, Any]] = (),
     ) -> tuple[_PendingRecord, ...]:
         native_tick = int(raw["tick"])
         resolved: list[_PendingRecord] = []
@@ -4026,7 +4160,27 @@ class BattleEnvV1:
                 and int(card.get("deckSlot", -1)) == item.deck_slot
                 for card in player.get("hand", ())
             )
-            item.status = "rejected" if same_card else "executed"
+            native_run_refusal = int(player.get("lastRunRefusal", 0) or 0)
+            # `lastRunRefusal` describes the decision that just ran; it is only
+            # attributable to this play when the observation is the run tick.
+            if native_tick != item.expected_native_tick:
+                native_run_refusal = 0
+            # A decision boundary can cross several native ticks. The bridge's
+            # step receipt keeps each run refusal with the tick that reported
+            # it, which identifies the refused play exactly.
+            run_refusal_name = ""
+            for refusal in native_run_refusals:
+                try:
+                    if (
+                        int(refusal.get("owner", -1)) == item.action.owner
+                        and int(refusal.get("tick", -1)) == item.expected_native_tick
+                    ):
+                        native_run_refusal = int(refusal.get("code", 0) or 0)
+                        run_refusal_name = str(refusal.get("name", ""))
+                        break
+                except (TypeError, ValueError):
+                    continue
+            item.status = "rejected" if (same_card or native_run_refusal != 0) else "executed"
             item.server_apply_ms = observed_ms
             resolved.append(item)
             spec = self.card_specs.get(item.card_id)
@@ -4084,6 +4238,8 @@ class BattleEnvV1:
                         "resolved_native_tick": resolution_tick,
                         "observed_native_tick": native_tick,
                         "same_card_still_in_slot": same_card,
+                        "native_run_refusal": native_run_refusal,
+                        "native_run_refusal_name": run_refusal_name,
                         "after_elixir_raw": int(player.get("elixirRaw", -1)),
                         "after_hand": _diagnostic_hand_snapshot(player),
                         "native_card_play_candidates": tuple(nearby_native_plays),

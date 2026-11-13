@@ -36,13 +36,17 @@ def evaluate(
     policies = [load_policy_v4(path, device=device) for path in (checkpoint_a, checkpoint_b)]
     bundle = production_semantic_bundle()
     native = NativeClashEnv(host, port, timeout=30.0)
-    native.public_card_play_events_from_combat_ring = True
     environment = BattleEnvV1(
         native=native,
         card_catalog=bundle.native_card_catalog,
         semantic_subset_contract=bundle.semantic_subset_contract,
         effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
     )
+    # The combat-ring card-play feed is a native-probe hook. crforge records its
+    # own plays; asking it for an attested native ring fails closed at reset.
+    manifest = getattr(environment, "ruleset_manifest", None)
+    if manifest is None or manifest.config.get("engine") != "crforge":
+        native.public_card_play_events_from_combat_ring = True
     identity = {
         "games": games,
         "sample": sample,
