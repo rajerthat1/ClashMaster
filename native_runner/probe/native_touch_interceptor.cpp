@@ -234,9 +234,11 @@ bool install_native_touch_interceptor(std::uintptr_t libg_base, const NativeTouc
     return true;
   }
 
-  auto *target = reinterpret_cast<std::uint8_t *>(libg_base + kGameAppTouchOffset);
-  if (std::memcmp(target, kGameAppTouchPrologue, sizeof(kGameAppTouchPrologue)) != 0) {
-    TOUCH_LOGE("GameApp.nOnTouchEvent prologue mismatch at +0x%zx", static_cast<std::size_t>(kGameAppTouchOffset));
+  const std::uintptr_t touch_offset = bindings.hook_offset != 0 ? bindings.hook_offset : kGameAppTouchOffset;
+  const std::uint8_t *touch_prologue = bindings.prologue != nullptr ? bindings.prologue : kGameAppTouchPrologue;
+  auto *target = reinterpret_cast<std::uint8_t *>(libg_base + touch_offset);
+  if (std::memcmp(target, touch_prologue, 16) != 0) {
+    TOUCH_LOGE("GameApp.nOnTouchEvent prologue mismatch at +0x%zx", static_cast<std::size_t>(touch_offset));
     return false;
   }
 
@@ -245,7 +247,7 @@ bool install_native_touch_interceptor(std::uintptr_t libg_base, const NativeTouc
     TOUCH_LOGE("mmap touch trampoline failed");
     return false;
   }
-  std::memcpy(trampoline, target, sizeof(kGameAppTouchPrologue));
+  std::memcpy(trampoline, target, 16);
   emit_absolute_jump(static_cast<std::uint8_t *>(trampoline) + 16, target + 16);
   __builtin___clear_cache(static_cast<char *>(trampoline), static_cast<char *>(trampoline) + 32);
 

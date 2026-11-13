@@ -46,10 +46,14 @@
   - **Field shifts verified** (see FINDINGS §3.7): controller suspended
     `0x18c → 0x17c`, GameApp pending flags `0x1b8 → 0x1c0`, pending event
     `0x1bc → 0x1c4`. State `0x30`, accumulator `0x44`, speed `0x74` unchanged.
-  - **Probe header generated:** `native_runner/probe/build_16_635_1_layout.h`
+  - **Probe header generated and wired:** `native_runner/probe/build_16_635_1_layout.h`
     (9 runner hooks + touch, each offset paired with a 16-byte prologue read
-    from the target; plus verified field offsets). Produced by
-    `tools/native_analysis/gen_layout.py`, which refuses unresolved anchors.
+    from the target; plus the resolved core call offsets, verified field
+    offsets, and explicit `kUnavailableOffset` sentinels for anchors that are
+    still `AMBIGUOUS`/`MISSING`). Produced by
+    `tools/native_analysis/gen_layout.py`, which refuses required unresolved
+    anchors. The header is consumed by `cr_replay_probe.cpp` behind
+    `CR_PROBE_TARGET_16_635_1` (`build_probe.ps1 -TargetBuild 16.635.1`).
   - **Verified / high-confidence 16.635 anchors:**
     - Touch JNI **`0x0156f790`** (prologue identical to `kGameAppTouchPrologue`);
       internal `GameApp::onTouch` `0x01552b14`.
@@ -78,6 +82,9 @@
     old `+0xa0 → +0xa4` note does not match the disassembly — observed
     `0x9c → 0xa0`), then do the entity/HP (`hpComponentAccessor`) work. The
     Character/Projectile/AreaEffect/component vtables still need manual review.
+    The remaining `AMBIGUOUS` core anchors (`kJsonMemberFind`,
+    `kLogicCommandParse`, `kLocationTileMapEnsure`, `kLocationTileMapLookup`)
+    keep cold configure and live command injection closed on 16.635.
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
     `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
@@ -156,8 +163,10 @@ part-time; with his notes it can be weeks.
 
 ## What is not proven
 
-- The 16.635.1 probe port and its throughput on this hardware.
-- The live reader/executor loop on 16.635.1.
+- The 16.635.1 probe port and its throughput on this hardware. The hooks are
+  wired and fail-closed, but nothing has been built or run on-device yet.
+- The live reader/executor loop on 16.635.1 (blocked on the four unresolved
+  core anchors in FINDINGS §3.9).
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
   level 11) transfers across the 15.535 → 16.635 rule change, and how it behaves at maxed levels.
 - That a learned X-Bow bot beats a competent scripted bot and then humans.
@@ -197,21 +206,31 @@ fields.
    applies it and the other verified manual anchors. Do not edit
    `offset-diff.json` by hand.
 4. **The 16.635 probe layout header exists:**
-   `native_runner/probe/build_16_635_1_layout.h` (9 runner hooks + touch, with
-   prologues read from the target). Regenerate with `gen_layout.py` after any
-   anchor change; it refuses unresolved rows.
+   `native_runner/probe/build_16_635_1_layout.h` now carries the 9 runner hooks
+   + touch, the resolved core call offsets, the 6 verified field offsets, and
+   `kUnavailableOffset`/`*Resolved = false` sentinels for the still-unresolved
+   anchors. Regenerate with `gen_layout.py` after any anchor change; it refuses
+   a required unresolved row.
 5. **Non-code anchors are resolved** (FINDINGS §3.6): GameStateNew/Delete PLT
    stubs, the EGL GOT slot, ContextA, and the context root slot.
-6. **Next actual work:** port the 9 runner hooks + touch into
-   `cr_replay_probe.cpp` using the new build header, then verify on the native
-   A51. Before trusting live play, name the GameState constructor fields
-   (FINDINGS §3.8) and do the entity/HP (`hpComponentAccessor`) work.
-7. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. The
+6. **The 9 runner hooks + touch are wired** into `cr_replay_probe.cpp` behind
+   the build header (FINDINGS §3.9). Build with
+   `build_probe.ps1 -TargetBuild 16.635.1`; the default build is still
+   15.535.13. Next actual work is dynamic verification on the native A51,
+   followed by naming the GameState constructor fields (FINDINGS §3.8) and the
+   entity/HP (`hpComponentAccessor`) work.
+7. **Next analysis blockers:** resolve `kJsonMemberFind`, `kLogicCommandParse`,
+   `kLocationTileMapEnsure` and `kLocationTileMapLookup` (FINDINGS §3.9). Until
+   then the 16.635 build intentionally leaves cold configure and live command
+   injection closed and skips the rich telemetry installs.
+8. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. The
    lock is stale; remove it only if no Ghidra process is running. If analysis
    timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use
    `ghidra_scripts/DecompileAt.java` on the anchors above to name them.
-8. This session's work is committed as `3a7d308`. Keep the tree clean and
-   re-run the tool commands above after any anchor change.
+9. Run `native_runner/tests/test_probe_build_layout.py` after any header
+   regeneration; it re-reads every emitted prologue from the reference build.
+   Keep the tree clean and re-run the tool commands above after any anchor
+   change.
 
 ### 1. Linux — static probe port (original plan)
 

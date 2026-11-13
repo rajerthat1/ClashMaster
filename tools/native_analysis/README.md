@@ -108,7 +108,12 @@ sub-vtable marker shift and per-slot relocation mapping.
 
 Emits the build-pinned probe header from `offset-diff.json` +
 `field-offsets.json`. It refuses an anchor whose 16-byte prologue cannot be read
-from the target binary, so the header never contains an unverified offset:
+from the target binary, so the header never contains an unverified offset. The
+header carries the nine runner hooks + touch, the resolved core call offsets
+(GameState/JSON/byte-stream/replay manager), and explicitly marked sentinels
+(`kUnavailableOffset` + `*Resolved = false`) for the anchors that are still
+`AMBIGUOUS`/`MISSING`. Required core anchors fail loudly instead of silently
+falling back to a 15.535.13 address:
 
 ```bash
 .venv/bin/python tools/native_analysis/gen_layout.py \
@@ -120,8 +125,11 @@ from the target binary, so the header never contains an unverified offset:
 
 ## Ghidra scripts
 
-`ghidra_scripts/ExportFunctions.java` and `DecompileAt.java` are for the
-headless project (`/tmp/opencode/ghidra_project`, JDK 25):
+`ghidra_scripts/ExportFunctions.java`, `DecompileAt.java` and
+`DecompileAnchors.java` are for the headless project
+(`/tmp/opencode/ghidra_project`, JDK 25). `DecompileAt` requires the function
+to exist already; `DecompileAnchors` disassembles and creates it first, which
+is useful when the project analysis is stale or incomplete:
 
 ```bash
 GHIDRA=.resource/ghidra_download/ghidra_12.2_PUBLIC/support/analyzeHeadless

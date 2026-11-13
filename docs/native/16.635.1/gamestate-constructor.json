@@ -1,0 +1,120 @@
+{
+  "build": "16.635.1",
+  "libg_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
+  "old": {
+    "client": "15.535.13",
+    "constructor": "0x01060ba8",
+    "allocation_size": "0x230"
+  },
+  "new": {
+    "client": "16.635.1",
+    "constructor": "0x011d1e68",
+    "allocation_size": "0x240",
+    "runner_call": "0xd9ae7c (manager, 1, contextA, contextB, 0)"
+  },
+  "note": "Store map read from the constructor bodies. 'role' names are inferred from the constructor arguments and the immediately following accessors; they are not yet confirmed by live goldens. The old handoff's '+0xa0 -> +0xa4' and the FINDINGS '+0x9c -> +0xa0' notes are BOTH correct but refer to different things: 0x9c->0xa0 is the initialised int, 0xa0->0xa4 is the embedded sub-object base.",
+  "fields": [
+    {
+      "role": "embedded_sub_object",
+      "old": "0xa0",
+      "new": "0xa4",
+      "evidence": "old 0x1060be8 add x0,x19,#0xa0; bl 0x121b27c -> new 0x11d1eac add x0,x19,#0xa4; bl 0x13a04a0"
+    },
+    {
+      "role": "initialised_int",
+      "old": "0x9c",
+      "new": "0xa0",
+      "evidence": "old 0x1060c04 str wzr,[x19,#0x9c]; 0x1060dd4 str w8(=0x46b),[x19,#0x9c] -> new 0x11d1ed0 str wzr,[x19,#0xa0]; 0x11d1fa4 str w8(=0x46b),[x19,#0xa0]"
+    },
+    {
+      "role": "constructor_arg2_context_a",
+      "old": "0x208",
+      "new": "0x210",
+      "evidence": "old 0x1060cb4 str x24,[x19,#0x208] -> new 0x11d1f84 str x24,[x19,#0x210]; runner passes contextA in x2"
+    },
+    {
+      "role": "constructor_arg3_context_b",
+      "old": "0x210",
+      "new": "0x218",
+      "evidence": "old 0x1060cb8 str x23,[x19,#0x210] -> new 0x11d1f88 str x23,[x19,#0x218]; runner passes contextB in x3"
+    },
+    {
+      "role": "constructor_arg4_optional_player",
+      "old": "0x218",
+      "new": "0x220",
+      "evidence": "old 0x1060d00 str x0,[x19,#0x218] from 0x107d4c4 -> new 0x11d1fd0 str x0,[x19,#0x220] from 0x11ef670; both only when w4 != 0"
+    },
+    {
+      "role": "zeroed_pointer_slot",
+      "old": "0x220",
+      "new": "0x210",
+      "evidence": "old 0x1060c80 str q1,[x19,#0x220] (zeroed before arg2 is stored) -> new 0x11d1f6c str q1,[x19,#0x210]"
+    },
+    {
+      "role": "second_zeroed_pointer_slot",
+      "old": "0x218",
+      "new": "0x220",
+      "evidence": "old 0x1060c98 str xzr,[x19,#0x218] -> new 0x11d1f68 str xzr,[x19,#0x220]"
+    },
+    {
+      "role": "sentinel_minus_one_int",
+      "old": "0x1fc",
+      "new": "0x200",
+      "evidence": "old 0x1060c74 str w8=#-1,[x19,#0x1fc] -> new 0x11d1f58 str w8=#-1,[x19,#0x200]"
+    },
+    {
+      "role": "zero_halfword",
+      "old": "0x1ec",
+      "new": "0x204",
+      "evidence": "old 0x1060c88 strh wzr,[x19,#0x1ec] -> new 0x11d1f5c strh wzr,[x19,#0x204]"
+    },
+    {
+      "role": "zero_word_new_only",
+      "old": null,
+      "new": "0x208",
+      "evidence": "new 0x11d1f60 str wzr,[x19,#0x208]; no old equivalent in the same sequence"
+    },
+    {
+      "role": "zero_qword_new_only",
+      "old": null,
+      "new": "0x238",
+      "evidence": "new 0x11d1f44 str xzr,[x19,#0x238]"
+    },
+    {
+      "role": "zero_block_new_only",
+      "old": null,
+      "new": "0x228",
+      "evidence": "new 0x11d1f48 str q1,[x19,#0x228] zeroes 0x228..0x237"
+    },
+    {
+      "role": "constant_pair_5000_minus1",
+      "old": "0x1b8",
+      "new": "0x1b8",
+      "evidence": "both load the 8-byte pair {5000, -1} from rodata (old 0x2b3868, new 0x2cd098) and store to [x19,#0x1b8]"
+    },
+    {
+      "role": "sentinel_minus_one_qword",
+      "old": "0x1c0",
+      "new": "0x1c0",
+      "evidence": "old 0x1060c50 / new 0x11d1f14 str x8=#-1,[x19,#0x1c0]"
+    },
+    {
+      "role": "sentinel_minus_one_qword_2",
+      "old": "0x1c8",
+      "new": "0x1c8",
+      "evidence": "old 0x1060c8c / new 0x11d1f4c str d0=#-1,[x19,#0x1c8]"
+    },
+    {
+      "role": "logic_command_queue",
+      "old": "0x38",
+      "new": "0x38",
+      "evidence": "old 0x1060df8 bl kLogicCommandQueueConstructor -> new 0x11d20cc bl 0xe54328; both store at [x19,#0x38]"
+    },
+    {
+      "role": "world_plugin_object",
+      "old": "0xa8",
+      "new": "0xa8",
+      "evidence": "old allocates 0x348 then stores at [x19,#0xa8]; new allocates 0x378 at 0x11d2030 and stores at [x19,#0xa8]"
+    }
+  ]
+}

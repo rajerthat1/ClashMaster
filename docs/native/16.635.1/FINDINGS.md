@@ -295,26 +295,53 @@ Read from the recovered functions themselves:
 The pending-event setter also gained two new fields at `+0x24b` (byte) and
 `+0x24c` (word); the old function had no equivalent.
 
-### 3.8 GameState constructor — **shape changed, fields not yet named**
+### 3.8 GameState constructor — **store map recovered**
 
-Constructor `0x11d1e68` (old `0x1060ba8`). The store sequence changed; do not
-carry 15.535 offsets over:
+Constructor `0x11d1e68` (old `0x1060ba8`). The allocation grew `0x230 → 0x240`.
+The runner call shape is unchanged:
+`ctor(manager, 1, contextA, contextB, 0)` at `0xd9ae7c`, followed by
+`setup(manager, 1)` at `0x11d225c`.
 
-- old `str wzr,[x19,#0x9c]` → new `str wzr,[x19,#0xa0]` (+4)
-- old `str q1,[x19,#0x220]` → new `str q1,[x19,#0x210]` (−0x10)
-- old `str xzr,[x19,#0x218]` → new `str xzr,[x19,#0x220]` (+8)
-- new-only stores at `+0x1f4`, `+0x1f8`, `+0x208`, `+0x238`
+The full old→new store map (offset, instruction, inferred role) is
+[`gamestate-constructor.json`](gamestate-constructor.json). The key result is
+that the two contradictory handoff notes are **both** correct and refer to
+different things:
 
-The `+0xa0 → +0xa4` note in the previous handoff does **not** match this
-disassembly (the observed pair is `0x9c → 0xa0`). Treat both as provisional
-until the fields are named from their accessors.
+| Item | Old | New | Evidence |
+| --- | ---: | ---: | --- |
+| initialised int | `0x9c` | **`0xa0`** | `str wzr` then `str w8=#0x46b` in both bodies |
+| embedded sub-object base | `0xa0` | **`0xa4`** | `add x0,x19,#…; bl <sub-object ctor>` |
+| ctor arg2 (context A) | `0x208` | **`0x210`** | `str x24,[x19,#…]`; runner passes contextA in `x2` |
+| ctor arg3 (context B) | `0x210` | **`0x218`** | `str x23,[x19,#…]`; runner passes contextB in `x3` |
+| ctor arg4 (optional player) | `0x218` | **`0x220`** | object created only when `w4 != 0` |
+| zeroed pointer slot | `0x220` | **`0x210`** | `str q1` before arg2 is stored |
+| sentinel `-1` int | `0x1fc` | **`0x200`** | `str w8=#-1` |
+| zero halfword | `0x1ec` | **`0x204`** | `strh wzr` |
+| new-only zero word | — | `0x208` | no old equivalent |
+| new-only zero block | — | `0x228`..`0x237` | `str q1,[x19,#0x228]` |
+| new-only zero qword | — | `0x238` | `str xzr,[x19,#0x238]` |
 
-Reproduce:
+Unchanged fields: constant pair `{5000, -1}` at `+0x1b8`; `-1` qwords at
+`+0x1c0`/`+0x1c8`; `LogicCommandQueue` at `+0x38`; world/plugin object at
+`+0xa8` (allocation `0x348 → 0x378`).
+
+Roles are inferred from the constructor arguments and the immediately following
+accessors. They still need confirmation from named live goldens before the
+entity/HP work relies on them.
+
+Reproduce (`.venv` has Capstone):
 
 ```bash
-python3 tools/native_analysis/cr_elf.py disasm OLD 0x1060ba8 0x1060e90
-python3 tools/native_analysis/cr_elf.py disasm NEW 0x11d1e68 0x11d2160
+.venv/bin/python tools/native_analysis/cr_elf.py disasm OLD 0x1060ba8 0x1060e90
+.venv/bin/python tools/native_analysis/cr_elf.py disasm NEW 0x11d1e68 0x11d225c
 ```
+
+The checked-in Ghidra project `/tmp/opencode/ghidra_project` has **not**
+finished auto-analysis: it has no function at `0x11d1e68` and mis-splits
+`0x11d2250`/`0x11d225c`. `ghidra_scripts/DecompileAnchors.java` can force a
+function at a known address, but the decompiler output loses the AArch64
+argument registers until the project is re-analysed. Use the raw disassembly
+for now; a full `-analysisTimeoutPerFile 7200` pass is still pending.
 
 ## 4. Hook relocation report
 
@@ -347,16 +374,63 @@ verified replay-controller / GameState / import anchors above; see
 2. ~~Fix the near-duplicate confusion for `kGameStateStep`~~ — done via
    `manual-overrides.json`; the report now records `0x011d3174`.
 3. ~~Generate the 16.635 probe layout header~~ — done,
-   `native_runner/probe/build_16_635_1_layout.h` (9 runner hooks + touch, plus
-   verified field offsets).
+   `native_runner/probe/build_16_635_1_layout.h`. It now carries the 9 runner
+   hooks + touch, the resolved core call offsets, the 6 verified field offsets,
+   and explicit `kUnavailableOffset`/`*Resolved = false` sentinels for anchors
+   that are still `AMBIGUOUS`/`MISSING`. Required core anchors fail loudly
+   rather than silently emitting a 15.535.13 address.
 4. ~~Resolve the non-code anchors~~ — done, see §3.6.
-5. Port the 9 runner hooks + touch into `cr_replay_probe.cpp` behind the new
-   build header, then verify on the native A51 (§2 of the handoff).
+5. ~~Wire the 9 runner hooks + touch into `cr_replay_probe.cpp` behind the new
+   build header~~ — done (see §3.9). The 16.635 build is selected with
+   `-DCR_PROBE_TARGET_16_635_1` (or `build_probe.ps1 -TargetBuild 16.635.1`).
+   It still needs dynamic verification on the native A51.
 6. Name the GameState constructor fields from their accessors (§3.8) and then
-   do the entity/HP (`hpComponentAccessor`) work.
+   do the entity/HP (`hpComponentAccessor`) work. This is now the blocking
+   analysis item: `kJsonMemberFind`, `kLogicCommandParse`,
+   `kLocationTileMapEnsure` and `kLocationTileMapLookup` are the remaining
+   `AMBIGUOUS` core anchors that keep cold configure / live command injection
+   closed on 16.635.
 7. Map the gameplay/vtable/data anchors that are still `AMBIGUOUS`: the
    Character / Projectile / AreaEffect / component vtables in
    `vtable-diff.json`, then the runtime/action-data pairs that share a base.
+   The rich telemetry installs are deliberately skipped on the 16.635 build
+   until these land.
 8. Check `/tmp/opencode/ghidra_project` for the finished `cr16` analysis. If it
    timed out, rerun with JDK 25 + `-analysisTimeoutPerFile 7200`. Use
    `ghidra_scripts/DecompileAt.java` on the anchors above to name them.
+
+### 3.9 16.635.1 probe wiring — **build-selectable, fail-closed**
+
+`cr_replay_probe.cpp` now has one generated include for the target build:
+
+```cpp
+#if defined(CR_PROBE_TARGET_16_635_1)
+#include "build_16_635_1_layout.h"
+#endif
+```
+
+Under that define:
+
+- the 9 runner hooks + touch read their offset **and 16-byte prologue** from the
+  header (`probe_target::…`), so `verify_native_hook_table` still fails closed;
+- the 6 verified field offsets come from `field-offsets.json` via the header;
+- resolved core calls (GameState ctor/setup/destroy/tick/load/step,
+  deserialize, byte streams, JSON parse, snapshot, card selection, command
+  queue, logic data, replay manager/getter, EGL GOT, context root) use the
+  header offsets;
+- `kJsonMemberFind`, `kLogicCommandParse`, `kLocationTileMapEnsure`,
+  `kLocationTileMapLookup` and `kBuffAssetClassNameGetter` stay null/sentinel
+  and are reported in `kUnresolvedAnchors`; every caller already treats a null
+  pointer as capability-unavailable;
+- the rich telemetry installs (combat/phase/visibility/remaining/tower-troop)
+  are skipped, because their layout headers are still 15.535.13 tables;
+- the translated-SHA256 shim is skipped (its call site is unresolved, and the
+  supported dynamic target is a real AArch64 A51).
+
+`native_touch_interceptor` now accepts the touch offset/prologue through
+`NativeTouchBindings`, defaulting to the 15.535.13 values for the legacy build.
+
+Guard test: `native_runner/tests/test_probe_build_layout.py` re-reads every
+emitted prologue from the reference binary, checks the unresolved-anchor
+flags, compiles the header as C++17, and asserts the probe consumes the header
+instead of repeating literals.

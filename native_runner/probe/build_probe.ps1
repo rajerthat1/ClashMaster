@@ -1,6 +1,8 @@
 param(
     [string]$NdkRoot = "",
-    [string]$Output = (Join-Path $PSScriptRoot "out\libcrprobe.so")
+    [string]$Output = (Join-Path $PSScriptRoot "out\libcrprobe.so"),
+    [ValidateSet("15.535.13", "16.635.1")]
+    [string]$TargetBuild = "15.535.13"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +22,11 @@ if (-not (Test-Path -LiteralPath $compiler)) {
 }
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
+$targetDefines = @()
+if ($TargetBuild -eq "16.635.1") {
+    $targetDefines += "-DCR_PROBE_TARGET_16_635_1"
+}
+
 & $compiler `
     -std=c++17 `
     -O2 `
@@ -27,6 +34,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     -fvisibility=hidden `
     -Wall `
     -Wextra `
+    @targetDefines `
     -shared `
     "-Wl,-z,max-page-size=16384" `
     -o $outputPath `

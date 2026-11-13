@@ -12,6 +12,11 @@ struct NativeTouchBindings {
   std::uint64_t (*native_render_generation)(void *context) = nullptr;
   bool (*submit_hand_action)(void *context, std::int32_t owner, std::int32_t hand_index, std::int32_t world_x,
                              std::int32_t world_y) = nullptr;
+  // Build-pinned GameApp.nOnTouchEvent JNI entry.  The probe passes the values
+  // from its generated build header; zero/null falls back to the 15.535.13
+  // defaults kept in native_touch_interceptor.cpp.
+  std::uintptr_t hook_offset = 0;
+  const std::uint8_t *prologue = nullptr;
   void *context = nullptr;
 };
 
@@ -29,9 +34,9 @@ struct NativeStockAbilityReceipt {
   std::int32_t controller_slot = -1;
 };
 
-// Installs an inline hook at the v15.535.13 GameApp.nOnTouchEvent JNI entry.
+// Installs an inline hook at the build-pinned GameApp.nOnTouchEvent JNI entry.
 // The caller must pass the already-validated base address of the exact libg
-// build used by the native runner.
+// build and the hook offset/prologue from the matching build header.
 bool install_native_touch_interceptor(std::uintptr_t libg_base, const NativeTouchBindings &bindings);
 
 NativeTouchSelectionSnapshot native_touch_selection_snapshot();

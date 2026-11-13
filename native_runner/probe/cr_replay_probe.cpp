@@ -37,6 +37,15 @@
 #include "native_touch_interceptor.h"
 #include "probe_json.h"
 
+// Build-pinned offsets.  The default remains client 15.535.13; define
+// CR_PROBE_TARGET_16_635_1 to build the ported 16.635.1 runner.  The generated
+// header is the single source of truth for that build: it carries the runner
+// hook prologues, the resolved core call offsets, and sentinels for anchors
+// that are still AMBIGUOUS/MISSING so nothing silently falls back to 15.535.
+#if defined(CR_PROBE_TARGET_16_635_1)
+#include "build_16_635_1_layout.h"
+#endif
+
 namespace {
 
 constexpr const char *kLogTag = "CRNativeProbe";
@@ -57,6 +66,97 @@ const char *g_assets_paths[] = {
     g_user_assets_path,
     "/data/data/nullsroyale.rel.free/update/assets.scdb",
 };
+#if defined(CR_PROBE_TARGET_16_635_1)
+namespace probe_target = cr_native_16_635_1;
+constexpr bool kProbeTargetIs16_635_1 = true;
+
+constexpr std::uintptr_t kReplayJsonSetterOffset = probe_target::kReplayJsonSetterOffset;
+constexpr auto &kReplayJsonSetterPrologue = probe_target::kReplayJsonSetterPrologue;
+constexpr std::uintptr_t kReplayManagerGetterOffset = probe_target::kReplayManagerGetterOffset;
+constexpr std::uintptr_t kLibgStringFromUtf8Offset = probe_target::kLibgStringFromUtf8Offset;
+constexpr std::uintptr_t kNativeReplayRunnerOffset = probe_target::kNativeReplayRunnerOffset;
+constexpr auto &kNativeReplayRunnerPrologue = probe_target::kNativeReplayRunnerPrologue;
+constexpr std::uintptr_t kReplayBattleControllerLifecycleOffset =
+    probe_target::kReplayBattleControllerLifecycleOffset;
+constexpr auto &kReplayBattleControllerLifecyclePrologue = probe_target::kReplayBattleControllerLifecyclePrologue;
+constexpr std::uintptr_t kReplayBattleControllerFullUpdateOffset = probe_target::kReplayBattleControllerFullUpdateOffset;
+constexpr auto &kReplayBattleControllerFullUpdatePrologue = probe_target::kReplayBattleControllerFullUpdatePrologue;
+constexpr std::uintptr_t kReplayBattleControllerClockOffset = probe_target::kReplayBattleControllerClockOffset;
+constexpr auto &kReplayBattleControllerClockPrologue = probe_target::kReplayBattleControllerClockPrologue;
+constexpr std::uintptr_t kReplayBattleControllerAlternateUpdateOffset =
+    probe_target::kReplayBattleControllerAlternateUpdateOffset;
+constexpr auto &kReplayBattleControllerAlternateUpdatePrologue =
+    probe_target::kReplayBattleControllerAlternateUpdatePrologue;
+constexpr std::uintptr_t kReplayClockGlobalPauseGuardOffset = probe_target::kReplayClockGlobalPauseGuardOffset;
+constexpr std::uintptr_t kGameAppGetterOffset = probe_target::kGameAppGetterOffset;
+constexpr std::uintptr_t kGameAppPauseGuardOffset = probe_target::kGameAppPauseGuardOffset;
+constexpr std::uintptr_t kGameAppPendingEventSetterOffset = probe_target::kGameAppPendingEventSetterOffset;
+constexpr auto &kGameAppPendingEventSetterPrologue = probe_target::kGameAppPendingEventSetterPrologue;
+constexpr std::size_t kGameAppPendingEventFlagsOffset = probe_target::kGameAppPendingEventFlagsOffset;
+constexpr std::size_t kGameAppPendingEventOffset = probe_target::kGameAppPendingEventOffset;
+constexpr std::size_t kReplayBattleControllerStateOffset = probe_target::kReplayBattleControllerStateOffset;
+constexpr std::size_t kReplayBattleControllerAccumulatorOffset = probe_target::kReplayBattleControllerAccumulatorOffset;
+constexpr std::size_t kReplayBattleControllerSpeedOffset = probe_target::kReplayBattleControllerSpeedOffset;
+constexpr std::size_t kReplayBattleControllerSuspendedOffset = probe_target::kReplayBattleControllerSuspendedOffset;
+constexpr std::uintptr_t kGameStateLoadOffset = probe_target::kGameStateLoadOffset;
+constexpr auto &kGameStateLoadPrologue = probe_target::kGameStateLoadPrologue;
+constexpr std::uintptr_t kGameStateStepOffset = probe_target::kGameStateStepOffset;
+constexpr auto &kGameStateStepPrologue = probe_target::kGameStateStepPrologue;
+constexpr std::uintptr_t kGameAppTouchOffset = probe_target::kGameAppTouchOffset;
+constexpr auto &kGameAppTouchPrologue = probe_target::kGameAppTouchPrologue;
+constexpr std::uintptr_t kGameStateTickOffset = probe_target::kGameStateTickOffset;
+constexpr std::uintptr_t kGameStateContextAOffset = probe_target::kGameStateContextAOffset;
+constexpr std::uintptr_t kGameStateContextBOffset = probe_target::kGameStateContextBOffset;
+constexpr std::uintptr_t kGameStateNewOffset = probe_target::kGameStateNewOffset;
+constexpr std::uintptr_t kGameStateDeleteOffset = probe_target::kGameStateDeleteOffset;
+constexpr std::uintptr_t kGameStateConstructorOffset = probe_target::kGameStateConstructorOffset;
+constexpr std::uintptr_t kGameStateSetupOffset = probe_target::kGameStateSetupOffset;
+constexpr std::uintptr_t kGameStateDestroyOffset = probe_target::kGameStateDestroyOffset;
+constexpr std::uintptr_t kGameStateBaseDestroyOffset = probe_target::kGameStateBaseDestroyOffset;
+constexpr std::uintptr_t kJsonParseOffset = probe_target::kJsonParseOffset;
+constexpr std::uintptr_t kLogicCommandParseOffset = probe_target::kLogicCommandParseOffset;
+constexpr bool kLogicCommandParseResolved = probe_target::kLogicCommandParseResolved;
+constexpr std::uintptr_t kLogicCommandAppendOffset = probe_target::kLogicCommandAppendOffset;
+constexpr std::uintptr_t kLogicCommandQueueConstructorOffset = probe_target::kLogicCommandQueueConstructorOffset;
+constexpr std::uintptr_t kLogicCommandQueueDestroyOffset = probe_target::kLogicCommandQueueDestroyOffset;
+// The stock UI resolves the active ReplayBattleController through c85c28 and
+// finishes every player command through c893d0.  That second function owns the
+// validation, command tick stamping and ClientInput network-message enqueue.
+// Calling it on the game thread preserves the stock outbound authority while
+// bypassing only GameApp::nOnTouchEvent and its multi-tick gesture state.
+constexpr std::uintptr_t kStateSnapshotOffset = probe_target::kStateSnapshotOffset;
+constexpr std::uintptr_t kStateSnapshotDeleteOffset = probe_target::kStateSnapshotDeleteOffset;
+constexpr std::uintptr_t kByteStreamResetReadOffset = probe_target::kByteStreamResetReadOffset;
+constexpr std::uintptr_t kByteStreamFlipReadOffset = probe_target::kByteStreamFlipReadOffset;
+constexpr std::uintptr_t kByteStreamResetChecksumOffset = probe_target::kByteStreamResetChecksumOffset;
+constexpr std::uintptr_t kGameStateDeserializeHeaderOffset = probe_target::kGameStateDeserializeHeaderOffset;
+constexpr std::uintptr_t kGameStateDeserializeBodyOffset = probe_target::kGameStateDeserializeBodyOffset;
+constexpr std::uintptr_t kCardSelectionBuildOffset = probe_target::kCardSelectionBuildOffset;
+constexpr std::uintptr_t kJsonMemberFindOffset = probe_target::kJsonMemberFindOffset;
+constexpr bool kJsonMemberFindResolved = probe_target::kJsonMemberFindResolved;
+constexpr std::uintptr_t kLogicDataByGlobalIdOffset = probe_target::kLogicDataByGlobalIdOffset;
+constexpr std::uintptr_t kLocationTileMapEnsureOffset = probe_target::kLocationTileMapEnsureOffset;
+constexpr bool kLocationTileMapEnsureResolved = probe_target::kLocationTileMapEnsureResolved;
+constexpr std::uintptr_t kLocationTileMapLookupOffset = probe_target::kLocationTileMapLookupOffset;
+constexpr bool kLocationTileMapLookupResolved = probe_target::kLocationTileMapLookupResolved;
+constexpr std::uintptr_t kLogicDataTypeGetterOffset = probe_target::kLogicDataTypeGetterOffset;
+constexpr std::uintptr_t kProjectileKindGetterOffset = probe_target::kProjectileKindGetterOffset;
+constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = probe_target::kBuffAssetClassNameGetterOffset;
+constexpr bool kBuffAssetClassNameGetterResolved = probe_target::kBuffAssetClassNameGetterResolved;
+constexpr std::uintptr_t kEglSwapBuffersGotOffset = probe_target::kEglSwapBuffersGotOffset;
+// libg calls its AArch64 SHA256 self-integrity initializer exactly once from
+// this site. Google's x86_64 libndk_translation advertises the guest feature
+// but aborts on SHA256H/SHA256H2/SHA256SU instructions. On translated Android
+// only, skip that unused-result initializer so the stock battle engine can
+// finish booting. The call remains untouched on real AArch64 devices.
+// 16.635.1 has no resolved equivalent, so the shim is disabled for that build.
+constexpr std::uintptr_t kTranslatedSha256InitializerCallOffset = 0x00c8ece0;
+constexpr std::uint32_t kTranslatedSha256InitializerCall = 0x97eba894u;
+constexpr std::uint32_t kAarch64Nop = 0xd503201fu;
+constexpr std::uintptr_t kGameStateContextRootSlotOffset = probe_target::kGameStateContextRootSlotOffset;
+#else
+constexpr bool kProbeTargetIs16_635_1 = false;
+
 constexpr std::uintptr_t kReplayJsonSetterOffset = 0x00c8de8c;
 constexpr std::uintptr_t kReplayManagerGetterOffset = 0x00c8c5b8;
 constexpr std::uintptr_t kLibgStringFromUtf8Offset = 0x0138a800;
@@ -77,6 +177,10 @@ constexpr std::size_t kReplayBattleControllerSpeedOffset = 0x74;
 constexpr std::size_t kReplayBattleControllerSuspendedOffset = 0x18c;
 constexpr std::uintptr_t kGameStateLoadOffset = 0x01061b1c;
 constexpr std::uintptr_t kGameStateStepOffset = 0x010620a4;
+constexpr std::uintptr_t kGameAppTouchOffset = 0x013d0be0;
+constexpr std::uint8_t kGameAppTouchPrologue[16] = {
+    0xfd, 0x7b, 0xbc, 0xa9, 0xf8, 0x5f, 0x01, 0xa9, 0xf6, 0x57, 0x02, 0xa9, 0xf4, 0x4f, 0x03, 0xa9,
+};
 constexpr std::uintptr_t kGameStateTickOffset = 0x01062bc0;
 constexpr std::uintptr_t kGameStateContextAOffset = 0x0080031c;
 constexpr std::uintptr_t kGameStateContextBOffset = 0x00eaf1c8;
@@ -88,6 +192,7 @@ constexpr std::uintptr_t kGameStateDestroyOffset = 0x010610b0;
 constexpr std::uintptr_t kGameStateBaseDestroyOffset = 0x00988844;
 constexpr std::uintptr_t kJsonParseOffset = 0x0121a648;
 constexpr std::uintptr_t kLogicCommandParseOffset = 0x00d2fe78;
+constexpr bool kLogicCommandParseResolved = true;
 constexpr std::uintptr_t kLogicCommandAppendOffset = 0x00d2eef0;
 constexpr std::uintptr_t kLogicCommandQueueConstructorOffset = 0x00d2eddc;
 constexpr std::uintptr_t kLogicCommandQueueDestroyOffset = 0x00d2ee40;
@@ -105,9 +210,16 @@ constexpr std::uintptr_t kGameStateDeserializeHeaderOffset = 0x010634c0;
 constexpr std::uintptr_t kGameStateDeserializeBodyOffset = 0x0106379c;
 constexpr std::uintptr_t kCardSelectionBuildOffset = 0x00e2d1bc;
 constexpr std::uintptr_t kJsonMemberFindOffset = 0x00d0e100;
+constexpr bool kJsonMemberFindResolved = true;
 constexpr std::uintptr_t kLogicDataByGlobalIdOffset = 0x00dd1340;
 constexpr std::uintptr_t kLocationTileMapEnsureOffset = 0x00857608;
+constexpr bool kLocationTileMapEnsureResolved = true;
 constexpr std::uintptr_t kLocationTileMapLookupOffset = 0x00df8508;
+constexpr bool kLocationTileMapLookupResolved = true;
+constexpr std::uintptr_t kLogicDataTypeGetterOffset = 0x00dc2560;
+constexpr std::uintptr_t kProjectileKindGetterOffset = 0x00f27a58;
+constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = 0x00d961f4;
+constexpr bool kBuffAssetClassNameGetterResolved = true;
 constexpr std::uintptr_t kEglSwapBuffersGotOffset = 0x018e9d88;
 // libg calls its AArch64 SHA256 self-integrity initializer exactly once from
 // this site. Google's x86_64 libndk_translation advertises the guest feature
@@ -118,11 +230,12 @@ constexpr std::uintptr_t kTranslatedSha256InitializerCallOffset = 0x00c8ece0;
 constexpr std::uint32_t kTranslatedSha256InitializerCall = 0x97eba894u;
 constexpr std::uint32_t kAarch64Nop = 0xd503201fu;
 constexpr std::uintptr_t kGameStateContextRootSlotOffset = 0x019ad878;
+#endif
+// Vtable anchors are still 15.535.13 values.  The probe only compares them
+// against an object's vtable, so an unmatched build simply withholds the
+// envelope instead of calling through a stale pointer.
 constexpr std::uintptr_t kBuffAssetVtableOffset = 0x01882500;
-constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = 0x00d961f4;
-constexpr std::uintptr_t kLogicDataTypeGetterOffset = 0x00dc2560;
 constexpr std::uintptr_t kProjectileVtableOffset = 0x0189cc28;
-constexpr std::uintptr_t kProjectileKindGetterOffset = 0x00f27a58;
 constexpr std::uintptr_t kCharacterVtableOffset = 0x0189c4e8;
 constexpr std::size_t kProjectileDragStageOffset = 0x189;
 constexpr std::size_t kProjectileDragBackSpeedOffset = 0x1b0;
@@ -152,6 +265,7 @@ constexpr const char *kRichTelemetrySchema = "native-rich-telemetry.v3";
 constexpr std::int32_t kNativeObjectIdEntityKeyTag = -2;
 constexpr std::int32_t kUniqueReadyAbilityEntityKeyTag = -3;
 constexpr std::size_t kContentPostProcessReadyOffset = 0x6e8;
+#if !defined(CR_PROBE_TARGET_16_635_1)
 constexpr std::uint8_t kReplayJsonSetterPrologue[16] = {
     0xfd, 0x7b, 0xbe, 0xa9, 0xf4, 0x4f, 0x01, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xf4, 0x03, 0x01, 0xaa,
 };
@@ -179,6 +293,7 @@ constexpr std::uint8_t kGameStateLoadPrologue[16] = {
 constexpr std::uint8_t kGameStateStepPrologue[16] = {
     0xfd, 0x7b, 0xbc, 0xa9, 0xf8, 0x5f, 0x01, 0xa9, 0xf6, 0x57, 0x02, 0xa9, 0xf4, 0x4f, 0x03, 0xa9,
 };
+#endif
 
 using ReplayJsonSetter = void (*)(void *, void *);
 using ReplayManagerGetter = void *(*)();
@@ -1352,6 +1467,14 @@ bool process_uses_ndk_translation() {
 }
 
 bool install_translated_sha256_compatibility_shim(std::uintptr_t libg_base) {
+#if defined(CR_PROBE_TARGET_16_635_1)
+  // The initializer call site is unresolved in 16.635.1.  Patching a 15.535
+  // address would corrupt unrelated code, so skip it.  Real AArch64 devices
+  // (the only supported dynamic target) never need this shim.
+  (void)libg_base;
+  LOGI("translated SHA256 compatibility shim disabled for the 16.635.1 build");
+  return true;
+#else
   if (!process_uses_ndk_translation()) {
     LOGI("translated SHA256 compatibility shim not required");
     return true;
@@ -1378,6 +1501,7 @@ bool install_translated_sha256_compatibility_shim(std::uintptr_t libg_base) {
   LOGI("translated SHA256 compatibility shim installed at libg+0x%zx",
        static_cast<std::size_t>(kTranslatedSha256InitializerCallOffset));
   return true;
+#endif
 }
 
 extern "C" std::int32_t cr_render_gate_swap_buffers(void *display, void *surface) {
@@ -2952,6 +3076,11 @@ bool read_native_type_three_state(const void *object, const NativeComponentInven
     const void *asset_vtable = read_object_field<const void *>(asset, 0x00);
     if (g_libg_base == 0 || asset_vtable != reinterpret_cast<const void *>(g_libg_base + kBuffAssetVtableOffset) ||
         !libg_address_has_segment_flags(asset_vtable, 0x78, PF_R)) {
+      return true;
+    }
+    if (!kBuffAssetClassNameGetterResolved) {
+      // The Buff asset class-name getter is unresolved on this build.  Do not
+      // promote the entry; the caller treats the envelope as unavailable.
       return true;
     }
     const void *class_name_getter = read_object_field<const void *>(asset_vtable, 0x70);
@@ -8409,8 +8538,14 @@ bool install_hooks(std::uintptr_t libg_base) {
   g_game_state_destroy = reinterpret_cast<GameStateDestroy>(libg_base + kGameStateDestroyOffset);
   g_game_state_base_destroy = reinterpret_cast<GameStateDestroy>(libg_base + kGameStateBaseDestroyOffset);
   g_json_parse = reinterpret_cast<JsonParse>(libg_base + kJsonParseOffset);
-  g_json_member_find = reinterpret_cast<JsonMemberFind>(libg_base + kJsonMemberFindOffset);
-  g_logic_command_parse = reinterpret_cast<void *>(libg_base + kLogicCommandParseOffset);
+  // Unresolved anchors stay null on a build that has no verified equivalent.
+  // Every caller already checks for null and reports the capability closed.
+  g_json_member_find = kJsonMemberFindResolved
+                           ? reinterpret_cast<JsonMemberFind>(libg_base + kJsonMemberFindOffset)
+                           : nullptr;
+  g_logic_command_parse = kLogicCommandParseResolved
+                              ? reinterpret_cast<void *>(libg_base + kLogicCommandParseOffset)
+                              : nullptr;
   g_logic_command_append = reinterpret_cast<LogicCommandAppend>(libg_base + kLogicCommandAppendOffset);
   g_logic_command_queue_constructor =
       reinterpret_cast<LogicCommandQueueConstructor>(libg_base + kLogicCommandQueueConstructorOffset);
@@ -8427,8 +8562,12 @@ bool install_hooks(std::uintptr_t libg_base) {
       reinterpret_cast<GameStateDeserializeBody>(libg_base + kGameStateDeserializeBodyOffset);
   g_card_selection_build = reinterpret_cast<void *>(libg_base + kCardSelectionBuildOffset);
   g_logic_data_by_global_id = reinterpret_cast<LogicDataByGlobalId>(libg_base + kLogicDataByGlobalIdOffset);
-  g_location_tilemap_ensure = reinterpret_cast<LocationTileMapEnsure>(libg_base + kLocationTileMapEnsureOffset);
-  g_location_tilemap_lookup = reinterpret_cast<LocationTileMapLookup>(libg_base + kLocationTileMapLookupOffset);
+  g_location_tilemap_ensure = kLocationTileMapEnsureResolved
+                                  ? reinterpret_cast<LocationTileMapEnsure>(libg_base + kLocationTileMapEnsureOffset)
+                                  : nullptr;
+  g_location_tilemap_lookup = kLocationTileMapLookupResolved
+                                  ? reinterpret_cast<LocationTileMapLookup>(libg_base + kLocationTileMapLookupOffset)
+                                  : nullptr;
   const NativeHookSpec runner_hooks[] = {
       native_hook(kNativeReplayRunnerOffset, kNativeReplayRunnerPrologue, &native_replay_runner_hook,
                   &g_original_native_replay_runner, "native replay pre-run", &g_hook_native_replay_runner),
@@ -8458,6 +8597,12 @@ bool install_hooks(std::uintptr_t libg_base) {
   success &= install_native_hook_table(libg_base, runner_hooks, sizeof(runner_hooks) / sizeof(runner_hooks[0]));
   const bool touch_installed = install_probe_native_touch(libg_base);
   success &= touch_installed;
+#if !defined(CR_PROBE_TARGET_16_635_1)
+  // The rich telemetry subsystems still carry 15.535.13 layout tables.  They
+  // are not installed on a 16.635.1 build: every one of them is an independent,
+  // fail-closed capability, and installing a mismatched prologue here would at
+  // best report unavailable and at worst patch the wrong bytes.
+  //
   // Combat events are an independently attested, fail-closed capability.
   // A mismatch must not disable the already-established runner lifecycle;
   // the nested combat envelope reports unavailable and emits no records.
@@ -8489,6 +8634,9 @@ bool install_hooks(std::uintptr_t libg_base) {
   // Dagger Duchess inventory and Royal Chef cooking live in their starting
   // Action runtimes, outside ordinary object/component snapshots.
   install_tower_troop_runtime_hooks(libg_base);
+#else
+  LOGI("rich telemetry hooks unavailable on the 16.635.1 build (15.535 layout tables)");
+#endif
   g_hook_install_ok.store(success, std::memory_order_release);
   return success;
 }

@@ -69,6 +69,8 @@ bool install_probe_native_touch(std::uintptr_t libg_base) {
   bindings.is_native_render_ready = &probe_native_touch_ready;
   bindings.native_render_generation = &probe_native_touch_generation;
   bindings.submit_hand_action = &probe_submit_native_touch_hand_action;
+  bindings.hook_offset = kGameAppTouchOffset;
+  bindings.prologue = kGameAppTouchPrologue;
   return install_native_touch_interceptor(libg_base, bindings);
 }
 
