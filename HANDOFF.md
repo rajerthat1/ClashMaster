@@ -189,6 +189,8 @@
     registers until the project is fully re-analysed. Rerun with
     `-analysisTimeoutPerFile 7200`.
 - **Commits (pushed to `origin/main`):**
+  - `c7ec5ea` — `docs(native): record the rebuilt 16.635 deployable and A51 re-verification`
+  - `ec2ca52` — `feat(native): verify 16.635 two-sided matches, throughput and entity HP`
   - `22dbef1` — `docs(native): record the 16.635.1 APK version code`
   - `0293a34` — `feat(build): add Linux probe/APK build and A51 deploy scripts`
   - `f255b35` — `feat(build): support a pinned 16.635.1 probe APK build`
