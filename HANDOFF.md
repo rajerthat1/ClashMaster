@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-12 (native-first, post-commit)
+# Session handoff — 2026-11-12 (native-first; 16.635 APK ready to deploy)
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single source for the plan.
 > This file is the starting point for the next session: current state, environment decision,
@@ -53,7 +53,17 @@
     still `AMBIGUOUS`/`MISSING`). Produced by
     `tools/native_analysis/gen_layout.py`, which refuses required unresolved
     anchors. The header is consumed by `cr_replay_probe.cpp` behind
-    `CR_PROBE_TARGET_16_635_1` (`build_probe.ps1 -TargetBuild 16.635.1`).
+    `CR_PROBE_TARGET_16_635_1` (`build_probe.ps1 -TargetBuild 16.635.1` or
+    `build_probe.sh --target-build 16.635.1`).
+  - **Linux build toolchain installed; 16.635.1 APK built and verified:**
+    `.resource/android-tools/` has NDK r27c, build-tools r34 and apktool 2.12.1
+    (all hashes verified against Google/the pinned apktool SHA-256).
+    `builds/cr-ai-16.635.1.apk` (841 MB, SHA-256 `2658a768…6636`, signed with
+    the local `CN=Firstlight CR Local Build` key) bundles
+    `libcrprobe.so 82117903…9d85` and the reference `libg.so 0b5802…e4eaa`.
+    `builds/` is gitignored; rebuild from the APK if it is cleaned. This is a
+    **single-process** APK (no engine-cluster Application/activities), the A51
+    no-root path.
   - **Verified / high-confidence 16.635 anchors:**
     - Touch JNI **`0x0156f790`** (prologue identical to `kGameAppTouchPrologue`);
       internal `GameApp::onTouch` `0x01552b14`.
@@ -84,8 +94,9 @@
     `0x218 → 0x220`; new zero fields at `0x208`, `0x228`, `0x238`. Full table in
     `docs/native/16.635.1/gamestate-constructor.json`. The *roles* still need
     live-golden confirmation.
-  - **Still open:** confirm the constructor field roles from named live goldens,
-    then do the entity/HP (`hpComponentAccessor`) work. The
+  - **Still open:** the built APK has **not run on the A51 yet** — that is the
+    next action (§0). Then confirm the constructor field roles from named live
+    goldens and do the entity/HP (`hpComponentAccessor`) work. The
     Character/Projectile/AreaEffect/component vtables still need manual review.
     The remaining `AMBIGUOUS` core anchors (`kJsonMemberFind`,
     `kLogicCommandParse`, `kLocationTileMapEnsure`, `kLocationTileMapLookup`)
@@ -99,17 +110,22 @@
     function at a known address, but the decompiler loses AArch64 argument
     registers until the project is fully re-analysed. Rerun with
     `-analysisTimeoutPerFile 7200`.
-- **Commits (local until pushed):**
+- **Commits (pushed to `origin/main`):**
+  - `22dbef1` — `docs(native): record the 16.635.1 APK version code`
+  - `0293a34` — `feat(build): add Linux probe/APK build and A51 deploy scripts`
+  - `f255b35` — `feat(build): support a pinned 16.635.1 probe APK build`
+  - `cecf1a6` — `docs(native): fix Ghidra project wording`
+  - `06fd53c` — `docs: clarify recovered GameState constructor fields`
+  - `df0e388` — `fix(native): log the selected probe target build`
+  - `27519de` — `docs: record 16.635 probe wiring and Ghidra analysis status`
   - `63b8a93` — `feat(native): wire 16.635 probe hooks and recover GameState store map`
   - `3a7d308` — `feat(native): recover replay controller and generate 16.635 layout header`
   - `ca6994f` — `feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling`
-  - `98d94ad` — `docs: update handoff for the next session`
-  - `40d9a45` — `docs: refocus roadmap on native 16.635 engine and X-Bow specialist`
-  - `32d76f3` — `feat(crforge): add bridge, catalog, attestation, and F0 fixes`
 - The accidental root `LICENSE` deletion was restored and is not part of any commit.
-- **Working tree is clean.** The replay-controller recovery, verified overrides,
-  field offsets, seeded vtable report, layout header, build-selectable probe
-  wiring, and GameState constructor store map are committed.
+- **Working tree is clean; `main` is pushed to `origin/main`.** The replay-controller
+  recovery, verified overrides, field offsets, seeded vtable report, layout header,
+  build-selectable probe wiring, GameState constructor store map, Linux toolchain and
+  the built 16.635.1 APK are committed.
 - `ROADMAP.md` now has the **3a mirror bootstrap / 3b matchup pool** split.
 - `ROADMAP_CRFORGE.md` is the optional fallback/CI roadmap. `ROADMAP_NULLS16_PROBE.md` was folded
   into `ROADMAP.md` Phase 1 and removed.
@@ -166,18 +182,19 @@ part-time; with his notes it can be weeks.
   bug, isolated to one card/owner sequence; not an engine failure.
 - crforge raw engine: **8,371 decisions/s at 256 envs**. The bridge is **20–30 decisions/s**;
   the gap is `BattleEnvV1` observation assembly and JPype conversion, not crforge.
-- The **16.635.1 APK** is local (`nr_16.635.1_release_951fe421.apk`, `libg` `0b5802…`), and the
-  static port has every replay-runner anchor plus the non-code import/data
-  anchors resolved (FINDINGS §3.5–§3.7). The core hooks are wired behind the
-  generated build header (FINDINGS §3.9) and the GameState constructor store
-  map is recovered (§3.8), but the probe is still **not built or run** for
-  16.635; `native_runner/supported_engine.json` is still 15.535.13.
+- The **16.635.1 probe compiles** on Linux (NDK r27c), and the patched APK
+  **builds, signs and verifies**: `builds/cr-ai-16.635.1.apk` carries the exact
+  `libg.so 0b5802…e4eaa` and `libcrprobe.so 82117903…9d85`. The 9 runner hooks +
+  touch are wired behind the generated build header (FINDINGS §3.9) and the
+  GameState constructor store map is recovered (§3.8).
+  `native_runner/supported_engine.json` is still 15.535.13 by design; the
+  16.635 build is pinned separately in `docs/native/16.635.1/build.json`.
 - The 16.635 crforge tests pass: 14 attestation/catalog tests, 6 bridge tests.
 
 ## What is not proven
 
-- The 16.635.1 probe port and its throughput on this hardware. The hooks are
-  wired and fail-closed, but nothing has been built or run on-device yet.
+- The 16.635.1 probe **on-device**: hook installation, absence of prologue
+  mismatch, and throughput. The APK is built but has not run on the A51 yet.
 - The live reader/executor loop on 16.635.1 (blocked on the four unresolved
   core anchors in FINDINGS §3.9).
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
@@ -196,17 +213,39 @@ part-time; with his notes it can be weeks.
   `.resource/` is gitignored; re-extract from the APK if it is cleaned.
 - 16.635.1 APK: local in the repo root; reference `libg.so` at
   `.resource/native/16.635.1/reference/libg.so` (`0b5802…`).
+- Linux build tools: `.resource/android-tools/` (NDK r27c, build-tools r34,
+  apktool 2.12.1). `.resource/` and `builds/` are gitignored.
+- Current deployable: `builds/cr-ai-16.635.1.apk` (single-process, local signing
+  key). Rebuild with `./build_offline_apk.sh --target-build 16.635.1`.
 - `.venv` has `jpype1`, `gymnasium`, `pettingzoo`. `crforge_env` is not installed; use
   `PYTHONPATH=.resource/crforge/python` or install it editable.
 - crforge tables: `~/.crforge/tables/16.635.8` and `.3`.
 
 ## Next session: start here
 
-### 0. Continue the static port
+### 0. Run the built 16.635.1 APK on the A51 (do this first)
 
-The 15.535.13 reference binary is present; the replay controller path is now
-recovered. What remains is porting it into the probe and naming the entity
-fields.
+`builds/cr-ai-16.635.1.apk` is built, signed and verified. Enable USB debugging
+on the A51, connect it, accept the host key, then:
+
+```bash
+./deploy_a51.sh
+```
+
+Success gate: `adb devices` shows the phone; the install succeeds; logcat shows
+`probe target client=16.635.1 build16=1`, the ten `hook installed` lines (9
+runner hooks + touch) and the four `anchor unavailable` lines, with **no**
+`prologue mismatch` and no crash. If `adb install -r` fails with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`, uninstall the old nulls build first and
+let the game re-download its update data.
+
+Do not proceed to the analysis below until this smoke test passes.
+
+### 0b. Continue the static port
+
+The 15.535.13 reference binary is present and the replay controller path is
+recovered; the probe hooks are wired. What remains is on-device verification,
+the four ambiguous core anchors, and naming the entity fields.
 
 1. Read `docs/native/16.635.1/FINDINGS.md` and `offset-diff.json`. Every verified
    claim has a reproduce command.
@@ -227,11 +266,10 @@ fields.
 5. **Non-code anchors are resolved** (FINDINGS §3.6): GameStateNew/Delete PLT
    stubs, the EGL GOT slot, ContextA, and the context root slot.
 6. **The 9 runner hooks + touch are wired** into `cr_replay_probe.cpp` behind
-   the build header (FINDINGS §3.9). Build with
-   `build_probe.ps1 -TargetBuild 16.635.1`; the default build is still
-   15.535.13. Next actual work is dynamic verification on the native A51,
-   followed by confirming the recovered GameState constructor field roles
-   (FINDINGS §3.8) and the entity/HP (`hpComponentAccessor`) work.
+   the build header (FINDINGS §3.9). The 16.635 probe and APK are built; the
+   default build is still 15.535.13. Next is the A51 smoke test (§0), then
+   confirming the recovered GameState constructor field roles (FINDINGS §3.8)
+   and the entity/HP (`hpComponentAccessor`) work.
 7. **Next analysis blockers:** resolve `kJsonMemberFind`, `kLogicCommandParse`,
    `kLocationTileMapEnsure` and `kLocationTileMapLookup` (FINDINGS §3.9). Until
    then the 16.635 build intentionally leaves cold configure and live command
