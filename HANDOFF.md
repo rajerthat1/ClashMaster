@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-13 (16.635.1 two-sided match, throughput and entity/HP verified on the A51)
+# Session handoff — 2026-11-13 (16.635.1 two-sided match, scripted X-Bow, abilities, throughput and entity/HP verified on the A51)
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single source for the plan.
 > This file is the starting point for the next session: current state, environment decision,
@@ -112,8 +112,8 @@
     header were regenerated. `diff_builds.py` now flags tiny-getter
     `tiny_shape_mismatch` and `gen_layout.py` refuses such a row unless a
     MANUAL override clears it.
-  - **Still open:** confirm the constructor field roles from named live
-    goldens and do the entity/HP (`hpComponentAccessor`) work. The
+  - **Still open:** confirm the GameState constructor field *roles* from named
+    live goldens. Entity/HP and abilities are done (§3.19–3.22); the
     Character/Projectile/AreaEffect/component vtables still need manual review.
   - **The four core anchors are resolved** (FINDINGS §3.11), all `MANUAL`:
     `kJsonMemberFind 0x00e38d60`, `kLogicCommandParse 0x00e553e4`,
@@ -159,6 +159,31 @@
     rotated the played slot to the deck's next card and paid the printed cost
     within the measured elixir regen bound; `adb logcat -b crash` is empty.
     Three runs were identical (deterministic seed).
+  - **Scripted X-Bow 3.0 self-play verified** (FINDINGS §3.21). The new
+    `tools/native_analysis/scripted_xbow_match.py` plays FirstLight-Zero's exact
+    deck and form masks with defense/cycle/spell/offense modules, owner-local
+    mirrored placements, a wait option and blocked-cell fallback. On the A51 a
+    full regulation match ended at tick 3601 with **0 validation problems**:
+    seed 11 = 173 decisions / 66 actions / 13.5 s, crowns [1,2], deterministic
+    across repeats; seed 12 = 176 decisions / 35 actions / 13.8 s, crowns [2,1].
+    Card mix includes bridge X-Bow, Tesla behind it, Knight in front,
+    Archers/Skeletons/Spirit cycling and Fireball/Log on stacked threats.
+  - **Hero ability actions verified** (FINDINGS §3.22).
+    `tools/native_analysis/ability_action_probe.py` deploys Hero Knight, finds
+    the ready controller (`buttonState 2 Ready`, 1/1 charges), activates via
+    `AbilityAction`, and confirms the receipts: `executeTick = queued+1`,
+    `AllChargesConsumed` (6) with 0/1 charges, elixir paid 1.644 (= 2 ManaCost
+    minus 20 ticks of regen), and a second activation refused. The scripted
+    match with `--abilities` played **10 abilities / 0 rejections** in 174
+    decisions.
+  - **16.635 Champion layout recovered** (FINDINGS §3.22). The probe now has a
+    read-only `champion-diag` command. Live values: controller vtable
+    `0x01a51c30` (EXACT static match), action-data vtable `0x01a3fd60`,
+    ability-data vtable `0x01a348e0`; controller slots stay at `player+0x3a0`;
+    `LogicCharacterAbilityData` moved MaxCharges `0xac → 0xb0` and configured
+    cooldown `0xb4 → 0xb8`. These are emitted by `gen_layout.py` from
+    `docs/native/16.635.1/champion-layout.json`; the 16.635 probe no longer
+    falls back to 15.535 Champion addresses.
   - **Throughput measured** (FINDINGS §3.18): engine-only 1.84 matches/s
     (6,068 ticks in 0.54 s); ordinary control `step 20` 0.17 matches/s;
     decision loop 0.077 matches/s (12.3 decisions/s, 4.3 actions/s); resident
@@ -178,7 +203,8 @@
     `read_hitpoints()` still reads the component fields directly.
   - **New live tools** under `tools/native_analysis/` (README updated):
     `multi_decision_match.py`, `native_match_throughput.py`,
-    `entity_hp_probe.py`, `resident_batch_throughput.py`.
+    `entity_hp_probe.py`, `resident_batch_throughput.py`,
+    `scripted_xbow_match.py`, `ability_action_probe.py`.
   - Ghidra 12.2 headless is installed at `.resource/ghidra_download/` (requires JDK 25 at
     `.resource/jdk25/`; JDK 21 is rejected). Project:
     `/tmp/opencode/ghidra_project`, program `libg.so` in project `cr16`. The
@@ -189,6 +215,7 @@
     registers until the project is fully re-analysed. Rerun with
     `-analysisTimeoutPerFile 7200`.
 - **Commits (pushed to `origin/main`):**
+  - `7409cfe` — `feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1`
   - `c7ec5ea` — `docs(native): record the rebuilt 16.635 deployable and A51 re-verification`
   - `ec2ca52` — `feat(native): verify 16.635 two-sided matches, throughput and entity HP`
   - `22dbef1` — `docs(native): record the 16.635.1 APK version code`
@@ -292,6 +319,17 @@ part-time; with his notes it can be weeks.
 - **One-probe throughput** (§3.18): engine-only 1.84 matches/s; 8 resident
   slots 0.89 matches/s with full observations; the ~19 ms control round trip
   and the per-batch observation envelope dominate.
+- **A scripted X-Bow 3.0 self-play match runs on 16.635.1** (FINDINGS §3.21):
+  full regulation match, 0 validation problems, deterministic seed 11
+  (173 decisions / 66 actions / 13.5 s, crowns [1,2]), lower-action seed 12
+  (35 actions, crowns [2,1]). The policy uses the real deck/form masks and
+  recognizable X-Bow modules.
+- **Hero ability actions work on 16.635.1** (FINDINGS §3.22): the Champion
+  controller trio and `LogicCharacterAbilityData` field shift are pinned, an
+  `AbilityAction` is injected and consumed, charges go 1 → 0
+  (`AllChargesConsumed`), elixir pays the 2-cost within regen, and a second
+  activation is refused. The scripted match used 10 abilities with 0
+  rejections.
 - **The four core anchors are resolved on 16.635** (FINDINGS §3.11) and
   on-device attestation reports `two_sided_actions: true`; only
   `kBuffAssetClassNameGetter` (rich telemetry) remains unavailable.
@@ -301,15 +339,14 @@ part-time; with his notes it can be weeks.
 
 ## What is not proven
 
-- **Ability actions.** Card plays are proven two-sided; `AbilityAction` /
-  `queue_ability_action_at` has not been exercised on 16.635 in this loop.
 - **Multi-engine aggregate throughput.** One A51 process is measured; 5–10
   matches/s aggregate across several engine lanes has not been demonstrated.
 - **The rich telemetry envelopes** (`observe-rich`: combat events, phase,
   visibility, remaining, tower-troop) stay disabled on 16.635 because their
-  hook tables are still 15.535 layouts. The Character/Projectile/AreaEffect/
-  component vtables still need manual review, and the recovered GameState
-  constructor field *roles* still need live-golden confirmation.
+  hook tables are still 15.535 layouts. The Champion trio is now pinned
+  (§3.22), but the Character/Projectile/AreaEffect/component vtables still need
+  manual review, and the recovered GameState constructor field *roles* still
+  need live-golden confirmation.
 - The 16.635 form/tower-troop mapping of the FirstLight-Zero deck, whether v1450 (trained at
   level 11) transfers across the 15.535 → 16.635 rule change, and how it behaves at maxed levels.
 - That a learned X-Bow bot beats a competent scripted bot and then humans.
@@ -329,39 +366,41 @@ part-time; with his notes it can be weeks.
 - Linux build tools: `.resource/android-tools/` (NDK r27c, build-tools r34,
   apktool 2.12.1). `.resource/` and `builds/` are gitignored.
 - Current deployable: `builds/cr-ai-16.635.1.apk` (single-process, local signing
-  key; SHA-256 `19932f9e…0dd9`, probe `3726031a…cf14`, reference
-  `libg.so 0b5802…e4eaa`). Rebuilt 2026-11-13 after the hitpoint-anchor change;
-  the probe bytes are unchanged from the previously installed APK, and the
-  rebuilt APK was installed and re-verified (full two-sided match + entity/HP,
-  no crash). Rebuild with `./build_offline_apk.sh --target-build 16.635.1`.
+  key; SHA-256 `d69b3128…3189`, probe `a953eff4…9f46`, reference
+  `libg.so 0b5802…e4eaa`). Rebuilt 2026-11-13 after the Champion
+  vtable/field work; installed on the A51 and re-verified with the ability
+  probe (0 problems) and a full scripted X-Bow match (174 decisions / 60
+  actions / 10 abilities / 0 problems, crowns [2,1]), empty crash buffer.
+  Rebuild with `./build_offline_apk.sh --target-build 16.635.1`.
 - `.venv` has `jpype1`, `gymnasium`, `pettingzoo`. `crforge_env` is not installed; use
   `PYTHONPATH=.resource/crforge/python` or install it editable.
 - crforge tables: `~/.crforge/tables/16.635.8` and `.3`.
 
 ## Next session: start here
 
-### NEXT ACTION — scripted X-Bow match, then multi-engine throughput   [FINDINGS §3.17–3.20]
+### NEXT ACTION — real actions through the resident batch channel, then multi-engine throughput   [FINDINGS §3.17–3.22]
 
-The multi-decision gate, the throughput baseline and the entity/HP path are
-done on the A51. The next session:
+The multi-decision gate, the scripted X-Bow match, ability actions, the
+throughput baseline and the entity/HP path are done on the A51. The next
+session:
 
-1. **Scripted X-Bow on 16.635.** Build the FirstLight-Zero deck as a
-   `MatchConfig` (verify the 16.635 form availability and tower-troop IDs
-   first), add a deterministic placement policy (X-Bow at the bridge, Tesla
-   behind it, Fireball/Log on value, Skeletons/Spirit cycle), and run one full
-   self-play match through the decision loop. Record the match result and
-   per-decision latency. This is the first milestone in `ROADMAP.md`.
-2. **Ability actions.** Extend the decision loop with `AbilityAction` for a
-   ready champion (Hero Knight) and confirm the engine receipts and any
-   cooldown/charge telemetry on 16.635.
-3. **Multi-engine throughput.** Start a second probe/engine instance and
+1. **Drive real actions through `ResidentBatchCoordinatorV1`.** The batch
+   channel currently proves empty steps only. Add card plays (and optionally a
+   ready Hero Knight ability) to the resident batch request so training
+   throughput includes actions, then re-measure 8-slot matches/s.
+2. **Multi-engine throughput.** Start a second probe/engine instance and
    measure aggregate matches/s with the resident batch channel (currently
    0.89 matches/s per A51 process). Decide whether the training host is the
-   laptop, cloud, or a device pool. Also drive real actions through
-   `ResidentBatchCoordinatorV1`, not just empty steps.
+   laptop, cloud, or a device pool. The decision rule is still: ≥5 matches/s
+   aggregate → native primary; 1–5 → split; <1 → crforge primary.
+3. **Scripted X-Bow polish (non-blocking).** The v0 baseline is verified; the
+   next improvements are real defensive placement/spell value, elixir reserve
+   across pending plays, and v1450 style comparison. Do not block throughput
+   work on this.
 4. **Static, non-blocking:** port the rich telemetry hook tables (15.535 →
    16.635) using the vtable diff, or explicitly retire `observe-rich` for
-   16.635. The four core anchors and the hitpoint accessor are already done.
+   16.635. The four core anchors, the hitpoint accessor and the Champion trio
+   are already done.
 
 `command-check <json>` is available on the probe control socket: it parses one
 command and returns the engine's execute code (0 = deployed, 9 = not in hand,
@@ -435,8 +474,9 @@ the four ambiguous core anchors, and naming the entity fields.
 6. **The 9 runner hooks + touch are wired** into `cr_replay_probe.cpp` behind
    the build header (FINDINGS §3.9). The 16.635 probe and APK are built and the
    A51 smoke test passed (§0 / FINDINGS §3.10); the default build is still
-   15.535.13. Next is confirming the recovered GameState constructor field roles
-   (FINDINGS §3.8) and the entity/HP (`hpComponentAccessor`) work.
+   15.535.13. Entity/HP, abilities and the Champion layout are now verified
+   (§3.19–3.22); the remaining static work is the rich telemetry tables and the
+   GameState constructor field *roles* (FINDINGS §3.8).
 6b. **Tiny-getter anchors need shape checks.** `kGameStateTick` was one function
    off; the fix is MANUAL. `diff_builds.py` now emits `tiny_shape_mismatch` and
    `gen_layout.py` refuses it without an override. When adding an anchor that is
@@ -593,6 +633,9 @@ several engine lanes; the single-lane number alone does not decide it.
 | `tools/native_analysis/native_match_throughput.py` | Single-connection match/decision throughput (FINDINGS §3.18) |
 | `tools/native_analysis/resident_batch_throughput.py` | 8-slot resident batch-channel throughput (FINDINGS §3.18) |
 | `tools/native_analysis/entity_hp_probe.py` | Live entity/tower HP verification (FINDINGS §3.19) |
+| `tools/native_analysis/scripted_xbow_match.py` | Deterministic scripted X-Bow 3.0 self-play + optional Hero Knight abilities (FINDINGS §3.21) |
+| `tools/native_analysis/ability_action_probe.py` | Hero ability receipts and Champion controller dump (FINDINGS §3.22) |
+| `docs/native/16.635.1/champion-layout.json` | Live-confirmed Champion vtables and ability-data field shifts |
 | `native_runner/probe/build_probe.sh` | Linux probe build (`--target-build`) |
 | `build_offline_apk.sh` | Linux single-process patched APK build/sign |
 | `deploy_a51.sh` | Install on the A51 and stream probe logs |

@@ -197,7 +197,39 @@ def render_core_anchor(
     return lines, True
 
 
-def render(build: Binary, rows: dict[str, dict], fields: list[dict], source: str) -> str:
+def load_champion_layout(path: Path | None) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Load the live-confirmed Champion vtable/field block, if present."""
+
+    if path is None or not path.is_file():
+        return {}, {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    anchors = payload.get("anchors", {})
+    fields = payload.get("fields", {})
+    for name, row in anchors.items():
+        if row.get("resolved") is not True:
+            raise SystemExit(f"champion anchor {name} is not marked resolved")
+        try:
+            offset = int(str(row["offset"]), 16)
+        except (KeyError, ValueError):
+            raise SystemExit(f"champion anchor {name} has an invalid offset") from None
+        if offset % 4:
+            raise SystemExit(f"champion anchor {name} offset 0x{offset:08x} is not aligned")
+    for name, row in fields.items():
+        try:
+            int(str(row["value"]), 16)
+        except (KeyError, ValueError):
+            raise SystemExit(f"champion field {name} has an invalid value") from None
+    return anchors, fields
+
+
+def render(
+    build: Binary,
+    rows: dict[str, dict],
+    fields: list[dict],
+    source: str,
+    champion_anchors: dict[str, dict] | None = None,
+    champion_fields: dict[str, dict] | None = None,
+) -> str:
     anchors = []
     for hook in RUNNER_HOOKS + (TOUCH_HOOK,):
         offset, prologue, confidence = resolve_anchor(hook, rows, build)
@@ -266,6 +298,30 @@ def render(build: Binary, rows: dict[str, dict], fields: list[dict], source: str
         if not resolved:
             unresolved.append(hook)
 
+    if champion_anchors:
+        lines.extend(
+            [
+                "",
+                "// Champion ability anchors confirmed on the live 16.635.1 build",
+                "// with the probe's champion-diag controller dump.",
+            ]
+        )
+        for name in sorted(champion_anchors):
+            row = champion_anchors[name]
+            lines.append(f"inline constexpr std::uintptr_t {name} = {row['offset']};")
+            lines.append(f"inline constexpr bool {name.removesuffix('Offset')}Resolved = true;")
+    if champion_fields:
+        lines.extend(
+            [
+                "",
+                "// Champion ability-data field offsets (LogicCharacterAbilityData).",
+            ]
+        )
+        for name in sorted(champion_fields):
+            row = champion_fields[name]
+            was = f"  // was {row['was']}" if row.get("was") else ""
+            lines.append(f"inline constexpr std::size_t {name} = {row['value']};{was}")
+
     lines.extend(["", "// Layout fields confirmed by the 16.635.1 disassembly."])
     for field in fields:
         lines.append(
@@ -301,13 +357,24 @@ def main() -> int:
     parser.add_argument("new_libg")
     parser.add_argument("--diff", default="docs/native/16.635.1/offset-diff.json")
     parser.add_argument("--fields", default="docs/native/16.635.1/field-offsets.json")
+    parser.add_argument("--champion", default="docs/native/16.635.1/champion-layout.json")
     parser.add_argument("--out", default="")
     args = parser.parse_args()
 
     build = Binary(args.new_libg)
     rows = load_hooks(Path(args.diff))
     fields = json.loads(Path(args.fields).read_text(encoding="utf-8"))["fields"]
-    header = render(build, rows, fields, "tools/native_analysis/gen_layout.py")
+    champion_anchors, champion_fields = load_champion_layout(
+        Path(args.champion) if args.champion else None
+    )
+    header = render(
+        build,
+        rows,
+        fields,
+        "tools/native_analysis/gen_layout.py",
+        champion_anchors,
+        champion_fields,
+    )
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

@@ -952,3 +952,111 @@ installed APK (the anchor is compile-time only), confirming a deterministic
 probe build. The rebuilt APK was installed on the A51 and re-verified: a full
 two-sided match (160 decisions / 56 actions, 0 problems, tick 3601) and the
 entity/HP probe (8 samples, 0 problems), with an empty crash buffer.
+
+### 3.21 Scripted X-Bow 3.0 self-play on 16.635.1
+
+`tools/native_analysis/scripted_xbow_match.py` is the Phase 1 scripted-X-Bow
+v0 scaffold. It configures FirstLight-Zero's exact deck and form masks::
+
+    X-Bow, Hero Knight, Evo Archers, Evo Tesla, Skeletons,
+    Electro Spirit, Fireball, The Log
+    forms (0, 2, 1, 1, 0, 0, 0, 0)   # 2 = Hero, 1 = Evolution
+
+The policy is split into `defense`, `cycle`, `spell` and `offense` modules.
+Placements are owner-local (`own king (9000, 3000)`, river `y=16000`) and are
+mirrored for owner 1, so both seats run the same policy. The action layer has a
+wait option, keeps a blocked-cell memory, and skips validation for cards
+submitted on the final match boundary (the engine finalizes the same tick, so
+the command is intentionally never consumed). Hero runtime ids are normalized
+back to the deck card (Hero Knight `203000000 -> 26000000`).
+
+Full self-play matches on the SM-A515U (2026-11-13), one fresh `MatchConfig`
+each, decisions every 20 ticks (~1 s), `adb logcat -b crash` empty after every
+run:
+
+| run | decisions | actions | seconds | match | crowns (winner) | problems | latency mean / median / p95 |
+| --- | ---: | ---: | ---: | --- | --- | ---: | --- |
+| seed 11 (repeat A) | 173 | 66 | 13.50 | tick 3601, ended | [1, 2] (owner 1) | 0 | 58.9 / 45.3 / 93.5 ms |
+| seed 11 (repeat B) | 173 | 66 | 13.51 | tick 3601, ended | [1, 2] (owner 1) | 0 | 56.6 / 49.6 / 97.0 ms |
+| seed 12 | 176 | 35 | 13.80 | tick 3601, ended | [2, 1] (owner 0) | 0 | 59.8 / 43.0 / 90.5 ms |
+| seed 11 + abilities | 174 | 60 | 16.42 | tick 3601, ended | [2, 1] (owner 0) | 0 | 31.7 / 31.2 / 40.9 ms |
+
+Seed 11 is deterministic across repeats (same decisions, actions, card counts
+and result). The seed-11 card mix without abilities was X-Bow 6, Tesla 9,
+Knight 11, Archers 6, Skeletons 13, Electro Spirit 12, Log 6, Fireball 2; seed
+12 was a lower-action match (35 actions). The policy is recognizably X-Bow 3.0:
+bridge X-Bow into the weaker princess lane, Tesla/Archers behind it, Knight in
+front, cheap cards to cycle, Fireball/Log on stacked threats.
+
+The scripted match is still transport-bound at ~0.06-0.07 matches/s (three
+control round trips per decision), consistent with §3.18; it is a behaviour
+baseline, not the training throughput path.
+
+Reproduce::
+
+```bash
+adb forward tcp:26789 tcp:26789
+.venv/bin/python tools/native_analysis/scripted_xbow_match.py \
+    --seed 11 --output /tmp/opencode/scripted_xbow_match.json
+.venv/bin/python tools/native_analysis/scripted_xbow_match.py \
+    --seed 11 --no-abilities --output /tmp/opencode/scripted_xbow_match_no_ability.json
+adb logcat -b crash -d
+```
+
+### 3.22 Hero ability actions and the 16.635 Champion layout
+
+`AbilityAction` previously failed on 16.635 with `could not resolve one ready
+native champion ability source`. The probe still compared the live controller
+against 15.535 control-block vtables, and the static vtable diff could only
+offer *sibling* LIKELY matches for the two data vtables. The probe now has a
+`champion-diag` control command that dumps the live Champion controller,
+action-data, selected-character and ability-data objects (vtables, names, field
+words) without changing engine state. It is a diagnostic, not a training API.
+
+Live dump from the SM-A515U after deploying Hero Knight (`203000000`):
+
+| object | live vtable offset | notes |
+| --- | --- | --- |
+| Champion controller | **`0x01a51c30`** | matches the EXACT vtable-diff relocation |
+| Champion action data | **`0x01a3fd60`** | name `KingTower_ChampionAbility` |
+| Character ability data | **`0x01a348e0`** | name `Knight_hero_Ability` |
+| Hero carrier | `0x01a4fbb8` | `cardId 203000000`, selected-character backlink matches |
+
+The controller stays at `player+0x3a0/+0x3a8`; a scan of the owner object found
+only those two slots (plus unrelated `0x7a0/0x7a8` pointers). The controller
+fields kept their 15.535 offsets: cooldown `+0x78`, configured cooldown
+`+0x7c`, charges `+0x80`, button state `+0x98` (2 = `Ready`, 6 =
+`AllChargesConsumed`), action data `+0x18`, selected character `+0x90`,
+champion vector `+0xa0`. `LogicCharacterAbilityData` did shift: live words put
+`MaxCharges` (1) at **`+0xb0`** (was `+0xac`) and `ManaCost` (2) at `+0xb4`, so
+the configured-cooldown twin is **`+0xb8`** (was `+0xb4`).
+
+`tools/native_analysis/ability_action_probe.py` then verifies the engine
+receipts. On the A51 (2026-11-13), 0 problems, empty crash buffer:
+
+```
+controller before  buttonState=2 Ready,  charges=1/1, championCount=1
+activate-ability   owner 0, sourceEntityKey [0,1,0], executeTick = queued+1
+controller after   buttonState=6 AllChargesConsumed, charges=0/1
+elixir paid        1.644  (= 2 printed ManaCost - 0.36 regen over 20 ticks)
+second activation  refused (no charge remains)
+```
+
+The three vtable anchors and the two field offsets are now emitted by
+`gen_layout.py` from `champion-layout.json` into
+`native_runner/probe/build_16_635_1_layout.h`, so the 16.635 probe never falls
+back to a 15.535 Champion address. `scripted_xbow_match.py` polls the
+diagnostic every five decisions and activates a ready Hero Knight as a separate
+native command: the seed-11 full match used **10 abilities, 0 rejections** in
+174 decisions.
+
+Reproduce::
+
+```bash
+adb forward tcp:26789 tcp:26789
+.venv/bin/python tools/native_analysis/ability_action_probe.py \
+    --output /tmp/opencode/ability_action_probe.json
+.venv/bin/python tools/native_analysis/scripted_xbow_match.py \
+    --seed 11 --output /tmp/opencode/scripted_xbow_abilities.json
+adb logcat -b crash -d
+```

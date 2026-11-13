@@ -2814,6 +2814,17 @@ class NativeClashEnv:
     def observe(self) -> dict[str, Any]:
         return self._request("observe")
 
+    def champion_diagnostics(self) -> dict[str, Any]:
+        """Return the probe's live Champion controller dump.
+
+        This is a diagnostic surface, not a model observation: it exposes the
+        actual controller/action/ability vtables, field offsets, cooldown,
+        charge and button state for the connected build. It exists to verify
+        the Champion layout on a new client before trusting ability actions.
+        """
+
+        return self._request("champion-diag")
+
     def observe_rich(self) -> dict[str, Any]:
         """Return validated native component/runtime telemetry.
 

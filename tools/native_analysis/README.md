@@ -107,7 +107,7 @@ sub-vtable marker shift and per-slot relocation mapping.
 ## `gen_layout.py`
 
 Emits the build-pinned probe header from `offset-diff.json` +
-`field-offsets.json`. It refuses an anchor whose 16-byte prologue cannot be read
+`field-offsets.json` + `champion-layout.json`. It refuses an anchor whose 16-byte prologue cannot be read
 from the target binary, so the header never contains an unverified offset. The
 header carries the nine runner hooks + touch, the resolved core call offsets
 (GameState/JSON/byte-stream/replay manager), and explicitly marked sentinels
@@ -120,8 +120,15 @@ falling back to a 15.535.13 address:
     .resource/native/16.635.1/reference/libg.so \
     --diff docs/native/16.635.1/offset-diff.json \
     --fields docs/native/16.635.1/field-offsets.json \
+    --champion docs/native/16.635.1/champion-layout.json \
     --out native_runner/probe/build_16_635_1_layout.h
 ```
+
+`champion-layout.json` carries the Champion controller/action/ability vtables
+and the `LogicCharacterAbilityData` field shift. The controller is an EXACT
+static relocation match; the data vtables and field offsets were confirmed from
+live controller objects with the probe's `champion-diag` command (FINDINGS
+§3.22). Passing `--champion ""` skips that block.
 
 ## Live content-ready capture (`capture_content_window.py`)
 
@@ -148,8 +155,8 @@ the field's real neighbourhood, then repeat on 16.635.1.
 
 ## Live match drivers
 
-These three tools drive a configured match over the probe control socket. They
-are diagnostics, not training APIs; forward the port first
+These tools drive a configured match over the probe control socket. They are
+diagnostics, not training APIs; forward the port first
 (`adb forward tcp:26789 tcp:26789`) and check `adb logcat -b crash -d` after a
 run.
 
@@ -198,6 +205,39 @@ checking towers are at the native tower cells with sane HP and that units keep
 ```
 
 Recorded results are in FINDINGS §3.19.
+
+### `scripted_xbow_match.py`
+
+Runs one deterministic scripted X-Bow 3.0 self-play match with FirstLight-Zero's
+exact deck and form masks. The policy is split into defense / cycle / spell /
+offense modules, uses owner-local placements mirrored for owner 1, and has a
+wait option plus blocked-cell fallback. With `--abilities` (default) it polls
+the Champion controller every five decisions and plays a ready Hero Knight
+ability as a separate native command:
+
+```bash
+.venv/bin/python tools/native_analysis/scripted_xbow_match.py \
+    --seed 11 --output /tmp/opencode/scripted_xbow_match.json
+```
+
+Use `--no-abilities` for the card-only baseline. Recorded results are in
+FINDINGS §3.21.
+
+### `ability_action_probe.py`
+
+Verifies one Hero Knight ability through `AbilityAction`: deploys the hero,
+dumps the live Champion controller with `champion-diag`, activates the ready
+ability, and checks the receipts (injection, `AllChargesConsumed`, zero
+charges, elixir paid, second activation refused):
+
+```bash
+.venv/bin/python tools/native_analysis/ability_action_probe.py \
+    --output /tmp/opencode/ability_action_probe.json
+```
+
+The recovery of the 16.635 Champion vtables and ability-data field shift is in
+FINDINGS §3.22. `champion-diag` is also available directly on the control
+socket for a read-only controller dump.
 
 ## Ghidra scripts
 

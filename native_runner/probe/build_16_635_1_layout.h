@@ -159,6 +159,19 @@ inline constexpr bool kEglSwapBuffersGotResolved = true;
 inline constexpr std::uintptr_t kGameStateContextRootSlotOffset = 0x01b61d00;
 inline constexpr bool kGameStateContextRootSlotResolved = true;
 
+// Champion ability anchors confirmed on the live 16.635.1 build
+// with the probe's champion-diag controller dump.
+inline constexpr std::uintptr_t kChampionActionDataVtableOffset = 0x01a3fd60;
+inline constexpr bool kChampionActionDataVtableResolved = true;
+inline constexpr std::uintptr_t kChampionControllerVtableOffset = 0x01a51c30;
+inline constexpr bool kChampionControllerVtableResolved = true;
+inline constexpr std::uintptr_t kCharacterAbilityDataVtableOffset = 0x01a348e0;
+inline constexpr bool kCharacterAbilityDataVtableResolved = true;
+
+// Champion ability-data field offsets (LogicCharacterAbilityData).
+inline constexpr std::size_t kCharacterAbilityConfiguredCooldownOffset = 0x00b8;  // was 0x00b4
+inline constexpr std::size_t kCharacterAbilityMaxChargesOffset = 0x00b0;  // was 0x00ac
+
 // Layout fields confirmed by the 16.635.1 disassembly.
 inline constexpr std::size_t kReplayBattleControllerStateOffset = 0x30;  // was 0x30
 inline constexpr std::size_t kReplayBattleControllerAccumulatorOffset = 0x44;  // was 0x44

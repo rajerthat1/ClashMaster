@@ -255,17 +255,37 @@ constexpr const char *kMirrorDeployCommandFormat =
         : "{\"ct\":86,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
           "\"px\":%d,\"py\":%d,\"sid\":-1,\"sel\":{\"os\":%u,\"pd\":%u}}}%n";
 
-// Vtable anchors are still 15.535.13 values.  The probe only compares them
-// against an object's vtable, so an unmatched build simply withholds the
-// envelope instead of calling through a stale pointer.
+// The rich-telemetry vtable anchors are still 15.535.13 values.  The probe
+// only compares them against an object's vtable, so an unmatched build simply
+// withholds the envelope instead of calling through a stale pointer.  The
+// Champion controller trio used by ability activation is build-selectable
+// (see below).
 constexpr std::uintptr_t kBuffAssetVtableOffset = 0x01882500;
 constexpr std::uintptr_t kProjectileVtableOffset = 0x0189cc28;
 constexpr std::uintptr_t kCharacterVtableOffset = 0x0189c4e8;
 constexpr std::size_t kProjectileDragStageOffset = 0x189;
 constexpr std::size_t kProjectileDragBackSpeedOffset = 0x1b0;
+#if defined(CR_PROBE_TARGET_16_635_1)
+// 16.635.1 Champion anchors. The controller is an EXACT relocation match;
+// the two data vtables and the LogicCharacterAbilityData field shift were
+// confirmed from live controller objects with the ``champion-diag`` command
+// (docs/native/16.635.1/champion-layout.json). The generated header carries
+// them so the probe never falls back to a 15.535 address.
+constexpr std::uintptr_t kChampionControllerVtableOffset = probe_target::kChampionControllerVtableOffset;
+constexpr std::uintptr_t kChampionActionDataVtableOffset = probe_target::kChampionActionDataVtableOffset;
+constexpr std::uintptr_t kCharacterAbilityDataVtableOffset =
+    probe_target::kCharacterAbilityDataVtableOffset;
+constexpr std::size_t kCharacterAbilityMaxChargesOffset =
+    probe_target::kCharacterAbilityMaxChargesOffset;
+constexpr std::size_t kCharacterAbilityConfiguredCooldownOffset =
+    probe_target::kCharacterAbilityConfiguredCooldownOffset;
+#else
 constexpr std::uintptr_t kChampionControllerVtableOffset = 0x0189e4e8;
 constexpr std::uintptr_t kChampionActionDataVtableOffset = 0x0188cb28;
 constexpr std::uintptr_t kCharacterAbilityDataVtableOffset = 0x018823f0;
+constexpr std::size_t kCharacterAbilityMaxChargesOffset = 0x00ac;
+constexpr std::size_t kCharacterAbilityConfiguredCooldownOffset = 0x00b4;
+#endif
 constexpr std::size_t kCharacterAbilityExtraSpawnBaseOffset = 0x104;
 constexpr std::size_t kCharacterAbilityExtraSpawnLimitOffset = 0x108;
 constexpr std::size_t kCharacterExtraSpawnAccumulatorOffset = 0x1f0;
@@ -4101,8 +4121,9 @@ bool read_champion_controller(const void *owner_root, std::int32_t owner, std::i
   result->configured_cooldown_ms = read_object_field<std::int32_t>(controller, 0x7c);
   result->remaining_charges_raw = read_object_field<std::int32_t>(controller, 0x80);
   result->button_state = read_object_field<std::int32_t>(controller, 0x98);
-  result->max_charges = read_object_field<std::int32_t>(ability_data, 0xac);
-  const std::int32_t configured_from_data = read_object_field<std::int32_t>(ability_data, 0xb4);
+  result->max_charges = read_object_field<std::int32_t>(ability_data, kCharacterAbilityMaxChargesOffset);
+  const std::int32_t configured_from_data =
+      read_object_field<std::int32_t>(ability_data, kCharacterAbilityConfiguredCooldownOffset);
   if (result->configured_cooldown_ms < 0 || result->remaining_cooldown_ms < 0 ||
       result->remaining_cooldown_ms > result->configured_cooldown_ms ||
       configured_from_data != result->configured_cooldown_ms ||
@@ -4197,8 +4218,10 @@ bool champion_controller_is_exact_absent(const void *owner_root, const void *con
   const std::int32_t remaining_cooldown = read_object_field<std::int32_t>(controller, 0x78);
   const std::int32_t configured_cooldown = read_object_field<std::int32_t>(controller, 0x7c);
   const std::int32_t remaining_charges = read_object_field<std::int32_t>(controller, 0x80);
-  const std::int32_t max_charges = read_object_field<std::int32_t>(ability_data, 0xac);
-  const std::int32_t configured_from_data = read_object_field<std::int32_t>(ability_data, 0xb4);
+  const std::int32_t max_charges =
+      read_object_field<std::int32_t>(ability_data, kCharacterAbilityMaxChargesOffset);
+  const std::int32_t configured_from_data =
+      read_object_field<std::int32_t>(ability_data, kCharacterAbilityConfiguredCooldownOffset);
   // An untouched absent controller uses -1 as its charge sentinel. After a
   // carrier has consumed its ability and left the arena, the stock runtime
   // preserves the last bounded charge count instead. Both are exact absent
@@ -6677,6 +6700,206 @@ bool handle_replay_schedule_command(int socket_fd, const char *command) {
   return true;
 }
 
+struct DiagText {
+  char *data;
+  std::size_t size;
+  std::size_t used;
+  bool ok;
+};
+
+void diag_add(DiagText &text, const char *format, ...) {
+  if (!text.ok || text.used >= text.size) {
+    text.ok = false;
+    return;
+  }
+  va_list arguments;
+  va_start(arguments, format);
+  const int written = std::vsnprintf(text.data + text.used, text.size - text.used, format, arguments);
+  va_end(arguments);
+  if (written < 0 || static_cast<std::size_t>(written) >= text.size - text.used) {
+    text.ok = false;
+    return;
+  }
+  text.used += static_cast<std::size_t>(written);
+}
+
+// Diagnostic only: dump the live Champion controller objects exactly as the
+// engine lays them out.  This is how the 16.635 vtable identities and the
+// owner controller-slot offset are recovered when the vtable diff is
+// ambiguous, instead of trusting a LIKELY sibling match.
+bool build_champion_diag_json(void *manager, char *out, std::size_t size) {
+  if (manager == nullptr || out == nullptr || size == 0 || g_libg_base == 0) {
+    return false;
+  }
+  void *world = read_object_field<void *>(manager, 0xa8);
+  if (world == nullptr) {
+    return false;
+  }
+  DiagText text{out, size, 0, true};
+  diag_add(text, "{\"ok\":true,\"generation\":%llu,\"tick\":%d,\"players\":[",
+           static_cast<unsigned long long>(g_control_generation),
+           g_runner_mode.load(std::memory_order_relaxed) == static_cast<std::int32_t>(RunnerMode::NativeRender)
+               ? g_native_render_tick.load(std::memory_order_relaxed)
+               : g_last_controlled_tick);
+  for (std::int32_t owner = 0; text.ok && owner < kPlayerCount; ++owner) {
+    PlayerStateView player;
+    if (!read_player_state(world, owner, &player)) {
+      diag_add(text, "%s{\"owner\":%d,\"ownerRoot\":null}", owner == 0 ? "" : ",", owner);
+      continue;
+    }
+    const std::uintptr_t owner_root = reinterpret_cast<std::uintptr_t>(player.player);
+    diag_add(text, "%s{\"owner\":%d,\"ownerRoot\":\"0x%llx\",\"objectManager\":\"0x%llx\",\"controllerSlots\":[",
+             owner == 0 ? "" : ",", owner, static_cast<unsigned long long>(owner_root),
+             static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(
+                 read_object_field<void *>(player.player, 0x10))));
+    for (std::int32_t slot = 0; slot < 2; ++slot) {
+      void *controller = read_object_field<void *>(player.player, 0x3a0 + static_cast<std::size_t>(slot) * 8);
+      diag_add(text, "%s{\"slot\":%d,\"pointer\":", slot == 0 ? "" : ",", slot + 1);
+      if (controller == nullptr) {
+        diag_add(text, "null}");
+        continue;
+      }
+      const std::uintptr_t controller_address = reinterpret_cast<std::uintptr_t>(controller);
+      const std::uintptr_t controller_vtable =
+          read_object_field<std::uintptr_t>(controller, 0x00);
+      const std::uintptr_t action_data = read_object_field<std::uintptr_t>(controller, 0x18);
+      const std::uintptr_t selected_character = read_object_field<std::uintptr_t>(controller, 0x90);
+      const std::uintptr_t champions_vector = read_object_field<std::uintptr_t>(controller, 0xa0);
+      char action_name[129] = {};
+      std::size_t action_name_size = 0;
+      char ability_name[129] = {};
+      std::size_t ability_name_size = 0;
+      const auto name_of = [](std::uintptr_t address, char *name, std::size_t name_size,
+                              std::size_t *name_length) {
+        return address != 0 && process_range_is_readable(reinterpret_cast<const void *>(address), 0x30) &&
+               read_bounded_libg_string_utf8(
+                   reinterpret_cast<const std::uint8_t *>(address) + 0x28, name, name_size, name_length);
+      };
+      name_of(action_data, action_name, sizeof(action_name), &action_name_size);
+      const std::uintptr_t ability_data =
+          selected_character != 0 && process_range_is_readable(reinterpret_cast<const void *>(selected_character), 0x718)
+              ? read_object_field<std::uintptr_t>(reinterpret_cast<const void *>(selected_character), 0x710)
+              : 0;
+      name_of(ability_data, ability_name, sizeof(ability_name), &ability_name_size);
+      diag_add(text,
+               "\"0x%llx\",\"vtable\":\"0x%llx\",\"vtableOffset\":\"0x%llx\","
+               "\"ownerBacklinkMatches\":%s,\"actionData\":\"0x%llx\",\"actionVtable\":\"0x%llx\","
+               "\"actionName\":\"%s\",\"actionGlobalId\":%d,"
+               "\"selectedCharacter\":\"0x%llx\",\"selectedVtable\":\"0x%llx\","
+               "\"selectedGlobalId\":%d,\"abilityData\":\"0x%llx\",\"abilityVtable\":\"0x%llx\","
+               "\"abilityName\":\"%s\",\"cooldown\":%d,\"configuredCooldown\":%d,"
+               "\"charges\":%d,\"buttonState\":%d,\"maxCharges\":%d,"
+               "\"championsVector\":\"0x%llx\",",
+               static_cast<unsigned long long>(controller_address),
+               static_cast<unsigned long long>(controller_vtable),
+               static_cast<unsigned long long>(controller_vtable - g_libg_base),
+               read_object_field<void *>(controller, 0x20) == player.player ? "true" : "false",
+               static_cast<unsigned long long>(action_data),
+               static_cast<unsigned long long>(
+                   action_data != 0 && process_range_is_readable(reinterpret_cast<const void *>(action_data), 8)
+                       ? read_object_field<std::uintptr_t>(reinterpret_cast<const void *>(action_data), 0x00)
+                       : 0),
+               action_name,
+               action_data != 0 && process_range_is_readable(reinterpret_cast<const void *>(action_data), 0x44)
+                   ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(action_data), 0x40)
+                   : 0,
+               static_cast<unsigned long long>(selected_character),
+               static_cast<unsigned long long>(selected_character != 0 ? read_object_field<std::uintptr_t>(
+                                                                             reinterpret_cast<const void *>(selected_character), 0x00)
+                                                                       : 0),
+               selected_character != 0
+                   ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(selected_character), 0x40)
+                   : 0,
+               static_cast<unsigned long long>(ability_data),
+               static_cast<unsigned long long>(
+                   ability_data != 0 && process_range_is_readable(reinterpret_cast<const void *>(ability_data), 8)
+                       ? read_object_field<std::uintptr_t>(reinterpret_cast<const void *>(ability_data), 0x00)
+                       : 0),
+               ability_name,
+               read_object_field<std::int32_t>(controller, 0x78),
+               read_object_field<std::int32_t>(controller, 0x7c),
+               read_object_field<std::int32_t>(controller, 0x80),
+               read_object_field<std::int32_t>(controller, 0x98),
+               ability_data != 0 && process_range_is_readable(reinterpret_cast<const void *>(ability_data), 0xb8)
+                   ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(ability_data),
+                                                     kCharacterAbilityMaxChargesOffset)
+                   : 0,
+               static_cast<unsigned long long>(champions_vector));
+      diag_add(text, "\"abilityWords\":[");
+      const bool ability_words_readable =
+          ability_data != 0 && process_range_is_readable(reinterpret_cast<const void *>(ability_data), 0xc0);
+      for (std::size_t word = 0; word <= 0xc0; word += 4) {
+        diag_add(text, "%s%d", word == 0 ? "" : ",",
+                 ability_words_readable
+                     ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(ability_data), word)
+                     : 0);
+      }
+      diag_add(text, "],\"actionWords\":[");
+      const bool action_words_readable =
+          action_data != 0 && process_range_is_readable(reinterpret_cast<const void *>(action_data), 0x60);
+      for (std::size_t word = 0; word <= 0x60; word += 4) {
+        diag_add(text, "%s%d", word == 0 ? "" : ",",
+                 action_words_readable
+                     ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(action_data), word)
+                     : 0);
+      }
+      diag_add(text, "],");
+      NativeVectorView champions;
+      if (champions_vector != 0 && read_native_vector(reinterpret_cast<const void *>(champions_vector), 0x00,
+                                                      kMaxObservedObjects, &champions)) {
+        diag_add(text, "\"championCount\":%d,\"champions\":[", champions.count);
+        auto **members = static_cast<void **>(champions.data);
+        for (std::int32_t index = 0; text.ok && index < champions.count; ++index) {
+          const std::uintptr_t member = reinterpret_cast<std::uintptr_t>(members[index]);
+          diag_add(text,
+                   "%s{\"pointer\":\"0x%llx\",\"vtable\":\"0x%llx\",\"cardId\":%d,"
+                   "\"owner\":%d,\"selectedMatch\":%s}",
+                   index == 0 ? "" : ",", static_cast<unsigned long long>(member),
+                   static_cast<unsigned long long>(
+                       member != 0 && process_range_is_readable(reinterpret_cast<const void *>(member), 8)
+                           ? read_object_field<std::uintptr_t>(reinterpret_cast<const void *>(member), 0x00)
+                           : 0),
+                   member != 0 && process_range_is_readable(reinterpret_cast<const void *>(member), 0xb0)
+                       ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(member), 0xac)
+                       : 0,
+                   member != 0 && process_range_is_readable(reinterpret_cast<const void *>(member), 0x80)
+                       ? read_object_field<std::int32_t>(reinterpret_cast<const void *>(member), 0x78)
+                       : -1,
+                   member != 0 && process_range_is_readable(reinterpret_cast<const void *>(member), 0x50) &&
+                           read_object_field<void *>(reinterpret_cast<const void *>(member), 0x48) ==
+                               reinterpret_cast<void *>(selected_character)
+                       ? "true"
+                       : "false");
+        }
+        diag_add(text, "]}");
+      } else {
+        diag_add(text, "\"championCount\":null,\"champions\":[]}");
+      }
+    }
+    // Scan the owner object for a pointer whose vtable is the 16.635
+    // ChampionController candidate.  This recovers the controller slot offset
+    // if it moved from 0x3a0.
+    const std::uintptr_t candidate_vtable = g_libg_base + kChampionControllerVtableOffset;
+    diag_add(text, "],\"controllerScan\":[");
+    bool first_scan = true;
+    for (std::size_t offset = 0; offset < 0x800; offset += 8) {
+      const std::uintptr_t candidate =
+          read_object_field<std::uintptr_t>(reinterpret_cast<const void *>(owner_root + offset), 0);
+      if (candidate == 0 || !process_range_is_readable(reinterpret_cast<const void *>(candidate), 8)) {
+        continue;
+      }
+      if (read_object_field<std::uintptr_t>(reinterpret_cast<const void *>(candidate), 0) != candidate_vtable) {
+        continue;
+      }
+      diag_add(text, "%s\"0x%zx\"", first_scan ? "" : ",", offset);
+      first_scan = false;
+    }
+    diag_add(text, "]}");
+  }
+  diag_add(text, "]}");
+  return text.ok;
+}
+
 #include "resident_multimatch.inc"
 #include "engine_instance.inc"
 
@@ -7064,6 +7287,21 @@ void handle_control_command(int socket_fd, const char *command) {
                     "{\"ok\":false,\"error\":\"failed to encode observation\"}");
     }
     send_control_response(socket_fd, observation_response.get());
+    return;
+  }
+
+  if (std::strcmp(command, "champion-diag") == 0) {
+    pthread_mutex_lock(&g_control_mutex);
+    void *const diag_manager =
+        g_runner_mode.load(std::memory_order_acquire) == static_cast<std::int32_t>(RunnerMode::NativeRender)
+            ? g_native_render_manager.load(std::memory_order_acquire)
+            : g_controlled_manager;
+    const bool succeeded = build_champion_diag_json(diag_manager, response, sizeof(response));
+    pthread_mutex_unlock(&g_control_mutex);
+    if (!succeeded) {
+      std::snprintf(response, sizeof(response), "{\"ok\":false,\"error\":\"champion diagnostic unavailable\"}");
+    }
+    send_control_response(socket_fd, response);
     return;
   }
 
@@ -7641,7 +7879,8 @@ void handle_control_command(int socket_fd, const char *command) {
       socket_fd,
       "commands: configure REPLAY_JSON, configure-native REPLAY_JSON, "
       "status, attest, touch status, "
-      "render on|off|status, observe, observe-rich, observe-atomic, session-v1, reset, step N, advance-native N, play DELAY ADVANCE "
+      "render on|off|status, observe, observe-rich, observe-atomic, champion-diag, session-v1, reset, step N, "
+      "advance-native N, play DELAY ADVANCE "
       "COUNT [OWNER HAND_INDEX X Y]..., transition DELAY ADVANCE COUNT [PLAYER CARD PD X Y]..., deploy PLAYER CARD PD "
       "X Y [DELAY], activate-ability OWNER OBJECT_INDEX SECONDARY_INDEX [DELAY], replay-schedule-card OWNER CARD_ID X "
       "Y EXECUTE_TICK, replay-schedule-ability OWNER NAME_HINTS EXECUTE_TICK, replay-schedule-status SEQUENCE, "

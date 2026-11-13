@@ -182,7 +182,9 @@ def test_probe_resolves_private_cgid_from_one_ready_live_champion() -> None:
     assert 'return "ability-ambiguous"' in source
     assert "could not resolve one ready native champion ability source" in source
     assert "read_object_field<std::int32_t>(champion, 0x08)" in source
-    assert '"{\\"ct\\":2,\\"c\\":{\\"t\\":%d,\\"t2\\":%d' in source
+    assert '"{\\"ct\\":%d,\\"c\\":{\\"t\\":%d,\\"t2\\":%d' in source
+    assert "kAbilityCommandType, command_tick" in source
+    assert "constexpr int kAbilityCommandType = kProbeTargetIs16_635_1 ? 189 : 2;" in source
     assert "command_tick + 1" in source
     assert '"activate-ability "' in source
     assert '"activate-ability-at "' not in source

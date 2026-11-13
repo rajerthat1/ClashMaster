@@ -42,6 +42,7 @@ def test_native_dual_ready_abilities_keep_the_exact_selected_source(tmp_path) ->
 #include <string>
 
 constexpr int kPlayerCount = 2;
+constexpr int kAbilityCommandType = 2;
 constexpr int kNativeObjectIdEntityKeyTag = -2;
 constexpr int kUniqueReadyAbilityEntityKeyTag = -3;
 struct PlayerStateView {
