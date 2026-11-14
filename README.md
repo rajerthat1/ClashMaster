@@ -1,22 +1,23 @@
 # ClashMaster
 
-Clash Royale AI research workspace targeting **Ultimate Champion on the main ladder** with
-**X-Bow 3.0**. Hog 2.6 is kept as an opponent and baseline, not a deployment stage.
+Clash Royale AI research workspace targeting **top ladder on Null's Royale
+16.635.1** (`nullsroyale.rel.free`) with **any opponent/deck**, not a mirror
+matchup.
 
-**Model:** **X-Bow 3.0 specialist first** — the deck is exactly FirstLight-Zero's, so its 1.17M
-CNN + LSTM recipe and v1450 checkpoint are the starting point. Training is **3a mirror bootstrap →
-3b matchup pool** (General/IL/Hog/scripted/live). The FirstLight_CR V4 / Everlight 16.8M models are
-generalists, opponents, and fallbacks.
+**Model:** **FirstLight V4 General** (12.68M parameters, trained across decks) is
+the baseline and PPO initialization. IL, Active IL and the Hog 2.6 specialists
+are opponents/baselines. X-Bow remains a deck option, not the whole plan.
 
-**Current phase:** **cr-native Linux runtime**. The original x86_64 `libg.so` runs in a plain
-Linux process (Android 31 Bionic userland, no AVD/QEMU/KVM) through
-[`cr-native-linux-bionic`](https://github.com/IMAX9D/cr-native-linux-bionic), with
-[`cr-native-sandbox`](https://github.com/IMAX9D/cr-native-sandbox) for `NativeRoyaleEnv`, self-play
-and PPO. Target version **15.535.29**. The A51 / 16.635.1 probe is the parity and live reference.
-**crforge is the ultrafast simulator / CI oracle**, not the critical path.
+**Current phase:** **Null's Royale 16.635.1 runtime**. The 16.635.1 offline
+APK/probe runs on the A51; the V4 stack trains and evaluates against it. The
+original x86_64 `libg.so` 15.535.29 runtime
+([`cr-native-linux-bionic`](https://github.com/IMAX9D/cr-native-linux-bionic) +
+[`cr-native-sandbox`](https://github.com/IMAX9D/cr-native-sandbox)) remains a
+**proxy lab** for throughput, reward/league experiments and parity — it cannot
+connect to Null's ladder.
 
-**Next milestone:** verify the runtime and 4 workers, measure engine-only throughput, then train the
-X-Bow specialist in self-play.
+**Next milestone:** attach the A51, prove the 16.635.1 engine/`observe_rich`,
+and run the General checkpoint against the included baselines.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
@@ -30,11 +31,13 @@ below. Project-specific additions:
 - **[HANDOFF.md](HANDOFF.md)** — current state, measured facts, next actions.
 - **Sync upstream:** `./scripts/sync-upstream.sh`, or manually
   `git fetch upstream && git merge upstream/main && git push origin main`.
-- **Replay dataset:** `IL_Replay` is **retired as a training corpus** in this fork. The X-Bow
-  specialist is trained by self-play, with live captures for behavior cloning and validation. The
-  IL/General/Everlight checkpoints are kept as opponents, baselines, and fallbacks.
-- **Versions:** training runs on the frozen **15.535.29 x86_64** runtime; **16.635.1** is the
-  live/parity reference on the A51. Do not mix versions, bundles or `libg` hashes in one artifact.
+- **Replay dataset:** `IL_Replay` (`datasets/royaleapi/`) is the **generalist
+  pretraining/fine-tune corpus**: 252,238 replays and 17,836,160 actions. The
+  General checkpoint was trained from it. Self-play on the Null's 16.635.1
+  engine supplies target-specific data.
+- **Versions:** **16.635.1** is the primary/deployment target; **15.535.29
+  x86_64** is a proxy lab and parity reference. Do not mix versions, bundles or
+  `libg` hashes in one artifact.
   The laptop handles bring-up/demos; use the student cloud credits for the larger x86 host and PPO.
 - **Remotes:** `origin` = this repo, `upstream` = `Jaasssoooonnnnn/FirstLight_CR`,
   `fork` = `rajerthat1/FirstLight_CR` (pristine mirror for upstream PRs).
@@ -90,7 +93,7 @@ Choose **General** for different decks or a **Hog 2.6 specialist** for Hog Cycle
 
 **122 supported cards · 5 included checkpoints · self-play + live captures**
 
-See [compatibility data](native_runner/data/competitive/README.md) for the cards and forms supported by each version. The upstream replay dataset is **retired as a training corpus** in this fork; the checkpoints are kept as opponents, baselines, and fallbacks.
+See [compatibility data](native_runner/data/competitive/README.md) for the cards and forms supported by each version. In this fork the V4 General checkpoint is the primary baseline and PPO initialization; IL_Replay is the generalist corpus, and the other checkpoints are opponents/baselines.
 
 ## Training flow
 

@@ -2,10 +2,11 @@
 
 [English home](../README.md) · [Installation](getting_started.md) · [Training history](training_history.md)
 
-> **Fork note (2026-11-12):** this fork trains the X-Bow specialist by **self-play on the native
-> engine**. `IL_Replay` is **retired as a training corpus**; the IL/General/Everlight checkpoints
-> are kept as opponents, baselines, and fallbacks. The upstream IL instructions below remain for
-> reference and for optional representation experiments. See [`ROADMAP.md`](../ROADMAP.md).
+> **Fork note (2026-11-14):** this fork targets **Null's Royale 16.635.1**. The
+> **V4 General** checkpoint is the baseline and PPO initialization; `IL_Replay`
+> is the generalist pretraining/fine-tune corpus. IL, Active IL and the Hog 2.6
+> specialists are opponents/baselines. Self-play on the 16.635.1 engine supplies
+> target-specific data. See [`ROADMAP.md`](../ROADMAP.md).
 
 Run commands from the repository root with the Python dependencies installed. Windows supports cache building, inference, evaluation, and the console. The IL/PPO launchers target Linux with CUDA and NCCL.
 

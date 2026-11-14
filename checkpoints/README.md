@@ -2,9 +2,9 @@
 
 [English home](../README.md) · [Training / 训练](../docs/training.md) · [Training history / 训练历程](../docs/training_history.md)
 
-> **Fork note (2026-11-12):** these checkpoints are kept as **opponents, baselines, and fallbacks**.
-> The primary model for this fork is an **X-Bow 3.0 specialist** trained by native-engine self-play
-> (FirstLight-Zero recipe). See [`ROADMAP.md`](../ROADMAP.md).
+> **Fork note (2026-11-14):** the primary target is **Null's Royale 16.635.1**.
+> **General** is the main baseline and PPO initialization; IL, Active IL and the
+> Hog 2.6 specialists are opponents/baselines. See [`ROADMAP.md`](../ROADMAP.md).
 
 FirstLight CR includes a **strong general-purpose agent** and a **Hall of Fame–level 2.6 Hog Cycle specialist**, alongside IL checkpoints. Select a model in the match interface, or pass its path to the evaluator or policy service.
 

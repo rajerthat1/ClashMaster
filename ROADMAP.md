@@ -1,39 +1,48 @@
-# Roadmap: X-Bow 3.0 on the CR Native Linux runtime
+# Roadmap: Null's Royale 16.635.1 ladder
 
-Status: **active — single track**, revised 2026-11-13
+Status: **active — primary target revised 2026-11-14**
 Owner: Raj
-Engine: **cr-native-linux-bionic** — original x86_64 `libg.so` in a plain Linux
-process (Android 31 Bionic userland, no AVD, no QEMU, no KVM)
-Training stack: **cr-native-sandbox** — `NativeRoyaleEnv`, self-play, PPO
-Target: **15.535.29 / 150535029, x86_64**
-End goal: **Ultimate Champion with X-Bow 3.0**
+Deployment target: **Null's Royale 16.635.1** (`nullsroyale.rel.free`, ARM64)
+Primary model: **FirstLight V4 General** (12,684,339 params)
+Training stack: **`native_runner/training/v4`** (IL + PPO)
+Engine: **16.635.1 offline APK + probe on the A51**; cloud ARM64/AVD is a scale option
+Proxy lab: **cr-native 15.535.29 x86_64** (fast, not deployable to Null's)
+End goal: **top ladder on Null's, against any opponent/deck**
 
-**Single source of truth.** This file replaced the multi-track plan. crforge is
-the ultrafast simulator/CI reference in [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md).
-Runtime details and exact install commands live in
-[`docs/native/LINUX_BIONIC_RUNTIME.md`](docs/native/LINUX_BIONIC_RUNTIME.md).
+**Single source of truth.** [`HANDOFF.md`](HANDOFF.md) is the next-session starting
+point. [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the simulator/CI reference.
+[`docs/native/16.635.1/FINDINGS.md`](docs/native/16.635.1/FINDINGS.md) is the
+probe-port evidence log.
 
 ---
 
-## 0. Decision
+## 0. Decision — why the target changed
 
-**One path: cr-native on x86_64 Linux.**
+The previous plan selected `cr-native` because it runs the original x86_64
+`libg.so` on plain Linux with no AVD/MuMu. That was the right call for **engine
+throughput**, but it optimized the wrong variable: **Null's runs 16.635.1
+ARM64**, and the 15.535.29 x86 engine cannot connect to Null's ladder.
 
-- `cr-native-linux-bionic` is the engine host: Android 31 userland + the
-  original x86_64 `libg.so`, up to 48 isolated workers, TCP `39031 + slot`.
-- `cr-native-sandbox` is the training stack: `NativeRoyaleEnv`, card catalog,
-  self-play, PPO, evaluation.
-- No Android emulator, AVD, MuMu, KVM, or custom loader is on the critical path.
-- **Retired from the plan:** Linux AVD, phone/engine-cluster throughput work,
-  the custom ARM64 `libg` loader, and the 16.635.1 probe as the trainer.
-- The A51 / 16.635.1 probe stays as **parity and live-play reference only**.
-- **crforge** stays as an ultrafast simulator and CI/differential oracle; it is
-  not the primary trainer.
+The repository already contains everything needed for the direct path:
 
-**Why this one:** it is the build we were about to write (Android userland +
-original engine on Linux) and it already exists, is version-pinned, has a
-worker lifecycle, and ships a native training API. It removes weeks of loader and
-Bionic-shim work.
+- the **FirstLight V4 General** checkpoint (12.68M, trained across decks);
+- the **IL_Replay** corpus locally (252,238 replays / 17,836,160 actions);
+- the **16.635.1 offline APK, cluster APK and probe**;
+- the A51 cluster/deploy tools and the 16.635.1 static-analysis notebook;
+- the upstream **V4 IL/PPO stack**, deck-pool builder, league and evaluator.
+
+So the primary path is the **actual deployment target**: 16.635.1 on the A51,
+with the V4 General model. `cr-native` 15.535.29 stays as a fast proxy lab for
+throughput, reward/league experiments and parity — not as the source of
+deployable weights.
+
+**R0 is retired.** It is a third observation contract with no trained
+checkpoint, no local training corpus, no 16.x adapter, and no path to Null's.
+The work is archived, not continued.
+
+**What would reverse this:** if the 16.x probe cannot reach usable throughput
+after N0–N2, revisit the proxy track with a V4-observation adapter on the x86
+engine. Do **not** revive R0.
 
 ---
 
@@ -41,487 +50,288 @@ Bionic-shim work.
 
 | Milestone | Definition | Gate |
 | --- | --- | --- |
-| **M0 Runtime** | Dedicated VM; bundle verified; `doctor` hard-pass; 4 workers; `smoke` passes | 1 worker completes a match; 1 h with no crash |
-| **M1 API + deck** | `NativeRoyaleEnv` reset/step/observe/act; X-Bow deck configured; 20 matches | 0 errors; deterministic reset; observations sane |
-| **M2 Throughput** | Engine-only and end-to-end rates measured from 4 → 8 → 12 workers | ≥5 matches/s engine-only first; then ≥10 |
-| **M3 Training** | Self-play/PPO run on the X-Bow deck; checkpoints promote | Learned bot beats scripted X-Bow over 200 games |
-| **M4 Parity + live** | 15.535.29 vs 16.635.93 parity report; A51 live canary | 20 clean live games, 0 illegal taps |
-| **M5 Scale** | 24 h unattended soak at target throughput | No crash, no leak, restart recovery |
+| **N0 Probe** | A51 attached; 16.635.1 cluster APK/probe starts; `coldReady`; `observe_rich` complete; 2 engines | 10 clean matches, 0 crashes, stable control ports |
+| **N1 General baseline** | General vs IL and vs scripted X-Bow on 16.635.1 | 0 rejected actions; General ≥ IL; throughput recorded |
+| **N2 Port complete** | Remaining core anchors and rich telemetry resolved; cold configure + live commands work | No `kUnavailableOffset`; 100-match soak |
+| **N3 Scale** | A51 engine cluster measured; cloud ARM64/AVD option evaluated | Enough matches/hour to feed an update budget |
+| **N4 Fine-tune** | PPO/IL from General with deck pool + league | Beats frozen General/IL over N games; no degenerate loops |
+| **N5 Ladder** | Policy service + touch injection; live canary on Null's | 20 clean live games; win-rate trend; no rule violations |
 
-**Throughput target:** 10 matches/s **engine-only** is the first real target.
-The published sandbox loop with observations + a 4.8M model, 4 matches/process,
-measured **0.84–0.93 matches/s** on 12–24 processes (25-core host). Treat the
-full training loop as a separate optimization problem, not a given.
+Top ladder is the long-term outcome, not a single gate. The first meaningful
+result is a General-based bot that plays Null's cleanly and beats the included
+baselines.
 
 ---
 
 ## 2. Architecture
 
 ```
-cr-native-linux-bionic
-  Android 31 userland: linker64 -> dalvikvm64 -Xint -> binderless JniHost
-  -> libnative_host_bridge.so -> original x86_64 libg.so (15.535.29)
-  -> 48 workers, JSON-line TCP 39031 + slot
-                    │
-                    ▼
-cr-native-sandbox
-  NativeRoyaleEnv: reset / observe / act / step
-  card catalog + deck config + self-play + PPO + evaluation
-                    │
-                    ▼
-X-Bow 3.0 policy -> checkpoints -> evaluation -> live canary
+                A51 / 16.635.1 cluster APK + probe
+                 (nullsroyale.rel.free, ARM64)
+                              │ control port (26789+N)
+                              ▼
+              native_runner V4 environment (BattleEnvV1)
+                              │
+              ┌───────────────┴────────────────┐
+              ▼                                ▼
+     V4 General / PPO trainer          evaluation + league
+     (cloud GPU; 12.7M model)          (paired seeds, deck pool)
+              │
+              ▼
+      Null's ladder deployment
+      (policy service + touch injection)
 
-A51 / 16.635.1 probe  -> parity + live reference only
-crforge               -> ultrafast simulator / CI oracle (reference only)
+Proxy lab (not deployable): cr-native 15.535.29 x86 + sandbox 516k stack
 ```
 
----
-
-## 3. Runtime facts
-
-| Item | Value |
-| --- | --- |
-| Game version | **15.535.29** (`150535029`) |
-| ABI | **x86_64** |
-| `libg.so` | `fa6704b8…46ba` |
-| Workers | up to 48, ports `39031 + slot` |
-| Linux runtime bundle | 273,274,290 B, SHA-256 `e25f6484…30db0` |
-| Sandbox runtime bundle | 899,751,022 B, SHA-256 `8d829f21…bc28` |
-| Root / KVM | root **yes**, KVM **no** |
-
-The runtime is version-locked and fails closed on hash mismatch. It is not
-compatible with 16.635.1 or the 160402002 ARM64 build.
+The GPU trains the model; the **engine is the throughput bottleneck**. Do not
+size the cloud budget around the GPU alone.
 
 ---
 
-## 4. Phases
+## 3. Current assets
 
-### Phase 0 — Bring up the runtime (2–3 days)
-
-- [x] Run `tools/native_bringup/preflight_bundle.py` on the bundle; `doctor`
-      alone does not prove startability (see
-      [`docs/native/PHASE0_BRINGUP.md`](docs/native/PHASE0_BRINGUP.md)).
-- [x] Build the local overlay with `tools/native_bringup/build_local_overlay.py`
-      (the published bundle is not startable).
-- [x] Either a **dedicated Ubuntu 22.04/24.04 x86_64 VM/container** with root,
-      or the **rootless user-namespace path** on the daily driver
-      (`--system-root` + `tools/native_bringup/run_rootless_worker.sh`). Never
-      install as root on the daily driver.
-- [x] Download and SHA-256-verify the runtime bundle (273 MB) and the sandbox
-      runtime (900 MB).
-- [x] `verify-bundle` → `install --workers 4 --apply` → `doctor`
-      (`hard_pass=true`).
-- [x] 4 workers ping; one worker completed a full match (tick 6147).
-- [x] Measure worker throughput at 4 / 8 / 12 workers and record the knee.
-      *(Active-worker sweep, `decision_ticks=1` (RPC-bound decision loop),
-      2026-11-14: **4 → 300.5**, **8 → 486.1**, **12 → 474.0 ticks/s**
-      aggregate; p50 per worker 75.6 / 60.0 / 39.0. Each tier `complete`, no
-      `safety_reasons`, 100 % action acceptance, 0 unexpected rejections.
-      `recommended_workers: 8`; 12 is the oversubscription point. Engine-only
-      (100-tick no-policy steps) remains 8.3k ticks/s one worker / 32.6k at 4
-      from the earlier session — different workload, do not compare directly.)*
-- [x] 1 h soak; record CPU/RSS and the knee.
-      *(PASS 2026-11-14: `builds/native/phase0-20261114T000821Z/`, 60
-      samples, `ping_failures: 0`; RSS flat 324.6–327.3 MB per worker, CPU
-      mean 0.06 %, ping mean ≈0.85 ms. The first sweep attempt hit a
-      one-frame terminal-lag bug (fixed in the sandbox sweep script); the
-      4/8/12 rerun supplies the knee.)*
-
-**Gate:** `doctor` hard-pass, 4 workers healthy, one worker completes a match,
-1 h with no crash.
-
-### Phase 1 — Native API, X-Bow deck, determinism (3–5 days)
-
-- [x] Install `cr-native-sandbox`; connect `NativeRoyaleEnv` to the workers.
-- [x] Configure the X-Bow deck: X-Bow, Hero Knight, Evo Archers, Evo Tesla,
-      Skeletons, Electro Spirit, Fireball, The Log. Record forms and levels.
-- [x] Exercise `reset` / `observe` / `act` / `step`; 20 matches.
-- [x] Same seed + same actions → same observations (determinism).
-- [x] Validate observations against A51/16.635.1 goldens: card IDs, HP, elixir,
-      tick, hand, abilities. Note 15.535.29 vs 16.635.1 differences.
-      *(Level-11 parity: tower HP 4824/3052, deck ids/forms/costs and starting
-      elixir match. Unit max HP matches for X-Bow 1600, Knight/Hero Knight
-      1766, Archers/Evo Archers 304, Tesla/Evo Tesla 1182, Skeletons 81.
-      **Electro Spirit differs: A51 16.635.1 = 215 vs native 15.535.29 = 217**
-      (real balance delta; L10=195, L12=236 on A51). Hero Knight ability
-      matches exactly: state 2/charges 1 -> state 6/charges 0, 2 elixir, second
-      press refused. Evidence:
-      `builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json`.)*
-- [x] Decide the model: sandbox R0 elite-v3 (v1450 stays a benchmark).
-
-**Gate:** 20 matches, 0 errors, X-Bow deck plays legally, deterministic reset.
-
-### Phase 2 — Throughput (1 week)
-
-- [x] Scale 4 → 8 → 12 workers; record engine-only and end-to-end rates.
-      *(2026-11-14 active-worker sweep: 300.5 → 486.1 → 474.0 ticks/s
-      aggregate at `decision_ticks=1`; per-worker p50 75.6 → 60.0 → 39.0.
-      The knee is **8 workers** (`recommended_workers: 8`). The sweep's
-      ~4.9k–7.1k-tick matches (bootstrap replay) put this decision-loop rate
-      at ≈0.04 → 0.07 → 0.07 matches/s; it is RPC-bound, not engine-bound.)*
-- [x] Watch CPU, per-process RSS, and the knee where adding workers stops
-      helping. *(RSS flat in the soak; aggregate throughput falls at 12.)*
-- [x] If engine-only clears 10 matches/s, lock the host size.
-      *(2026-11-14 Phase 2 profile: fast-json + 100 ticks/RPC gives **36.4k
-      ticks/s at 8 workers** (≈9.6 matches/s) and **40.2k at 12** (≈10.6).
-      The 10 matches/s engine-only gate is met at 12 and is within 4 % at 8.
-      Lock **8 workers for training**; 12 adds only ≈10 % engine-only and no
-      RPC throughput.)*
-- [x] If the full observation/policy loop is below target, profile the
-      observation path before buying more hardware.
-      *(`tools/native_bringup/profile_native_loop.py`; results in
-      [`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md).
-      At one tick/RPC the loop is **0.074 matches/s at 8 workers**, attributed
-      48 % inference, 40 % transition wait, 10 % Python observation/mask. The
-      worker spends ~90 % of its transition on JSON, not the engine.
-      `fast-json` is 1.5–2.1× faster; a 4/8-tick decision interval lifts the
-      same loop to **0.277 / 0.522 matches/s** with the real collector.)*
-- [x] Compare with the published sandbox table (0.84–0.93 matches/s at 12–24
-      processes with 4 matches/process).
-      *(Published run used a 25-core host + RTX 5090. On this CPU-only laptop
-      the 8-worker loop is 0.074 matches/s at one tick/RPC and 0.522 at an
-      8-tick interval. The published number is therefore not a CPU baseline;
-      it also confirms inference, not the engine, is the remaining gap.)*
-
-**Gate:** ≥10 matches/s engine-only on the chosen host, or a written bottleneck
-plan with a measured next step. **Both are now satisfied:** 10.6 matches/s
-engine-only at 12 workers (9.6 at 8), and the plan in
-[`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md) with a
-measured next step (fast-json + decision interval 4–8; R0 inference needs a
-GPU).
-
-### Phase 3 — Training (2–3 weeks)
-
-**R0 track — prerequisites before the long run:**
-
-- [x] **Adopt the canonical upstream R0 tree** — vendored
-      `.resource/r0-elite-training/training_r0` (MIT, 36,854,175 params, schema
-      `825408c3…4d44`) into the sandbox and retired the old copy (36,853,407 /
-      `07c183d2…7426`). The synthetic smoke, the regenerated model smoke and
-      the CPU/synthetic batched-trainer equivalence check pass; tests are
-      updated. See [`docs/native/R0_CANONICAL_TREE.md`](docs/native/R0_CANONICAL_TREE.md).
-      Do not mix the two contracts.
-- [ ] **Verify the R0 checkpoint.** A usable file is either a training
-      checkpoint (`kind: r0-elite-training-checkpoint.v1`, with `model_config`,
-      `model`, `optimizer`, `step`) or a policy checkpoint with the elite-v3
-      `state_dict`; its `_contract` buffer must match the canonical upstream
-      `r0-elite-relation-spatial-lstm.v3` config, `CardVocabulary`, semantic
-      catalog and observation schema. Record the SHA-256, parameter count,
-      step/epoch, deck, level and build. No checkpoint exists locally or in the
-      upstream repo.
-- [ ] **Provision the GPU host.** CUDA-enabled torch (the current `.venv` is
-      CPU-only), 24 GB VRAM preferred, on the same host/low-latency network as
-      the 8 rootless workers. Record the forward-pass and PPO-update timings.
-- [ ] **Build the native R0 adapter.** `observe_train_v1` coherent frame →
-      candidates/history/semantics → `PublicFrame` → `PublicBatch`; run one
-      scripted X-Bow match end-to-end before PPO.
-- [ ] **R0 smoke:** one forward pass, one PPO update, checkpoint save/restore,
-      and one full match at decision interval 5 (`DECISION_TICKS = 5`).
-- [x] **Rootless port plumbing:** `--worker-ports` on train/evaluate/v2 with
-      `--skip-worker-start`; validated on two bwrap workers.
-
-**If data, the checkpoint or the GPU is not available,** run the CPU-feasible
-fallback (sandbox `RecurrentPolicyValueNet`, 8 workers, interval 4–8) to
-stabilise the league/evaluation machinery; do not start a long R0 run on CPU.
-
-- [ ] Self-play mirror on the X-Bow deck first; stabilize the deck plan.
-- [ ] Then an opponent pool: scripted archetypes, past snapshots, crforge
-      baselines, and any compatible checkpoints.
-- [ ] PFSP/league selection; reward = result ± tower-HP potential, elixir
-      overflow, own-King activation, illegal placement. No card-specific
-      X-Bow shaping.
-- [ ] Monitor entropy, KL, clip fraction, explained variance, game length,
-      actions/game.
-- [ ] Evaluate: 200 games vs scripted X-Bow, past snapshots, and the opponent
-      pool; fixed seeds.
-- [ ] Replay review for same-tile spam, passive openings, wasted spells, bad
-      Tesla/X-Bow defense.
-
-**Gate:** learned bot beats scripted X-Bow over 200 games; no degenerate loops;
-`illegal: 0`.
-
-### Phase 4 — Parity + live canary (1–2 weeks)
-
-- [ ] Write the 15.535.29 → 16.635.93 parity report: cards, forms, balance,
-      tower troops, heroes, abilities, content version.
-- [ ] Use the A51/16.635.1 probe for live parity frames and HP/elixir checks.
-- [ ] If the gap is acceptable, run 20 live games on Null's 16.635.1 with the
-      existing probe/touch path.
-- [ ] Human review: are the decisions X-Bow-competent?
-
-**Gate:** 20 clean live games, 0 illegal taps, reconnect works. No main-ladder
-run before this gate.
-
-### Phase 5 — Scale + soak (ongoing)
-
-- [ ] 24 h unattended run at target throughput.
-- [ ] Restart recovery, worker replacement, log/monitor, disk cleanup.
-- [ ] Freeze the reproducible artifact set: commit, bundle hashes, deck, levels,
-      seeds, checkpoint hashes.
-
----
-
-## 5. Training strategy
-
-- **Deck:** fixed X-Bow 3.0, exactly FirstLight-Zero's eight cards. Verify every
-  card/form is in the sandbox catalog and set slot flags explicitly.
-- **Data:** self-play first, then opponent-pool PPO. `IL_Replay` stays retired
-  as a training corpus; keep IL/General/Everlight checkpoints as opponents and
-  baselines.
-- **Model:** start with the sandbox's R0 elite-v3 stack. FirstLight-Zero v1450
-  is a benchmark/opponent; do not blindly port weights across versions.
-- **Levels:** v1450 was trained at level 11; the live account is maxed. Train
-  and evaluate at one declared level setting and record it in every artifact.
-- **Reward:** ±1 result, tower-HP potential, elixir-overflow penalty, own-King
-  activation penalty, illegal-placement penalty. No card-specific shaping.
-- **Evaluation:** per-archetype matrix, fixed seeds; never use mirror win rate
-  as ladder evidence.
-
-### 5.1 R0 is a model stack, not the engine
-
-| Thing | What it is |
-| --- | --- |
-| **Engine** | `cr-native-linux-bionic`: Android 31 userland + the original x86_64 `libg.so` **15.535.29**, driven over JSON-line TCP by `NativeRoyaleEnv` |
-| **R0 elite-v3** | The policy/value network in `.resource/cr-native-sandbox/training_r0/` (`R0Policy`), not an engine and not FirstLight |
-| **FirstLight-Zero** | A different 1.17M self-play model/stack (15.535.13), kept as a benchmark/opponent |
-| **cr-native-sandbox** | The Python training stack (`training/` recurrent PPO, `training_r0/` R0, `NativeRoyaleEnv`) |
-
-R0 elite-v3 details:
-
-- model schema `r0-elite-relation-spatial-lstm.v3`; observation schema
-  `r0-public-observation.elite-v3`;
-- default `ModelConfig`: width 384, 6 layers, 12 heads, hidden 768, spatial
-  channels 128 → **36,854,175 parameters** in the canonical upstream
-  `r0-elite-training` tree (adds `attack_locked` and cross-table `Base`
-  resolution vs the obsolete sandbox copy);
-- 20 Hz native clock, **decision every 5 ticks** (`DECISION_TICKS = 5`);
-- consumes `PublicBatch` built by `training_r0/observation.py`, which needs a
-  coherent `observe_train_v1` frame plus candidates, event history and public
-  semantics; it does **not** speak the engine protocol directly;
-- the model contract enforces an exact `_contract` hash over model config,
-  vocabulary, semantic catalog and observation schema. It **cannot** load
-  FirstLight weights or old 177M expert checkpoints.
-
-**Canonical R0 tree — adopted 2026-11-14:** `.resource/r0-elite-training`
-(IMAX9D, **MIT**) is the R0 source of truth and its `training_r0` +
-R0 `data_pipeline` pieces are vendored into the sandbox. The old sandbox copy
-(36,853,407 / `07c183d2…7426`) is retired. Adoption evidence:
-[`docs/native/R0_CANONICAL_TREE.md`](docs/native/R0_CANONICAL_TREE.md).
-
-Upstream facts:
-
-- **36,854,175 parameters**, observation schema `825408c3…4d44`; the retired
-  sandbox copy was 36,853,407 / `07c183d2…7426` and is not interchangeable.
-- **No weights and no data** in the repo. Training needs a
-  `compiled-prod-v17` corpus (~772 GB, or a 3 GiB batch for B=1024) from the
-  project's Baidu pan token, or data produced by `data_pipeline/r0_produce`
-  from a game-side capturer. Data/token/build questions: issue
-  <https://github.com/IMAX9D/r0-elite-training/issues/1> — assume no response.
-- It is **IL (`forced=expert_actions`)**, not PPO. A native R0 PPO/rollout
-  adapter is still ours to build.
-- Needs Python 3.12 + **torch 2.8+cu128** + CUDA 12.8 (12.5 GiB VRAM at
-  B=256, 23.7 GiB at B=512).
-
-**Integration status (2026-11-14):** upstream `training_r0` and the R0
-`data_pipeline` pieces are vendored into the sandbox; the synthetic smoke
-reports 36,854,175 / `825408c3…4d44`, `smoke_r0_model.py` and its checkpoint are
-regenerated, and the CPU/synthetic batched-equivalence check passes. The
-Linux-specific `data_pipeline` path/env handling was preserved (the upstream
-`--downloader-root` Windows default was not). Next: the data/checkpoint gate,
-a GPU host, and the native live adapter.
-
-**Rootless worker ports (2026-11-14):** `training/train.py`,
-`training/evaluate.py` and `selfplay_v2/train.py` now accept
-`--worker-ports 39031-39038` together with `--skip-worker-start`, so a run can
-address the bwrap workers directly without AVD topology. Validated with two
-workers: a 128-tick smoke iteration and a full paired-seed evaluation
-(`normal_terminal_rate: 1.0`, `passed_integrity: true`). The explicit port list
-is recorded in the run manifest as `worker_ports` / `worker_source: explicit`.
-
-`.resource/royaleapi-downloader` is an optional source-only RoyaleAPI ladder
-replay downloader (no LICENSE file; live 16.x data, not a 15.535.29 training
-corpus). It is useful for expert replay mining and analysis, not for producing
-`compiled-prod-v17` without a capturer.
-
-**GPU:** R0 is the intended Phase 3 stack but is not usable on this CPU
-(125–269 ms per forward pass). Phase 3 needs a CUDA host (24 GB VRAM preferred)
-and a trained checkpoint that matches the canonical contract.
-
----
-
-## 6. QA harness
-
-- **Invariants:** `illegal: 0`, no pending leaks, action mask matches engine
-  refusals. 100 seeded random-legal games.
-- **Golden trace:** seed + actions → per-tick observation hash; diff after
-  every runtime/tool change.
-- **Parity:** same script on 15.535.29 native vs A51/16.635.1; compare entity
-  counts, tower HP, deaths, play ticks.
-- **Regression bank:** 200 games vs scripted X-Bow, past snapshots, and the
-  opponent pool.
-- **Exploit probes:** wait-only, spell-only, same-tile spam, tower rush.
-- **Lethal-spell test:** enemy King at 1 HP, Fireball in hand, enough elixir →
-  must cast.
-- **Live canary:** one game/day, screen-vs-reader diff, tap confirmation.
-
----
-
-## 7. Host and safety
-
-- **x86_64 Linux with root, no KVM.** Laptop VM for bring-up; cloud x86 or the
-  student credits for 10+ matches/s.
-- The installer writes **`/apex`, `/system`, `/linkerconfig`,
-  `/dev/__properties__`** and worker dirs under `/data/local/tmp`. These are
-  Android root paths, not Linux boot files. They do not touch `/boot`, the
-  kernel, GRUB or partitions, so they cannot brick the firmware — but they are
-  absolute paths written as root, so a bug or a wrong bundle can damage the OS.
-  **Use a dedicated VM/container with a snapshot; never the daily-driver.**
-- Uninstall by stopping workers and removing the created roots; keep a snapshot
-  so a bad install is a revert, not a repair.
-- Runtime/assets are user-supplied; MIT covers the deployment code only.
-
----
-
-## 8. Gates and kill criteria
-
-| Gate | Fail condition | Response |
+| Asset | Path | State |
 | --- | --- | --- |
-| Phase 0 | `doctor`/`smoke` fails | Fix the VM/bundle; do not write a custom loader yet |
-| Phase 1 | X-Bow deck not representable, or observations mismatch materially | Fix the deck/catalog/API before training |
-| Phase 2 | Engine-only < 5 matches/s at 8 workers | Profile per-worker cost and host; adjust worker count |
-| Phase 2 | End-to-end < 1 match/s after profiling | Optimize observations or split training across hosts |
-| Phase 3 | Cannot beat scripted X-Bow after a full run | Training loop is broken; do not go live |
-| Phase 4 | Any illegal tap, crash or unrecoverable disconnect | No-go; fix and repeat |
-| Global | Simulator win rate used as ladder evidence | Stop; require live/human review |
+| General checkpoint | `checkpoints/General/checkpoint-step-00000460.pt` | ready, 12,684,339 params, `ppo-league-snapshot` |
+| IL / Active IL / Hog specialists | `checkpoints/` | ready, opponents/baselines |
+| IL_Replay corpus | `datasets/royaleapi/` | 252,238 replays, 17,836,160 actions, 1.8 GB |
+| V4 training stack | `native_runner/training/v4/` | IL + PPO + deck pool + league + evaluator |
+| 16.635.1 probe source/artifact | `native_runner/probe/`, `native_runner/probe/out/libcrprobe-16.635.1.so` | built, needs dynamic verification |
+| 16.635.1 APKs | `builds/cr-ai-16.635.1.apk`, `builds/cr-engine-cluster-16.635.1.apk` | built |
+| A51 deploy/cluster | `deploy_a51.sh`, `launch_cluster_a51.sh` | ready; device not attached |
+| 16.635.1 findings | `docs/native/16.635.1/FINDINGS.md` | in progress; anchors documented |
+| A51 parity/probe tools | `tools/native_analysis/` | working for scripted/parity matches |
+| cr-native proxy | `.resource/cr-native-sandbox`, `tools/native_bringup/` | working, 15.535.29 only |
 
 ---
 
-## 9. Risks
+## 4. Workstream A — 16.635.1 runtime and probe
 
-| Risk | Impact | Mitigation |
-| --- | --- | --- |
-| Version lock: 15.535.29 ≠ live 16.635.93 | Balance/card differences | Parity report; train on 15.535, validate on 16.635; port later only if needed |
-| End-to-end throughput below 1 match/s | Slow training | Profile observation/feature path; leaner features; more workers/cores |
-| Root install pollutes the host | Hard to undo | Dedicated VM/container + snapshot; stop/remove cleanly |
-| Sandbox API differs from `batch-v1` | Adapter work | Use `NativeRoyaleEnv`; bridge to FirstLight only if it measures a win |
-| Launcher duplicate-start on a busy port | Duplicate processes | Do not re-run `start` on a busy port; verify with `ss`/`/proc/PID/cmdline` |
-| 48 workers exceed RAM/disk | OOM/disk full | Start at 4; scale to the measured knee; monitor RSS |
-| Deck/card not in sandbox catalog | X-Bow blocked | Verify the catalog early; add the deck config before training |
-| R0 checkpoint is from another revision | Weights cannot load (`_contract` mismatch) | Verify config/catalog/schema hashes first; do not bypass the contract; retrain if incompatible |
-| R0 has no native observation adapter | Cannot train or evaluate on real engine | Build `observe_train_v1` → `PublicFrame`/`PublicBatch`; smoke one scripted match first |
-| No GPU on the training host | R0 is 20–90× too slow on CPU | CUDA host (24 GB preferred) on the same host as the workers, or use the CPU fallback |
-| Live account risk | Ban | Canary/alt account first; main ladder after Phase 4 |
+**Goal:** a verified 16.635.1 engine that can reset, observe, command and report
+the rich V4 semantics on the A51.
 
----
+What is already true:
 
-## 10. Do not do
+- The touch JNI hook is port-ready (`0x0156f790`).
+- Hand/deck model offsets and the replay-controller trio are recovered.
+- The probe is build-selectable for 16.635.1 via
+  `build_16_635_1_layout.h`; required anchors fail closed.
+- Relocation report: **59 EXACT, 31 LIKELY, 10 MANUAL, 37 AMBIGUOUS,
+  10 MISSING**.
+- The 16.635.1 build still skips rich telemetry; cold configure / live command
+  injection remain closed until the remaining core anchors land.
+- Dynamic verification on the A51 is pending.
 
-- Do not build an AVD, MuMu or phone cluster for training.
-- Do not write a custom `libg` loader unless this runtime fails a gate.
-- Do not train on `IL_Replay`.
-- Do not make crforge the critical path.
-- Do not run real-time matches as the training loop.
-- Do not blindly port FirstLight-Zero weights across versions.
-- Do not confuse R0 with the engine: R0 is the `training_r0/` policy/value
-  model; the engine is `libg.so` 15.535.29 in `cr-native-linux-bionic`.
-- Do not treat the random `builds/native/r0-elite-v3-smoke.pt` as a trained
-  checkpoint.
-- Do not bypass the R0 `_contract` hash to load a foreign checkpoint.
-- Do not load a `36,853,407` / `07c183d2…7426` checkpoint; that is the
-  retired contract. `.resource/r0-elite-training` is canonical (36,854,175
-  params). Do not mix the two trees.
-- Do not import code or assets from `.resource/Clash-Royale-v1-Client-Leak`;
-  it is leaked, unlicensed v1 (2016) decompiled client pseudocode, not the
-  current engine and not the server.
-- Do not start a long R0 run on CPU; use a CUDA host beside the workers.
-- Do not install the runtime on the daily-driver Linux.
-- Do not use simulator win rates as ladder evidence.
-- Do not start the main ladder before Phase 4.
+Next actions, in order:
+
+1. Attach the A51; confirm `adb devices`, `ro.product.model` (`SM_A515U` expected).
+2. Install/launch the 16.635.1 cluster (`launch_cluster_a51.sh --engines 2`), forward
+   `tcp:26789`.
+3. Run `tools/native_analysis/scripted_xbow_match.py` and confirm 0 problems.
+4. Inspect `observe_rich`: all V4-required streams present, no sentinel fields.
+5. If incomplete, resolve the AMBIGUOUS/MISSING anchors in
+   `docs/native/16.635.1/FINDINGS.md` (Ghidra + `cr_elf.py`/`diff_builds.py`).
+6. Re-run the 100-match soak before training.
+
+**Gate:** N0 and N2.
 
 ---
 
-## 11. Key paths
+## 5. Workstream B — General baseline
 
-| Path | Purpose |
+Run the included General checkpoint on 16.635.1 before training anything.
+
+```bash
+adb forward tcp:26789 tcp:26789
+.venv/bin/python -m native_runner.training.v4.evaluate \
+    --checkpoint-a checkpoints/General/checkpoint-step-00000460.pt \
+    --checkpoint-b checkpoints/IL/checkpoint-step-00029396.pt \
+    --games 2 --output /tmp/opencode/eval-general-nulls.json \
+    --port 26789 --device cpu
+```
+
+Record: win/loss/draw, rejected actions, match ticks, seconds/match,
+`normal_terminal_rate`, and any observation-completeness errors. Then run
+General vs the scripted X-Bow and the Hog specialist. This tells us whether the
+pretrained generalist already works on Null's before spending cloud credits.
+
+**Gate:** N1.
+
+---
+
+## 6. Workstream C — data
+
+The generalist corpus is already local:
+
+- `datasets/royaleapi/` — **IL_Replay**, 252,238 replays, 17.8M actions,
+  `royaleapi-battle-replay.v1`.
+- Use `native_runner/training/v4/cache_builder` to convert it to IL shards.
+- Use `build_ppo_deck_pool` to build the exact-form deck pool for PPO.
+
+Data sources and their limits:
+
+- **Official Clash Royale API:** battle logs only (last ~25 battles), no
+  tick-level replays. Not an IL corpus; useful for meta/opponent stats.
+- **RoyaleAPI downloader** (`.resource/royaleapi-downloader`): live 16.x
+  ladder replays, structured JSON, resumable. It collects **official-game**
+  replays, not Null's; follow the site's terms.
+- **Hugging Face:** IL_Replay (already local), plus optional
+  `Cochon123/clash-royale-replays` and `Proxv/clash-royale-ai-checkpoints`.
+- **Null's-specific data:** self-play on the 16.635.1 engine and any Null's
+  replays that can be captured within the server's rules. This is the data that
+  matters for the ladder.
+
+Do not mix 15.535.29 self-play labels with 16.x IL labels without an explicit
+adaptation step.
+
+---
+
+## 7. Workstream D — training
+
+Two stages:
+
+1. **IL cache / behavior cloning** from the local corpus to validate the V4
+   pipeline and checkpoint compatibility.
+2. **PPO fine-tune from General** with a deck pool, league and opponent pool.
+   The upstream PPO launchers assume AVD/engine-ready topology; adding an
+   A51 engine-ready path is an N3 task. Until then, use the evaluator and a
+   single-engine PPO smoke.
+
+Rules:
+
+- General is the initialization, not a frozen mirror opponent.
+- Deck diversity comes from the deck pool + league, not from a fixed X-Bow
+  mirror.
+- Evaluate on paired seeds, both seats, with fixed decks and levels.
+- Keep rejected actions at zero; a rollout with rejections is invalid.
+- Do not call self-play actions “expert” for IL.
+
+**Gate:** N4.
+
+---
+
+## 8. Workstream E — deployment to Null's
+
+- The A51 runs the 16.635.1 client with the probe; the policy service supplies
+  actions over the control protocol.
+- Start with offline/self-play matches, then a live canary on a low-stakes
+  account.
+- Monitor rejected actions, illegal placements, crashes and server responses.
+- Automated ladder play may violate the server's rules; confirm what is allowed
+  before running a bot on a real account.
+
+**Gate:** N5.
+
+---
+
+## 9. Workstream F — cloud and scale
+
+The GPU is not the bottleneck. The engine is.
+
+- **ThunderCompute RTX A6000 48 GB — $0.35/hr.** Cheapest useful GPU for the
+  12.7M model; ~57 hours for $20. Use it for short benchmark/validation runs.
+- **GCP $300 / Azure $100:** useful only if you need a high-vCPU host with a GPU
+  or a cloud Android/AVD cluster. New accounts often have **zero GPU quota**;
+  check before planning. Free-trial terms apply per account.
+- **A100/H100 are unnecessary** for a 12.7M model. L4/T4/A6000 is enough.
+- **Do not spend credits before N0/N1 pass.** The first useful spend is a GPU
+  fine-tune after the A51 baseline is validated.
+
+If the A51 cannot feed training, the scale options are, in order:
+
+1. Add more A51-class ARM64 devices (cheapest per engine, but hardware-bound).
+2. Cloud x86 host with KVM + ARM64 Android image/AVD cluster (the upstream
+   path; complex, verify nested virtualization and throughput first).
+3. Proxy track with a V4 observation adapter on the 15.535.29 x86 engine
+   (fastest engine, but a new adapter and a cross-build port).
+
+---
+
+## 10. Proxy track — cr-native 15.535.29 (retained, not critical path)
+
+The x86 runtime remains valuable for:
+
+- reward/league/PPO algorithm experiments with the 516k stack;
+- throughput and transport profiling;
+- parity checks against 16.635.1 (towers, cards, unit HP, abilities);
+- a fallback if the 16.x probe stalls.
+
+It is **not** the deployment path. Do not train a policy on 15.535.29 labels and
+assume it transfers to Null's without an adaptation step.
+
+Measured facts (kept for reference):
+
+- 1 h soak passed; 8 workers is the knee; 12 is oversubscribed on the 10-core
+  laptop.
+- Engine-only at 8 workers: 36.4k ticks/s ≈ 9.6 matches/s (100 ticks/RPC).
+- Full 516k loop at 8 workers: 0.074 matches/s at 1 tick/decision, 0.277 at 4,
+  0.522 at 8.
+- R0 CPU inference: 125–269 ms/pass; not viable for training without a GPU.
+- A51 16.635.1 parity: towers, deck ids/forms/costs, starting elixir and all
+  unit HP match at level 11 except Electro Spirit (215 vs 217).
+
+Evidence lives under `builds/native/`.
+
+---
+
+## 11. Retired / deferred
+
+- **R0 elite-v3** — retired from the Null's path. Code and evidence are archived
+  in `docs/native/R0_CANONICAL_TREE.md`, `tools/native_bringup/smoke_r0_model.py`
+  and `verify_r0_batched.py`. Do not start an R0 run.
+- **R0 data/checkpoint gate, CUDA gate, R0 adapter** — retired with R0.
+- **cr-native 15.535.29 as the critical path** — demoted to proxy lab.
+- **Custom ARM64 `libg` loader** — still retired; the 16.635.1 path uses the
+  offline APK/probe.
+- **Linux AVD / MuMu / phone clusters as the primary** — only a scale option if
+  the A51 is insufficient.
+- **“16.635.1 is parity only”** — reversed: it is the primary target.
+
+---
+
+## 12. Risks and unknowns
+
+1. **16.x port completeness.** Rich telemetry and several core anchors are still
+   unresolved; N2 may take longer than N0/N1.
+2. **Engine throughput.** One A51 is far below the upstream 1,528-match training
+   scale. Measure before committing credits.
+3. **Null's-specific content.** The General checkpoint and IL_Replay are
+   official-game 16.x data; Null's may have custom balance/cards. Verify the
+   content fingerprint and card compatibility.
+4. **Ladder rules.** Automated play may be prohibited; confirm before a live
+   account is used.
+5. **Cloud quotas.** GCP/Azure GPU quota may be zero on new accounts; don't
+   assume the credits are immediately spendable on GPUs.
+
+---
+
+## 13. QA harness
+
+- `illegal: 0`, zero rejected actions per accepted rollout.
+- Paired-seed, both-seat evaluation; fixed decks/levels.
+- 100-match soak after any probe change.
+- Replay review for same-tile spam, passive openings, wasted spells, bad
+  Tesla/X-Bow defense.
+- Live canary: 20 games, observation-vs-screen diff, no crashes.
+- Record checkpoint SHA-256, dataset/tag selection, deck pool, seed and config
+  with every run.
+
+---
+
+## Appendix A — cr-native 15.535.29 evidence index
+
+| Item | Path |
 | --- | --- |
-| `docs/native/LINUX_BIONIC_RUNTIME.md` | Runtime evaluation, hashes, exact install/smoke commands |
-| `ROADMAP_CRFORGE.md` | Ultrafast simulator / CI oracle (reference only) |
-| `.resource/cr-native-linux-bionic/` | Runtime CLI source |
-| `.resource/cr-native-sandbox/` | `NativeRoyaleEnv`, card catalog, self-play/PPO |
-| `.resource/cr-native-sandbox/training_r0/` | R0 elite-v3 policy/value model, observation contract, IL/PPO kernels |
-| `.resource/cr-native-sandbox/data_pipeline/r0_train.py` | R0 training-checkpoint writer (`r0-elite-training-checkpoint.v1`) |
-| `.resource/r0-elite-training/` | **Canonical** MIT R0 Elite IL chain + batched trainer (36,854,175 params, no weights/data) |
-| `.resource/royaleapi-downloader/` | Optional live-replay downloader (16.x; source only, no LICENSE file) |
-| `builds/native/r0-elite-v3-smoke.pt` | **Random-weight, old-contract** R0 smoke checkpoint; invalid after the tree swap |
-| `.resource/FirstLight-Zero/` | X-Bow recipe, PFSP/league code (Apache-2.0), v1450 checkpoints, benchmark |
-| `.resource/native/16.635.1/reference/libg.so` | A51 parity reference |
-| `docs/native/16.635.1/FINDINGS.md` | 16.635.1 evidence log (parity/live) |
-| `tools/native_analysis/` | A51 probe-side tools (parity, not training) |
-| `native_runner/` | Existing transport/QA utilities; adapt, don't depend |
+| Phase 0 soak/sweep | `builds/native/phase0-20261114T000821Z/` |
+| Phase 2 bottleneck | `docs/native/PHASE2_BOTTLENECK.md` |
+| X-Bow determinism (20 seeds) | `builds/native/xbow-determinism-20.json` |
+| A51 unit HP/ability parity | `builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json` |
+| Runtime runbook | `docs/native/PHASE0_BRINGUP.md` |
+| Linux runtime | `docs/native/LINUX_BIONIC_RUNTIME.md` |
 
----
+## Appendix B — R0 archive
 
-## 12. Side resources (reference only)
-
-- **`.resource/clash-royale-research`** — build **160402020** approximate
-  reimplementation: deterministic 20 Hz TypeScript engine (70 cards, ~3,500×
-  real time per core), browser viewer with original art/audio, and a paused
-  self-play RL stack. Valuable as a **fast pretraining/sim-to-real sandbox**, a
-  **demo viewer**, and a **mechanics/QA reference** (`docs/FIDELITY.md`,
-  `docs/MECHANICS_BRIEF.md`, native trace tests). It is **not** the real engine,
-  it is a different build, and it is not a Track B replacement. Use it only if a
-  measured sim-to-real check justifies it.
-- **`.resource/Clash-Royale-v1-Client-Leak`** — decompiled **v1 (2016) client**
-  pseudocode: 984 `.cpp` class dumps, **no headers, data, assets or build
-  files**, client major version 2.0. It is client-side only (no server or
-  authoritative simulation), not 15.535.29, not buildable, and has no license.
-  Useful only as a historical protocol/class-structure reference; never import
-  its code or assets. The current `libg.so` + card catalog remain the truth
-  source.
-- **`crforge`** remains the CI/differential oracle. `clash-royale-research` is
-  the faster approximate sandbox, not the fidelity oracle.
-
----
-
-## 13. Next action
-
-Phases 0–2 are complete as of 2026-11-14. Soak passed (60 samples, zero ping
-failures, flat RSS), the one-tick sweep knee is **8 workers** (300.5 → 486.1 →
-474.0 ticks/s), and the A51/16.635.1 parity check is recorded (all X-Bow unit
-HP matches except Electro Spirit 215 vs 217; Hero Knight ability matches).
-
-The Phase 2 bottleneck plan is measured and written:
-[`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md).
-Engine-only at 100 ticks/RPC is 9.6 matches/s at 8 workers and 10.6 at 12.
-The one-tick policy loop is 0.074 matches/s at 8 workers (48 % inference,
-40 % transition wait, 10 % Python observation), and the two measured levers
-are `fast-json` (1.5–2.1×) and a 4–8-tick decision interval (0.277 / 0.522
-matches/s). R0 elite-v3 takes 125–269 ms per CPU forward pass, so Phase 3
-needs a GPU for R0 or the CPU-feasible sandbox recurrent policy.
-
-The loop fix is implemented: `decision_ticks` in both collectors,
-`--transition-mode fast-json` as the training default, and the flag plumbed
-through `training/train.py`, `training/evaluate.py` and
-`selfplay_v2/train.py`. Re-measured at 8 workers / interval 8: **0.522
-matches/s**.
-
-Next session, in order:
-
-1. **Adopt the upstream R0 tree + data/checkpoint gate.** Vendor
-   `.resource/r0-elite-training/training_r0` (MIT, 36,854,175 params, schema
-   `825408c3…4d44`) into the sandbox, retire the old copy, re-run the smoke and
-   verification, and update `smoke_r0_model.py`/tests. Then find/verify a
-   trained checkpoint against that contract. The upstream repository is a
-   **trainer, not a weight release**; it has no checkpoint and no data. Data
-   questions were filed in
-   <https://github.com/IMAX9D/r0-elite-training/issues/1> — assume no response
-   and plan own 15.535.29 captures if R0 IL is required.
-2. **GPU host.** CUDA torch, 24 GB VRAM preferred, workers on the same host;
-   benchmark R0 forward and one PPO update.
-3. **R0 native adapter.** `observe_train_v1` → `PublicBatch`; one scripted match,
-   then the PPO smoke.
-4. **League/eval layer** (no GPU required, can run in parallel): port the
-   FirstLight-Zero PFSP/snapshot/paired-seat design (Apache-2.0) and add
-   `--worker-ports` to train/evaluate.
-
-See [`HANDOFF.md`](HANDOFF.md) for the checkpoint checklist and exact paths.
+R0 adoption and verification are complete as an engineering exercise:
+36,854,175 params, schema `825408c3…4d44`, CPU batched-equivalence PASS.
+It is retired from this plan. See [`docs/native/R0_CANONICAL_TREE.md`](docs/native/R0_CANONICAL_TREE.md).

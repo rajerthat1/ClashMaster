@@ -1,5 +1,11 @@
 # R0 canonical tree adoption — 2026-11-14
 
+> **Retired from the primary plan (2026-11-14).** The project target is Null's
+> Royale 16.635.1; the V4 General checkpoint and `native_runner` stack are the
+> deployment path. R0 has no trained checkpoint, no local corpus and no 16.x
+> adapter. This document is kept as an engineering archive; do not start an R0
+> run. See [`ROADMAP.md`](../../ROADMAP.md) and [`HANDOFF.md`](../../HANDOFF.md).
+
 The R0 model stack in the sandbox is now the upstream
 [`IMAX9D/r0-elite-training`](https://github.com/IMAX9D/r0-elite-training) tree
 (MIT), not the older sandbox copy.

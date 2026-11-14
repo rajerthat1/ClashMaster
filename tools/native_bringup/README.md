@@ -178,6 +178,9 @@ for the measured results and the host plan.
 
 ## `smoke_r0_model.py`
 
+> **Archive only.** R0 is retired from the Null's Royale plan. See
+> [`ROADMAP.md`](../../ROADMAP.md).
+
 Runs the sandbox R0 elite-v3 stack on CPU: one synthetic rollout, one real PPO
 update, then a checkpoint save/reload with a bit-exact state-dict check. It
 does not start a worker, read a dataset, or use the GPU.
