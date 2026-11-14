@@ -1,4 +1,4 @@
-# Session handoff — 2026-11-13 — Track B: CR Native Linux runtime
+# Session handoff — 2026-11-14 — Track B: CR Native Linux runtime
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single plan now.
 > This file is the next-session starting point.
@@ -20,12 +20,67 @@
 Runtime details: [`docs/native/LINUX_BIONIC_RUNTIME.md`](docs/native/LINUX_BIONIC_RUNTIME.md).
 Bring-up evidence and runbook: [`docs/native/PHASE0_BRINGUP.md`](docs/native/PHASE0_BRINGUP.md).
 
+## Right now — Phase 0 soak + sweep running detached (2026-11-14 00:08 UTC)
+
+The remaining Phase 0 gate is a detached run of
+`tools/native_bringup/run_phase0.py`:
+
+```
+builds/native/phase0-20261114T000821Z/
+```
+
+It installed 12 rootless worker slots, is soaking 4 workers for 60 minutes
+(60 s sampling), then stops them, starts 12, and runs the active-worker sweep
+for 4/8/12. Expected: soak ends ≈ **01:08 UTC**, sweep ≈ **01:20 UTC**.
+
+**Read this first in the next session:**
+
+```bash
+cd /home/raj/Desktop/ClashMaster
+OUT=$(ls -dt builds/native/phase0-* | head -1)
+cat "$OUT/DONE"                        # exists only after the run finishes
+jq . "$OUT/soak-summary.json"          # rss/cpu/ping per worker
+jq . "$OUT/sweep-summary.json"         # ticks/s per tier, recommended_workers
+tail -20 "$OUT/detached.log"
+```
+
+What passes:
+
+- soak: `ping_failures: 0`, one row per port per minute in `soak.csv`, RSS flat
+  (≈325–340 MB/process), no worker disappears;
+- sweep: each tier `status: "complete"`, no `safety_reasons`, and
+  `native_ticks_per_second` rises from 4 → 8 then plateaus at the knee.
+  **12 workers is an oversubscription point** on this host (10 physical cores,
+  12 logical); use the 8-worker number for official host sizing and 12 only as
+  the knee/contention data point.
+
+If the orchestrator is gone but workers remain, stop them by port:
+
+```bash
+for p in $(seq 39031 39042); do
+    pid=$(ss -ltnp | grep ":$p " | grep -oP 'pid=\K[0-9]+' | head -1)
+    [ -n "$pid" ] && kill "$pid"
+done
+```
+
+### Plain English: what "soak" and "sweep" mean here
+
+| Check | What it does | What it answers |
+| --- | --- | --- |
+| **Soak** | Starts 4 workers, leaves them running for an hour with nothing but `ping` every minute, recording RSS, CPU and thread count. | Is the runtime stable over time? Does memory creep? Does a worker die or stop answering? |
+| **Sweep** | Runs the same tick-driving workload with 4 workers, then 8, then 12, measuring native ticks/s and latencies for each tier. | How many workers this host can actually feed before adding more stops helping — the **knee**. |
+
+Soak is a **reliability** test; sweep is a **capacity** test. Both write
+machine-readable evidence under `builds/native/phase0-*/`.
+
 ## Status 2026-11-13 (latest session): Phase 1 deck contract + determinism
 
-Phase 1 items 1, 2, 3 and 5 are done; item 4 (A51 golden parity) is blocked
-because no device is attached. All code changes are in the sandbox clone
-(`.resource/cr-native-sandbox`, commit `feat(training): explicit deck spec and
-X-Bow policy-token contract`), except the two new tools below.
+Phase 1 items 1–5 are functionally done. A51 parity is first-pass (tower HP,
+deck ids/forms/costs and starting elixir match at level 11); unit HP and
+abilities are the remaining parity gap. All code changes are in the sandbox
+clone (`.resource/cr-native-sandbox`, commits `feat(training): explicit deck
+spec and X-Bow policy-token contract` and `feat(selfplay-v2): derive deck
+contract from replay`), except the top-level tools below.
 
 **1. `training/deck_spec.py` — explicit deck + policy-token contract.**
 `DeckCard(card_id, form, level, token)` and `DeckSpec` replace the hardcoded
@@ -84,8 +139,9 @@ seed = 40 matches, 618.35 s wall):
 `R58NA0QTHWV`) was attached and the 16.635.1 probe served
 `coldReady: true`. `tools/native_analysis/scripted_xbow_match.py --level 11`
 completed a fixed X-Bow match with **0 problems, 0 ability rejections**:
-175 decisions, 42 actions, terminal tick **3601**, crowns `[1, 0]` at level 1
-and `[0, 1]` at level 11 (same seed, different tower levels).
+175 decisions / 42 actions at level 1, 174 decisions / 59 actions at level 11;
+terminal tick **3601** in both, crowns `[1, 0]` at level 1 and `[0, 1]` at
+level 11 (same seed, different tower levels).
 
 Level normalisation is the key: A51 `MatchConfig` defaults to level 1. With
 `--level 11` (`level_cap=11`, `cardlvlmin=11`, `king_tower_level=11`) the
@@ -205,80 +261,89 @@ Published bundles (GitHub releases, not in git): engine
 - So engine-only throughput is already enough; the training bottleneck remains
   observation/host work, as the Sep-10 cloud note found.
 
-## Next session — Phase 1 remaining work
+## Next session — do these in order
 
-### 0. Housekeeping (10–15 min, optional)
-
-1. **1 h soak** with 4 workers if the strict Phase 0 gate is required:
-   leave them up, record RSS/CPU every 10 min, confirm `ping` still works.
-   (The 2026-11-13 Phase 0 session stopped at 23 min; 0 crashes, RSS flat, 100
-   matches clean.)
-2. Run the active-worker sweep on 4/8/12 workers with
-   `cr-native-sandbox/scripts/run_native_active_worker_sweep.py` and record the
-   knee. Do not exceed physical cores for host-sizing numbers.
-3. **Attach the A51 and run Phase 1 item 4** (golden parity). `adb devices` was
-   empty this session, so this is the only unfinished Phase 1 item.
-
-### 1. Start the workers (copy/paste)
+### 1. Read the Phase 0 result (5 minutes)
 
 ```bash
 cd /home/raj/Desktop/ClashMaster
-export PYTHONPATH=.resource/cr-native-linux-bionic
-B=builds/bundles/cr-native-linux-bionic-runtime-150535029-local-overlay
-M=$B/BUNDLE-MANIFEST.json
+OUT=$(ls -dt builds/native/phase0-* | head -1)
+cat "$OUT/DONE"
+jq '{passed, samples, ping_failures, workers}' "$OUT/soak-summary.json"
+jq '{status, tiers, recommended_workers}' "$OUT/sweep-summary.json"
+```
 
-# install once (already present in builds/rootless)
-python3 -m cr_native_bionic doctor --bundle-dir "$B" --manifest "$M" \
-    --system-root builds/rootless/system-root \
-    --runtime-root builds/rootless/runtime --workers 4
+- If soak passed and RSS is flat, mark the Phase 0 soak gate done in
+  `ROADMAP.md`.
+- Record the 4/8/12 ticks/s and the knee in this handoff and in
+  `ROADMAP.md` Phase 2.
+- Do not rerun the 1 h soak unless the summary shows a failure; inspect
+  `soak.csv` and the failing worker log instead.
 
+### 2. Finish A51 parity (the only open Phase 1 item)
+
+The A51 (`R58NA0QTHWV`, `SM_A515U`) is attached. Launch the probe and forward
+the control port:
+
+```bash
+adb forward tcp:26789 tcp:26789
+adb shell monkey -p nullsroyale.rel.free -c android.intent.category.LAUNCHER 1
+```
+
+Already confirmed: at **level 11**, 16.635.1 and 15.535.29 agree on King HP
+4824, Princess HP 3052, deck ids/order, forms `[0,2,1,1,0,0,0,0]`, all eight
+elixir costs, and starting elixir. Remaining:
+
+1. Capture a level-11 **unit HP** sample on A51 for Knight, Archers, Tesla,
+   X-Bow, Skeletons and Electro Spirit, and the same tick on native 15.535.29.
+   `tools/native_analysis/entity_hp_probe.py` currently uses `MatchConfig()`
+   defaults (level 1); add a `--level` option (or pass
+   `level_cap/minimum_card_level/king_tower_level=11`) before trusting it.
+2. Compare ability state/charges for Hero Knight and the evolution cards.
+3. Record the residual 15.535.29 vs 16.635.1 gap in this handoff and keep
+   `ROADMAP.md` Phase 1 parity unchecked until it is written.
+4. A51 report shape: `builds/native/a51-scripted-xbow-16.635.1-L11-seed1.json`.
+   Native golden: `builds/native/xbow-golden-15.535.29-seed1.json`.
+
+### 3. Then Phase 2 — host sizing
+
+Use the sweep output, not a fresh guess. Official host sizing should stay at or
+below **10 physical cores** (4 and 8 workers); 12 workers is the
+oversubscription/knee point. Convert ticks/s to matches/s with the measured
+average match length (~3,700–4,000 native ticks for the scripted X-Bow loop;
+use the actual `soak`/determinism terminal ticks, not real time).
+
+### 4. Only then Phase 3 — training
+
+Do not start the long PPO run until unit-HP/ability parity is recorded. R0
+elite-v3 is the chosen stack; FirstLight v1450 remains a benchmark/opponent.
+
+**Phase 1 status:** deck/schema ✅, X-Bow config + tokens ✅, 20-match
+determinism/legality ✅, model smoke ✅, A51 tower/card/elixir parity ✅,
+A51 unit HP + abilities ⏳.
+
+### Starting workers manually (if the detached run is not active)
+
+12 slots are now installed under `builds/rootless/system-root`. Start any
+contiguous range:
+
+```bash
+cd /home/raj/Desktop/ClashMaster
 for slot in 0 1 2 3; do
     LOG=/tmp/opencode/rootless-worker-$slot.log SLOT=$slot \
         PORT=$((39031 + slot)) \
-        tools/native_bringup/run_rootless_worker.sh &
+        nohup tools/native_bringup/run_rootless_worker.sh >/dev/null 2>&1 &
 done
-
-python3 -m cr_native_bionic smoke --bundle-dir "$B" --manifest "$M" \
-    --runtime-root builds/rootless/runtime --base-port 39031
 ```
 
-Stop by port (do not run `start` again on a busy port):
+Stop by port (never run `start` again on a busy port):
 
 ```bash
-for p in 39031 39032 39033 39034; do
+for p in $(seq 39031 39042); do
     pid=$(ss -ltnp | grep ":$p " | grep -oP 'pid=\K[0-9]+' | head -1)
     [ -n "$pid" ] && kill "$pid"
 done
 ```
-
-### 2. Phase 1 work items, in order
-
-1. **Parameterise `training/schema.py`.** **Done 2026-11-13.** New
-   `training/deck_spec.py`; bootstrap deck is the explicit default; unknown
-   card/form fails closed.
-2. **Add the X-Bow deck config + token contract.** **Done 2026-11-13.**
-   `configs/decks/xbow-3.0.json` + `examples/xbow-3.0.json`; explicit tokens
-   `xbow`, `hero_knight`, `evo_archers`, `evo_tesla`, `skeletons`,
-   `electro_spirit`, `fireball`, `the_log`; harness validates hand order, deck
-   indices and form flags.
-3. **Determinism harness.** **Done 2026-11-13.**
-   `tools/native_bringup/verify_xbow_determinism.py`; 20 seeds over four
-   workers with two runs per seed (40 matches, 618 s): all deterministic,
-   `illegal: 0`, `gate_refusals: 0`, `deck_errors: 0`. Results are in
-   `builds/native/xbow-determinism-20.json`.
-4. **Golden validation vs A51/16.635.1.** **First pass done 2026-11-13.**
-   A51 attached; `scripted_xbow_match.py --level 11` matches tower HP
-   (4824/3052), card ids/forms/costs and starting elixir. Opening hand and
-   unit-HP/ability parity still need a level-11 entity probe. Do not compare
-   A51 defaults: `MatchConfig` is level 1 unless `--level 11` is passed.
-5. **Model smoke test.** **Done 2026-11-13.** R0 elite-v3, 36,853,407
-   parameters, one PPO update and a bit-exact checkpoint save/restore. Do
-   **not** start the long PPO run until the A51 parity item is resolved.
-   FirstLight v1450 stays a benchmark and opponent, not a weight port.
-
-**Exit criteria status:** 20 matches ✅, `illegal: 0` ✅, deterministic reset ✅,
-X-Bow deck legal ✅, one PPO step end-to-end ✅. A51 parity: tower/card/elixir
-✅, unit HP + abilities ⏳.
 
 ## Phase 1 readiness — deck and schema (source audit)
 
@@ -353,7 +418,9 @@ on the daily driver.
   abilities. See `builds/native/xbow-determinism-20.json`.
 - ~~Can one PPO step run on the sandbox R0 elite-v3 stack?~~ **Answered:** yes,
   CPU smoke with a bit-exact checkpoint restore.
-- What is the 4/8/12-worker knee on this host? (soak + sweep next).
+- What is the 4/8/12-worker knee on this host? **Answer in
+  `builds/native/phase0-20261114T000821Z/sweep-summary.json`**; treat 12 as an
+  oversubscription point (10 physical cores).
 - How large is the 15.535.29 vs 16.635.93 balance/card gap? **Partially
   answered:** at level 11 the tower HP, deck ids/forms/costs and starting
   elixir match 16.635.1. Opening-hand RNG and unit HP/abilities remain.
@@ -376,6 +443,9 @@ on the daily driver.
 | `tools/native_bringup/smoke_r0_model.py` | R0 elite-v3 PPO step + checkpoint save/restore smoke |
 | `tools/native_bringup/run_phase0.py` | Detached 1 h soak + 4/8/12-worker sweep + evidence |
 | `builds/native/phase0-*/` | Soak CSV, RSS/CPU summary, sweep report (gitignored) |
+| `builds/native/xbow-determinism-20.json` | 20-seed determinism/legality report |
+| `builds/native/xbow-golden-15.535.29-seed1.json` | Native 15.535.29 golden frames |
+| `builds/native/a51-scripted-xbow-16.635.1-L11-seed1.json` | A51 16.635.1 level-11 fixed-script report |
 | `.resource/cr-native-sandbox/training/deck_spec.py` | Explicit deck + policy-token contract |
 | `.resource/cr-native-sandbox/configs/decks/xbow-3.0.json` | X-Bow 3.0 deck config |
 | `.resource/cr-native-sandbox/examples/xbow-3.0.json` | X-Bow replay for both sides |
