@@ -350,18 +350,20 @@ model config, vocabulary, semantic catalog and observation schema.
   - Requires Python 3.12, **torch 2.8+cu128**, CUDA 12.8; peak VRAM is
     12.5 GiB at B=256 and 23.7 GiB at B=512.
   - It is **imitation learning**, not PPO: `forced=expert_actions`.
-  - Its `training_r0` is **newer than the sandbox copy**: it adds
-    `attack_locked` and cross-table `Base` resolution. The canonical numbers
-    are now **36,854,175 parameters** and observation schema
+  - Its `training_r0` adds `attack_locked` and cross-table `Base` resolution
+    versus the retired sandbox copy, and is now vendored into the sandbox. The
+    canonical numbers are **36,854,175 parameters** and observation schema
     `825408c38a3facdb8596c08397b739a38b83d8a5be0727cf6e9eecb5f5f04d44`.
-    The sandbox copy is **36,853,407** / `07c183d26fcd3e99af2ce83d3dbb2f78
+    The retired copy was **36,853,407** / `07c183d26fcd3e99af2ce83d3dbb2f78
     3a430fc58e35e0c10cab43c5c7c27426`.
   - A checkpoint from one contract will **not** load in the other; the
     `_contract` buffer differs.
   - CPU synthetic smoke was run on 2026-11-14 (`python -m training_r0.smoke
     --profile elite --steps 2`): passes, 36,854,175 params, schema
-    `825408c3…4d44`. Its `verify_b1_equiv` / `verify_multilane` checks still
-    need the default (non-tiny) config and a real batch on the GPU host.
+    `825408c3…4d44`. The CPU/synthetic B=1 + multi-lane equivalence check
+    (`tools/native_bringup/verify_r0_batched.py`) passes; the upstream
+    `verify_b1_equiv` / `verify_multilane` still need the default config and a
+    real batch on the GPU host.
   - Data/token/build/checkpoint questions were filed upstream:
     <https://github.com/IMAX9D/r0-elite-training/issues/1>.
     **Assume no response** and proceed with the defaults in this handoff.
@@ -374,10 +376,10 @@ model config, vocabulary, semantic catalog and observation schema.
 
 **Canonical decision — adopted 2026-11-14: upstream `r0-elite-training`.**
 
-The upstream tree is now the R0 source of truth (MIT). The sandbox
-`training_r0` copy is **obsolete** and must not be used for new data,
-checkpoints or runs. The upstream repo is the same author as
-`cr-native-sandbox`.
+The upstream tree is the R0 source of truth (MIT) and is now vendored into the
+sandbox. The retired sandbox copy must not be used for new data, checkpoints or
+runs; a checkpoint from the old contract will not load. The upstream repo is the
+same author as `cr-native-sandbox`.
 
 Integration — **completed 2026-11-14**:
 

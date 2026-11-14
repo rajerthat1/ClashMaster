@@ -310,8 +310,8 @@ R0 `data_pipeline` pieces are vendored into the sandbox. The old sandbox copy
 
 Upstream facts:
 
-- **36,854,175 parameters**, observation schema `825408c3…4d44`; the old
-  sandbox copy is 36,853,407 / `07c183d2…7426` and is not interchangeable.
+- **36,854,175 parameters**, observation schema `825408c3…4d44`; the retired
+  sandbox copy was 36,853,407 / `07c183d2…7426` and is not interchangeable.
 - **No weights and no data** in the repo. Training needs a
   `compiled-prod-v17` corpus (~772 GB, or a 3 GiB batch for B=1024) from the
   project's Baidu pan token, or data produced by `data_pipeline/r0_produce`
@@ -427,9 +427,9 @@ and a trained checkpoint that matches the canonical contract.
 - Do not treat the random `builds/native/r0-elite-v3-smoke.pt` as a trained
   checkpoint.
 - Do not bypass the R0 `_contract` hash to load a foreign checkpoint.
-- Do not use the obsolete sandbox `training_r0` contract for new data,
-  checkpoints or runs; `.resource/r0-elite-training` is canonical
-  (36,854,175 params). Do not mix the two trees.
+- Do not load a `36,853,407` / `07c183d2…7426` checkpoint; that is the
+  retired contract. `.resource/r0-elite-training` is canonical (36,854,175
+  params). Do not mix the two trees.
 - Do not import code or assets from `.resource/Clash-Royale-v1-Client-Leak`;
   it is leaked, unlicensed v1 (2016) decompiled client pseudocode, not the
   current engine and not the server.
