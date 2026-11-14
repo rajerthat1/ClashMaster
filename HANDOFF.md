@@ -10,6 +10,12 @@
 - Engine host: **`cr-native-linux-bionic`** — original x86_64 `libg.so` in a
   plain Linux process (Android 31 Bionic userland, no AVD/QEMU/KVM).
 - Training stack: **`cr-native-sandbox`** — `NativeRoyaleEnv`, self-play, PPO.
+- Model: **R0 elite-v3** (`.resource/cr-native-sandbox/training_r0/`), a
+  36.85M policy/value network — **not the engine**.
+- Phase 3 gate: the **upstream `r0-elite-training` tree is adopted as
+  canonical** (MIT; 36,854,175 params, schema `825408c3…4d44`); next obtain
+  data/trained weights and a CUDA GPU host. None of the R0 data/weights exist
+  locally yet. See the R0 section below.
 - Target: **15.535.29 / 150535029, x86_64**.
 - Retired from the plan: Linux AVD, MuMu, phone engine clusters, the custom
   ARM64 `libg` loader, and the 16.635.1 probe as trainer.
@@ -19,6 +25,53 @@
 
 Runtime details: [`docs/native/LINUX_BIONIC_RUNTIME.md`](docs/native/LINUX_BIONIC_RUNTIME.md).
 Bring-up evidence and runbook: [`docs/native/PHASE0_BRINGUP.md`](docs/native/PHASE0_BRINGUP.md).
+
+## Session 2026-11-14 (continuation) — R0 tree adopted, worker ports done
+
+**1. Canonical R0 tree is now vendored — DONE.** Upstream
+`.resource/r0-elite-training/training_r0` @ `a60db2b` (MIT) replaced the old
+sandbox copy, together with the R0 `data_pipeline` pieces it imports. Verified
+from the sandbox:
+
+```bash
+cd .resource/cr-native-sandbox
+../../.venv/bin/python -m training_r0.smoke --profile elite --steps 2
+# parameters 36854175, schema 825408c3…4d44
+cd ../..
+.venv/bin/python tools/native_bringup/smoke_r0_model.py --rich
+# checkpoint 444,222,791 B, restore bit-exact
+.venv/bin/python tools/native_bringup/verify_r0_batched.py --steps 4 --lanes 4
+# B=1 loss 2.8e-8 rel; multi-lane logp 9.5e-7; PASS
+```
+
+The new `tools/native_bringup/verify_r0_batched.py` is the CPU/synthetic stand-in
+for the upstream CUDA/real-data `verify_b1_equiv.py` / `verify_multilane.py`.
+Evidence: `docs/native/R0_CANONICAL_TREE.md`,
+`builds/native/r0-model-smoke.json`, `builds/native/r0-batched-equiv.json` and
+`r0-batched-equiv-rich.json`. Tests: R0 suites **65 passed**, admission/capture/
+repair **29 passed**. The old `36,853,407` / `07c183d2…7426` contract is retired;
+do not load its checkpoints.
+
+**2. `--worker-ports` — DONE.** `training/train.py`, `training/evaluate.py` and
+`selfplay_v2/train.py` now take `--worker-ports 39031-39038` with
+`--skip-worker-start`, so a run addresses the bwrap workers directly instead of
+deriving AVD ports. It is fail-closed without `--skip-worker-start`, accepts
+comma lists and inclusive ranges, and records `worker_ports` /
+`worker_source: explicit` in the manifest. Validated on two rootless workers:
+a 128-tick smoke iteration (0 RPC failures) and a full paired-seed evaluation
+(`normal_terminal_rate: 1.0`, `passed_integrity: true`, 4,873 ticks).
+Tests: `tests/test_worker_ports.py` plus run-contract/evaluation:
+**34 passed, 2 skipped**. The known `test_v2_action_rate` mask-shape failure is
+still the only failure in the broader suite (46 passed, 1 pre-existing failure).
+
+**Still blocked on hardware/data:** no trained R0 checkpoint, no
+`compiled-prod-v17` batch or `R0_XPAN_TOKEN`, and no CUDA GPU on this host
+(Intel Iris Xe; `.venv` is `torch 2.5.1+cpu`). The live R0 adapter is also
+blocked on semantics, not just wiring: `observe_train_v1` lacks `groups`,
+`relations`, `card_runtime`, `combat_events` and lifecycle attribution, so a
+production-complete `PublicBatch` must come from the capture →
+`ReplayFeatureAssembler` path, not from invented fields. Do not mark those
+capabilities present to satisfy `capture_complete`.
 
 ## Phase 0 — PASSED: 1 h soak + 4/8/12 sweep (2026-11-14)
 
@@ -235,10 +288,217 @@ scale with threads.
    (`test_v2_action_rate::test_sample_and_evaluate_log_probability_match`,
    `_safe_card_mask` shape bug in `selfplay_v2/model.py`; not touched by this
    change). `test_fast_training_transition.py` is 14 passed, 2 skipped.
-4. Remaining before Phase 3: decide the inference host — R0 needs a GPU (or a
-   smaller/distilled policy); the sandbox recurrent policy stays CPU-feasible.
+4. Remaining before Phase 3: the **R0 checkpoint + GPU gate** below; R0 needs a
+   CUDA host (or a smaller/distilled policy). The sandbox recurrent policy
+   stays CPU-feasible as the fallback.
 5. Keep training at **8 workers**. 12 adds ~10 % engine-only and no RPC
    throughput; it remains an oversubscription point for one-tick decisions.
+
+## R0 — what it is and what we need (2026-11-14)
+
+**R0 is not the engine.** The engine is the original x86_64 `libg.so`
+15.535.29 running in `cr-native-linux-bionic`. R0 elite-v3 is the **policy/value
+model** in `.resource/cr-native-sandbox/training_r0/`.
+
+| Thing | What it is |
+| --- | --- |
+| Engine | `cr-native-linux-bionic` + `libg.so` 15.535.29, driven by `NativeRoyaleEnv` |
+| R0 elite-v3 | `training_r0.R0Policy`, model schema `r0-elite-relation-spatial-lstm.v3` |
+| R0 observation | `r0-public-observation.elite-v3`, built from `observe_train_v1` + candidates/history/semantics |
+| R0 size | default `ModelConfig`: width 384, 6 layers, 12 heads, hidden 768, spatial 128 → **36,854,175** (canonical upstream tree) |
+| R0 cadence | 20 Hz native, **decision every 5 ticks** (`DECISION_TICKS = 5`) |
+| FirstLight-Zero | a different 1.17M model/stack (15.535.13); benchmark/opponent only |
+| Sandbox recurrent | the 516k CPU-feasible PPO fallback in `training/` |
+
+R0 does **not** speak the engine protocol and does **not** load FirstLight or
+old 177M expert weights. Loading is guarded by a `_contract` buffer covering
+model config, vocabulary, semantic catalog and observation schema.
+
+### Local R0 inventory
+
+- ✅ Upstream R0 code: `.resource/r0-elite-training/` (MIT) — model, observation
+  contract, IL kernels, batched IL trainer, data pipeline and verification
+  scripts. **This is the canonical tree.**
+- ✅ The sandbox `training_r0` copy now **is** the upstream tree (`a60db2b`):
+  36,854,175 params, schema `825408c3…4d44`. The old `36,853,407` /
+  `07c183d2…7426` copy is retired. See
+  [`docs/native/R0_CANONICAL_TREE.md`](docs/native/R0_CANONICAL_TREE.md).
+- ✅ `tools/native_bringup/smoke_r0_model.py` — one PPO update + bit-exact
+  checkpoint restore on CPU against the canonical contract.
+- ✅ `tools/native_bringup/verify_r0_batched.py` — CPU/synthetic B=1 and
+  multi-lane equivalence for the batched trainer (`PASS`).
+- ❌ **No trained R0 checkpoint.** `builds/native/r0-elite-v3-smoke.pt` is the
+  **random-weight, canonical-contract** smoke checkpoint; treat it as invalid
+  as a policy.
+- ❌ **No native live R0 rollout adapter.** `observe_train_v1` does not expose
+  the semantic streams R0 production requires (`groups`, `relations`,
+  `card_runtime`, `combat_events`, lifecycle); these must come from the capture
+  adapter, not be synthesized.
+- ❌ **No R0 evaluation harness** and no R0 PPO run on the real engine.
+- ❌ **No `compiled-prod-v17` data** locally; see the issue link below.
+
+### R0 source repositories (cloned 2026-11-14)
+
+- **`.resource/r0-elite-training`** (IMAX9D, **MIT**): the full R0 Elite
+  capture → compile → certify → **imitation-training** chain, the batched
+  trainer (`r0_train_batched.py`), CPU data backend and the
+  `verify_b1_equiv`/`verify_multilane`/`verify_reuse` checks.
+  - It contains **no weights and no data**. Training consumes a
+    `compiled-prod-v17` corpus (~772 GB; one 3 GiB batch is enough for B=1024)
+    fetched from Baidu pan with `R0_XPAN_TOKEN`, or produced by
+    `data_pipeline/r0_produce` from a game-side capturer.
+  - Requires Python 3.12, **torch 2.8+cu128**, CUDA 12.8; peak VRAM is
+    12.5 GiB at B=256 and 23.7 GiB at B=512.
+  - It is **imitation learning**, not PPO: `forced=expert_actions`.
+  - Its `training_r0` is **newer than the sandbox copy**: it adds
+    `attack_locked` and cross-table `Base` resolution. The canonical numbers
+    are now **36,854,175 parameters** and observation schema
+    `825408c38a3facdb8596c08397b739a38b83d8a5be0727cf6e9eecb5f5f04d44`.
+    The sandbox copy is **36,853,407** / `07c183d26fcd3e99af2ce83d3dbb2f78
+    3a430fc58e35e0c10cab43c5c7c27426`.
+  - A checkpoint from one contract will **not** load in the other; the
+    `_contract` buffer differs.
+  - CPU synthetic smoke was run on 2026-11-14 (`python -m training_r0.smoke
+    --profile elite --steps 2`): passes, 36,854,175 params, schema
+    `825408c3…4d44`. Its `verify_b1_equiv` / `verify_multilane` checks still
+    need the default (non-tiny) config and a real batch on the GPU host.
+  - Data/token/build/checkpoint questions were filed upstream:
+    <https://github.com/IMAX9D/r0-elite-training/issues/1>.
+    **Assume no response** and proceed with the defaults in this handoff.
+- **`.resource/royaleapi-downloader`** (source only; **no LICENSE file**):
+  bulk RoyaleAPI ladder-replay downloader with SQLite resume, dedupe,
+  fixed-season and expert-pool collection. It produces structured JSON, not
+  native captures, and collects **live 16.x** replays. It is optional expert
+  data/analysis, not a 15.535.29 training corpus; data collection must follow
+  the source site's terms.
+
+**Canonical decision — adopted 2026-11-14: upstream `r0-elite-training`.**
+
+The upstream tree is now the R0 source of truth (MIT). The sandbox
+`training_r0` copy is **obsolete** and must not be used for new data,
+checkpoints or runs. The upstream repo is the same author as
+`cr-native-sandbox`.
+
+Integration — **completed 2026-11-14**:
+
+1. ✅ Replaced `.resource/cr-native-sandbox/training_r0` with the upstream
+   `.resource/r0-elite-training/training_r0` (kept the sandbox README and its
+   non-R0 files).
+2. ✅ Brought over the upstream R0 `data_pipeline` pieces the trainer imports
+   (`r0_admission.py`, `r0_compile.py`, `r0_produce.py`, `r0_certify.py`,
+   `r0_train.py`) plus `bounded_pipeline.py`, `claim_ledger.py`, `fast_json.py`,
+   `fast_tensorizer.py`, `fused_verify.py`, `input_validator.py`. The sandbox
+   `native_core` was not replaced, and the Linux path/env adaptations in the
+   other `data_pipeline` files were preserved (`--downloader-root` stays
+   required instead of the upstream Windows default).
+3. ✅ `python -m training_r0.smoke --profile elite --steps 2` →
+   **36,854,175 params**, schema `825408c3…4d44`.
+4. ✅ Regenerated `tools/native_bringup/smoke_r0_model.py` output and
+   `builds/native/r0-elite-v3-smoke.pt`: 444,222,791 B, restore bit-exact,
+   `state_dict_sha256 1927d8c1…58bae`.
+5. ✅ `verify_b1_equiv.py` / `verify_multilane.py` were written for CUDA and a
+   real `compiled-prod-v17` corpus. Added
+   `tools/native_bringup/verify_r0_batched.py` for the CPU/synthetic case:
+   B=1 loss/gradient/parameter/state equivalence and 4-lane padding/state
+   isolation, **PASS**. The real-batch versions still wait for GPU/data.
+6. ✅ Updated the R0 tests and docs; no live `36,853,407` / `07c183d2…` code
+   references remain.
+
+Do not mix the old sandbox R0 contract with the upstream tree in one run.
+
+### Checkpoint acceptance checklist
+
+Ask for the `.pt` **plus** its metadata. Accept either:
+
+- a training checkpoint written by
+  `.resource/cr-native-sandbox/data_pipeline/r0_train.py`:
+  `kind: "r0-elite-training-checkpoint.v1"`, with `model_config`, `model`,
+  `optimizer`, `step`, `epoch` (and optional `best_val`); or
+- a policy checkpoint with the elite-v3 `state_dict` and a matching config.
+
+Then check, in order:
+
+1. `torch.load(..., map_location="cpu", weights_only=False)` succeeds and
+   `kind` is one of the two above.
+2. `ModelConfig(**model_config)` equals the elite-v3 defaults (width 384,
+   layers 6, heads 12, hidden 768, spatial 128, graph layers 4, all `use_*`
+   enabled), unless the provider intentionally trained an ablation.
+3. `R0Policy(CardVocabulary.from_native(), config)` builds and
+   `load_state_dict(..., strict=True)` passes. A mismatch raises
+   `R0 model/observation/semantic catalog contract mismatch` — do **not**
+   bypass it.
+4. Parameter count is **36,854,175** (upstream `r0-elite-training`, now
+   canonical). A `36,853,407` checkpoint is from the obsolete sandbox tree;
+   reject it unless you deliberately pin the old tree.
+5. The checkpoint's observation schema is
+   `825408c38a3facdb8596c08397b739a38b83d8a5be0727cf6e9eecb5f5f04d44`; record
+   `model_schema_hash`, vocabulary SHA, semantic-catalog SHA and reference
+   commit. The old sandbox schema `07c183d2…7426` is not accepted.
+6. Record step/epoch, whether it is IL or PPO, the deck/level (X-Bow 3.0,
+   level 11 expected), and the game build (15.535.29 expected).
+7. Run one forward pass on a synthetic `PublicBatch`; logits and value must be
+   finite. Then SHA-256 the file and store it under
+   `builds/native/r0-checkpoints/` (gitignored).
+
+If the checkpoint comes from a different R0 revision, its `_contract` will not
+match. Do not re-hash or patch the contract to force a load; request that
+revision's `model_config`, vocabulary, semantic catalog and observation code,
+or retrain from scratch.
+
+### GPU requirements
+
+- Current `.venv` is **CPU-only** (`torch 2.5.1+cpu`); install a CUDA build.
+- Prefer **24 GB VRAM** (R0 is 36.85M params and needs batched PPO inference),
+  on the **same host** as the 8 rootless workers. Remote observation streaming
+  will eat the gain.
+- R0 at 5-tick decisions = 4 decisions/s per worker; 8 workers = 32
+  decisions/s. Benchmark forward (batch 2/8/16) and one PPO update before the
+  long run.
+- GPU does not remove the engine/RPC wall; keep the 8-worker knee and a
+  decision interval of 4–8 (R0's own default is 5).
+
+### Version policy — what matters, what does not
+
+- **Balance drift is tolerable; schema drift is not.** The X-Bow deck at level
+  11 matches across 15.535.29 and 16.635.1 for towers, deck ids/forms/costs,
+  starting elixir and all unit max HP except Electro Spirit (215 vs 217). A
+  policy trained on 15.535.29 is therefore a valid X-Bow policy, not a
+  throwaway.
+- What *does* break transfer: different card/form IDs, event/observation
+  schema, tick/clock behavior, tower-troop or hero mechanics, and the engine
+  protocol. These require an adapter or retraining; weights do not silently
+  cross them.
+- New 16.x cards/evolutions only matter if they enter the opponent pool. A
+  fixed-deck mirror (X-Bow vs X-Bow) is almost unaffected by card additions.
+- Do **not** mix 16.x human IL labels with 15.535 self-play in the same run
+  without an explicit adaptation step. `IL_Replay` and the RoyaleAPI
+  downloader are live 16.x data.
+- If live 16.x is the target, treat it as a separate evaluation/fine-tune
+  stage: measure on the A51/16.635.1 probe, then port/adapt; do not assume
+  zero-shot parity.
+
+### Next-session order
+
+1. ✅ **Adopt the upstream R0 tree** — done 2026-11-14; smoke records
+   36,854,175 / `825408c3…4d44`. See the session section at the top.
+2. **Data/checkpoint gate** — there is no checkpoint and no local data. The
+   issue asking for a batch/token/build is
+   <https://github.com/IMAX9D/r0-elite-training/issues/1>; assume no response.
+   If no batch is available, plan own 15.535.29 captures via
+   `data_pipeline/r0_produce` → `r0_compile`, or defer R0 IL.
+3. **GPU host** — CUDA torch, forward/PPO-update benchmark. This host has no
+   NVIDIA GPU, so this needs a different machine.
+4. **Native adapter** — `observe_train_v1` alone is not enough for production
+   R0 semantics; use the capture → `ReplayFeatureAssembler` path, then one
+   scripted X-Bow match.
+5. **R0 smoke** — one update, checkpoint save/restore, one full match.
+6. ✅ **`--worker-ports`** for train/evaluate/v2 — done and validated on two
+   rootless workers.
+7. **Still open, no GPU needed:** port the FirstLight-Zero PFSP/snapshot/
+   paired-seat design (Apache-2.0); add the scripted X-Bow opponent.
+8. **Fallback** if no data/checkpoint/GPU: sandbox recurrent, 8 workers,
+   interval 4–8 (`0.277 / 0.522 matches/s`); this is the only runnable Phase 3
+   path today.
 
 ## Status 2026-11-13 (latest session): Phase 1 deck contract + determinism
 
@@ -335,6 +595,9 @@ ability parity still needs a level-11 entity probe. Reports:
 bit-exact (`state_dict_sha256 50f08a8f…d014`). The resumed update hits the KL
 guard (`updated: false, reason: kl_guard`), which is expected after applying
 the first update to the same segment.
+*(Historical: these numbers are the **obsolete sandbox R0 contract**. The
+canonical tree is now `.resource/r0-elite-training` (36,854,175 params,
+schema `825408c3…4d44`); regenerate this smoke after the tree swap.)*
 
 **Test evidence:** `tests/test_deck_spec.py` plus the existing mask, random-legal,
 run-contract, evaluation, dashboard, fast-path and active-worker tests:
@@ -487,17 +750,29 @@ oversubscribed at 474.0 with per-worker p50 39 vs 60). Engine-only capacity at
 100 ticks/RPC is 9.6 matches/s at 8 and 10.6 at 12, so the 10-matches/s gate is
 met at 12 and within 4 % at 8. Training stays at 8.
 
-### 4. Phase 3 — training, after the measured loop fix
+### 4. Phase 3 — R0 checkpoint gate, then training
 
 The loop fix is in place (fast-json default, `--decision-ticks` 4–8,
-measured **0.522 matches/s at 8 workers / interval 8**). Before the long run:
+measured **0.522 matches/s at 8 workers / interval 8**). **R0 is the chosen
+model, not the engine** — see **“R0 — what it is and what we need”** above.
 
-1. choose the inference host: R0 elite-v3 needs a GPU (125–269 ms per CPU
-   pass); the sandbox recurrent policy stays CPU-feasible;
-2. pick and record the decision interval (start at 4; 8 is the measured
-   throughput point) and the level/deck contract in the run manifest;
-3. run a short smoke (`--smoke`) and one iteration with checkpoint save/restore
-   before detaching the long PPO run.
+Next session, in order:
+
+1. **Get and verify the R0 checkpoint.** Use the acceptance checklist above.
+   If it fails the `_contract`/schema check, record the mismatch and do not
+   bypass it; either obtain that revision's config/catalog or retrain.
+2. **Provision the GPU host** (CUDA torch, 24 GB preferred, same host as the
+   workers); benchmark R0 forward and one PPO update.
+3. **Build the native R0 adapter** from the capture path
+   (`observe_train_v1` lacks the required semantic streams) and run one
+   scripted match.
+4. **R0 smoke** (forward + PPO update + save/restore + one match at decision
+   interval 5), then the long run.
+5. ✅ **`--worker-ports`** for train/evaluate/v2 is done; the remaining
+   GPU-free work is the FirstLight-Zero PFSP/snapshot/paired-seat design
+   (Apache-2.0) and the scripted X-Bow opponent.
+6. **Fallback** if checkpoint/GPU is unavailable: sandbox recurrent, 8
+   workers, interval 4–8.
 
 R0 elite-v3 remains the chosen stack; FirstLight v1450 remains a
 benchmark/opponent.
@@ -506,7 +781,8 @@ benchmark/opponent.
 X-Bow config + tokens, 20-match determinism/legality, model smoke, A51
 tower/card/elixir/unit-HP/ability parity; Electro Spirit 215 vs 217 is the one
 documented delta). Phase 2 ✅ (bottleneck plan measured; engine-only gate met
-at 12 workers). Next is the loop fix above, then Phase 3.
+at 12 workers). Next is the R0 checkpoint/GPU gate above, then Phase 3
+training.
 
 ### Starting workers manually (if the detached run is not active)
 
@@ -603,7 +879,27 @@ on the daily driver.
   determinism harness validate hand order, deck indices, form flags and
   abilities. See `builds/native/xbow-determinism-20.json`.
 - ~~Can one PPO step run on the sandbox R0 elite-v3 stack?~~ **Answered:** yes,
-  CPU smoke with a bit-exact checkpoint restore.
+  CPU smoke with a bit-exact checkpoint restore. **But that smoke uses a
+  random-weight model**; no trained R0 checkpoint exists locally.
+- **What R0 checkpoint can we obtain?** Need a trained elite-v3 checkpoint
+  (`r0-elite-training-checkpoint.v1` or a matching policy `state_dict`) with
+  its `model_config`, vocabulary/semantic hashes and step/epoch. A checkpoint
+  from another R0 revision will fail the `_contract` check. See the R0 section.
+- ~~Which R0 tree is canonical?~~ **Answered and adopted 2026-11-14:**
+  upstream `.resource/r0-elite-training` (MIT, 36,854,175 params, schema
+  `825408c3…4d44`) is now vendored into the sandbox; the old copy is retired.
+  See [`docs/native/R0_CANONICAL_TREE.md`](docs/native/R0_CANONICAL_TREE.md).
+- **Do we have the `R0_XPAN_TOKEN` / a `compiled-prod-v17` batch?** No local
+  data. One 3 GiB batch is enough for B=1024. Asked upstream in issue #1;
+  assume no response, so plan own 15.535.29 captures via
+  `data_pipeline/r0_produce` → `r0_compile` if R0 IL is required.
+- **Which game build was the upstream R0 data captured on?** `compiled-prod-v17`
+  is a contract version, not a game build. R0 IL labels must match the engine
+  build we train/deploy on. No answer yet; assume a mismatch until proven.
+- **Is there a trained R0 checkpoint anywhere?** None in the upstream repo.
+  Asked in issue #1; assume none and plan IL/PPO from scratch.
+- **Which GPU host?** CUDA torch, 24 GB VRAM preferred, same host as the 8
+  workers. Needed before an R0 run; the sandbox recurrent fallback stays CPU.
 - What is the 4/8/12-worker knee on this host? **Answer in
   `builds/native/phase0-20261114T000821Z/sweep-summary.json`**; treat 12 as an
   oversubscription point (10 physical cores).
@@ -627,6 +923,14 @@ on the daily driver.
 | `docs/native/PHASE2_BOTTLENECK.md` | Measured throughput breakdown and Phase 2 plan |
 | `tools/native_bringup/profile_native_loop.py` | Transport / full-loop / model profiler (fast-json and decision-interval A/B) |
 | `builds/native/phase2-20261114T015424Z/` | Phase 2 profile evidence (gitignored) |
+| `.resource/cr-native-sandbox/training_r0/` | R0 elite-v3 model, observation contract, IL/PPO kernels (vendored from upstream `r0-elite-training`, 36,854,175 params) |
+| `.resource/cr-native-sandbox/data_pipeline/r0_train.py` | R0 training-checkpoint writer (`r0-elite-training-checkpoint.v1`) |
+| `.resource/r0-elite-training/` | **Canonical** MIT R0 Elite IL chain + batched trainer (36,854,175 params, no weights/data) |
+| `.resource/royaleapi-downloader/` | Optional live-replay downloader (16.x; source only, no LICENSE file) |
+| `.resource/Clash-Royale-v1-Client-Leak/` | **Decompiled v1 (2016) client pseudocode**, reference only; not 15.535.29, not buildable, no license |
+| `builds/native/r0-elite-v3-smoke.pt` | **Random-weight, canonical-contract** R0 smoke checkpoint; not a policy |
+| `.resource/FirstLight-Zero/firstlight_zero/training.py` | PFSP + snapshot pool reference (Apache-2.0) |
+| `.resource/FirstLight-Zero/firstlight_zero/evaluate.py` | Paired-seat / round-robin evaluation reference (Apache-2.0) |
 | `tools/native_bringup/preflight_bundle.py` | Static cold-deploy preflight (no root) |
 | `tools/native_bringup/build_host_artifacts.sh` | Rebuild host JAR + bridge |
 | `tools/native_bringup/build_local_overlay.py` | Patch the published bundle + manifest |
@@ -635,6 +939,8 @@ on the daily driver.
 | `tools/native_bringup/probe_native_entity_hp.py` | Native per-card max HP + Hero Knight ability probe (level via replay) |
 | `tools/native_analysis/entity_hp_probe.py` | A51 per-card max HP probe (`--level`, `--deck xbow`, targeted deploys) |
 | `tools/native_bringup/smoke_r0_model.py` | R0 elite-v3 PPO step + checkpoint save/restore smoke |
+| `tools/native_bringup/verify_r0_batched.py` | CPU/synthetic B=1 + multi-lane equivalence for the R0 batched trainer |
+| `docs/native/R0_CANONICAL_TREE.md` | R0 tree adoption, contract hashes and verification evidence |
 | `tools/native_bringup/run_phase0.py` | Detached 1 h soak + 4/8/12-worker sweep + evidence |
 | `builds/native/phase0-*/` | Soak CSV, RSS/CPU summary, sweep report (gitignored) |
 | `builds/native/xbow-determinism-20.json` | 20-seed determinism/legality report |
@@ -667,6 +973,20 @@ on the daily driver.
 - Do not build an AVD/MuMu/phone cluster or a custom loader unless a Phase 0/1
   gate fails.
 - Do not train on `IL_Replay`.
+- Do not call R0 "the engine"; the engine is `libg.so` 15.535.29. R0 is the
+  policy/value model in `training_r0/`.
+- Do not treat `builds/native/r0-elite-v3-smoke.pt` as a trained policy; it is
+  random-weight smoke data.
+- Do not bypass the R0 `_contract` check or re-hash it to load a foreign
+  checkpoint; obtain that revision's config/catalog or retrain.
+- Do not load a `36,853,407` / `07c183d2…7426` R0 checkpoint; that is the
+  retired contract. `.resource/r0-elite-training` is canonical (36,854,175
+  params). Do not mix the two trees.
+- Do not import code or assets from `.resource/Clash-Royale-v1-Client-Leak`;
+  it is leaked, unlicensed v1 (2016) decompiled client pseudocode, not the
+  current engine and not the server.
+- Do not start a long R0 run on CPU or on a remote GPU with observations
+  streamed over the network; use a CUDA host beside the workers.
 - Do not make crforge the critical path.
 - Do not run real-time matches as the training loop.
 - Do not re-run `start` on a busy port (duplicate-process bug); check `ss` /

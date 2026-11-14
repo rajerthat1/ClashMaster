@@ -186,3 +186,28 @@ does not start a worker, read a dataset, or use the GPU.
 .venv/bin/python tools/native_bringup/smoke_r0_model.py --rich
 # -> builds/native/r0-model-smoke.json
 ```
+
+Expect **36,854,175 parameters** and observation schema
+`825408c3…4d44` (canonical upstream contract). The checkpoint is random-weight
+smoke data, not a policy.
+
+## `verify_r0_batched.py`
+
+CPU/synthetic stand-in for the upstream CUDA/real-data `verify_b1_equiv.py` and
+`verify_multilane.py`. It builds capture-complete synthetic fixtures, then:
+
+1. compares `training_r0.il_learning.update_imitation_sequence` with the
+   batched trainer's single-lane loop (loss, gradients, one AdamW step,
+   recurrent state);
+2. fuses lanes of different lengths/start ticks and compares every position's
+   log-probability and final state against each lane run alone.
+
+```bash
+.venv/bin/python tools/native_bringup/verify_r0_batched.py --steps 4 --lanes 4
+.venv/bin/python tools/native_bringup/verify_r0_batched.py --steps 4 --lanes 4 \
+    --rich --output builds/native/r0-batched-equiv-rich.json
+# -> builds/native/r0-batched-equiv.json; exit 0 on PASS
+```
+
+No worker, dataset or GPU is used. The first cold CPU call can differ by
+~2e-3, so the tool warms the measured shapes before comparing.

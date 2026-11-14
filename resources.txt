@@ -6,9 +6,13 @@ https://github.com/Jaasssoooonnnnn/FirstLight-Zero
 https://github.com/Jaasssoooonnnnn/FL-Royale
 https://github.com/Jaasssoooonnnnn/FirstLight_CR
 https://github.com/vegetableleaf/ClashAI
+CR:
+https://github.com/clashRoyaleClients/Clash-Royale-v1-Client-Leak/tree/main
 CR Real Engine:
 https://github.com/IMAX9D/cr-native-sandbox
 https://github.com/IMAX9D/cr-native-linux-bionic
+https://github.com/IMAX9D/r0-elite-training
+https://github.com/IMAX9D/royaleapi-downloader
 ------------------------------------------------------------
 Dataset:
 https://huggingface.co/datasets/VanguardX101/IL_Replay
