@@ -48,6 +48,19 @@ from training.schema import (  # noqa: E402
 EXPECTED_DECK = (27000008, 26000000, 26000001, 27000006,
                  26000010, 26000084, 28000000, 28000011)
 EXPECTED_FORMS = (0, 2, 1, 1, 0, 0, 0, 0)
+CARD_LABELS = {
+    27000008: "X-Bow",
+    26000000: "Knight",
+    26000001: "Archers",
+    27000006: "Tesla",
+    26000010: "Skeletons",
+    26000084: "Electro Spirit",
+    28000000: "Fireball",
+    28000011: "The Log",
+    203000000: "Hero Knight (form)",
+    13000001: "Evo Archers (form)",
+    13000102: "Evo Tesla (form)",
+}
 GATE_RESULT_CODES = frozenset({3, 4})
 POINTER_KEYS = frozenset({"id", "target"})
 DECK_ROWS = [
@@ -141,6 +154,56 @@ def _check_deck_contract(state: Mapping[str, Any]) -> list[str]:
                     f"side {side} card {expected.card_id}: has_hero mismatch"
                 )
     return errors
+
+
+def _merge_entity_hp(state: Mapping[str, Any], aggregate: dict[str, dict[str, Any]]) -> None:
+    """Accumulate per-card max HP from every observed state.
+
+    ``max_hp`` is constant for an entity, so the maximum over the match is the
+    level-normalized unit HP for that card. Keying by runtime card id preserves
+    hero/evolution form ids (e.g. Hero Knight ``203000000``) separately from
+    their base card.
+    """
+    tick = int(state.get("tick", 0))
+    for entity in state.get("entities", []):
+        side = int(entity.get("side", -1))
+        if side not in (0, 1):
+            continue
+        card_id = int(entity.get("card_id", -1))
+        if card_id == -1:
+            continue
+        base_id = int(entity.get("base_card_id", card_id))
+        max_hp = entity.get("max_hp")
+        key = str(card_id)
+        row = aggregate.get(key)
+        if row is None:
+            row = aggregate[key] = {
+                "cardId": card_id,
+                "baseCardId": base_id,
+                "maxHp": None,
+                "firstSeenTick": tick,
+                "sides": [],
+                "abilityStateNames": {},
+                "abilityCharges": [],
+                "abilityManaCost": None,
+                "abilityAvailable": False,
+            }
+        if max_hp is not None:
+            row["maxHp"] = max(int(max_hp), int(row["maxHp"] or 0))
+        if side not in row["sides"]:
+            row["sides"].append(side)
+        state_code = entity.get("ability_state_code")
+        if state_code is not None and int(state_code) >= 0:
+            name = str(entity.get("ability_state_name", state_code))
+            row["abilityStateNames"][name] = row["abilityStateNames"].get(name, 0) + 1
+        charges = entity.get("ability_charges_remaining")
+        if charges is not None and int(charges) >= 0 and int(charges) not in row["abilityCharges"]:
+            row["abilityCharges"].append(int(charges))
+        mana_cost = entity.get("ability_mana_cost")
+        if mana_cost is not None and int(mana_cost) >= 0:
+            row["abilityManaCost"] = int(mana_cost)
+        if entity.get("ability_available"):
+            row["abilityAvailable"] = True
 
 
 def _golden_frame(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -262,6 +325,7 @@ def run_match(
     deck_errors: list[str] = []
     plays = {str(card_id): 0 for card_id in EXPECTED_DECK}
     golden_frames: list[dict[str, Any]] = []
+    entity_hp: dict[str, dict[str, Any]] = {}
     started = time.perf_counter()
 
     def record(tick: int, digest: str) -> None:
@@ -276,6 +340,7 @@ def run_match(
     value["rndSeed"] = int(seed)
     state = env.reset(value, warmup_steps=100)
     deck_errors.extend(_check_deck_contract(state))
+    _merge_entity_hp(state, entity_hp)
     record(int(state["tick"]), observation_digest(state, encoder))
     if capture_frames:
         golden_frames.append(_golden_frame(state))
@@ -331,6 +396,7 @@ def run_match(
             ).hexdigest()
             break
         state = transition["state"]
+        _merge_entity_hp(state, entity_hp)
         record(int(state["tick"]), observation_digest(state, encoder))
         if capture_frames and int(state["tick"]) % 500 == 0:
             golden_frames.append(_golden_frame(state))
@@ -351,6 +417,7 @@ def run_match(
         "gate_refusals": gate_refusals,
         "deck_errors": sorted(set(deck_errors)),
         "plays": plays,
+        "entity_hp": sorted(entity_hp.values(), key=lambda row: str(row["cardId"])),
         "terminal_tick": terminal_tick,
         "done": done,
         "elapsed_seconds": round(elapsed, 3),
@@ -380,6 +447,7 @@ def _summary(match: Mapping[str, Any], *, repeats: list[dict[str, Any]]) -> dict
         "gate_refusals": len(match["gate_refusals"]),
         "deck_errors": match["deck_errors"],
         "plays": match["plays"],
+        "entity_hp": match.get("entity_hp", []),
         "repeat_terminal_ticks": [run["terminal_tick"] for run in repeats],
         "repeat_illegal": [len(run["illegal"]) for run in repeats],
         "golden_frames": match.get("golden_frames", []),
@@ -411,6 +479,11 @@ def main(argv: list[str] | None = None) -> int:
         "--golden-output",
         type=Path,
         help="write A51-comparable golden frames for --start-seed",
+    )
+    parser.add_argument(
+        "--entity-hp-output",
+        type=Path,
+        help="write the level-normalized per-card max-HP table for --start-seed",
     )
     args = parser.parse_args(argv)
     if args.matches < 1 or args.repeats < 1:
@@ -521,6 +594,10 @@ def main(argv: list[str] | None = None) -> int:
             "deck_errors": sum(len(row["deck_errors"]) for row in results),
             "plays": sum(sum(row["plays"].values()) for row in results),
         },
+        "entity_hp": [
+            {**row, "name": CARD_LABELS.get(int(row["cardId"]), str(row["cardId"]))}
+            for row in (results[0].get("entity_hp", []) if results else [])
+        ],
     }
     if args.output is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -546,6 +623,21 @@ def main(argv: list[str] | None = None) -> int:
         args.golden_output.parent.mkdir(parents=True, exist_ok=True)
         args.golden_output.write_text(
             json.dumps(golden, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    if args.entity_hp_output is not None:
+        table = {
+            "schema": "xbow-native-entity-hp-v1",
+            "build": "15.535.29",
+            "abi": "x86_64",
+            "seed": args.start_seed,
+            "deck": XBOW_DECK.to_dict(),
+            "replay": str(args.replay),
+            "entity_hp": report["entity_hp"],
+        }
+        args.entity_hp_output.parent.mkdir(parents=True, exist_ok=True)
+        args.entity_hp_output.write_text(
+            json.dumps(table, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
     print(json.dumps({

@@ -112,10 +112,20 @@ compatible with 16.635.1 or the 160402002 ARM64 build.
 - [x] `verify-bundle` → `install --workers 4 --apply` → `doctor`
       (`hard_pass=true`).
 - [x] 4 workers ping; one worker completed a full match (tick 6147).
-- [ ] Measure **engine-only** ticks/s per worker at 4 / 8 / 12 workers.
-- [ ] 1 h soak; record CPU/RSS and the knee.
-      *(Running detached via `tools/native_bringup/run_phase0.py`; evidence
-      lands under `builds/native/phase0-*/`.)*
+- [x] Measure worker throughput at 4 / 8 / 12 workers and record the knee.
+      *(Active-worker sweep, `decision_ticks=1` (RPC-bound decision loop),
+      2026-11-14: **4 → 300.5**, **8 → 486.1**, **12 → 474.0 ticks/s**
+      aggregate; p50 per worker 75.6 / 60.0 / 39.0. Each tier `complete`, no
+      `safety_reasons`, 100 % action acceptance, 0 unexpected rejections.
+      `recommended_workers: 8`; 12 is the oversubscription point. Engine-only
+      (100-tick no-policy steps) remains 8.3k ticks/s one worker / 32.6k at 4
+      from the earlier session — different workload, do not compare directly.)*
+- [x] 1 h soak; record CPU/RSS and the knee.
+      *(PASS 2026-11-14: `builds/native/phase0-20261114T000821Z/`, 60
+      samples, `ping_failures: 0`; RSS flat 324.6–327.3 MB per worker, CPU
+      mean 0.06 %, ping mean ≈0.85 ms. The first sweep attempt hit a
+      one-frame terminal-lag bug (fixed in the sandbox sweep script); the
+      4/8/12 rerun supplies the knee.)*
 
 **Gate:** `doctor` hard-pass, 4 workers healthy, one worker completes a match,
 1 h with no crash.
@@ -127,27 +137,58 @@ compatible with 16.635.1 or the 160402002 ARM64 build.
       Skeletons, Electro Spirit, Fireball, The Log. Record forms and levels.
 - [x] Exercise `reset` / `observe` / `act` / `step`; 20 matches.
 - [x] Same seed + same actions → same observations (determinism).
-- [ ] Validate observations against A51/16.635.1 goldens: card IDs, HP, elixir,
-      tick, hand, abilities. Note 15.535.29 vs 16.635.93 differences.
-      *(First pass: level-11 tower HP 4824/3052, deck ids/forms/costs and
-      starting elixir match; unit HP and abilities pending.)*
+- [x] Validate observations against A51/16.635.1 goldens: card IDs, HP, elixir,
+      tick, hand, abilities. Note 15.535.29 vs 16.635.1 differences.
+      *(Level-11 parity: tower HP 4824/3052, deck ids/forms/costs and starting
+      elixir match. Unit max HP matches for X-Bow 1600, Knight/Hero Knight
+      1766, Archers/Evo Archers 304, Tesla/Evo Tesla 1182, Skeletons 81.
+      **Electro Spirit differs: A51 16.635.1 = 215 vs native 15.535.29 = 217**
+      (real balance delta; L10=195, L12=236 on A51). Hero Knight ability
+      matches exactly: state 2/charges 1 -> state 6/charges 0, 2 elixir, second
+      press refused. Evidence:
+      `builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json`.)*
 - [x] Decide the model: sandbox R0 elite-v3 (v1450 stays a benchmark).
 
 **Gate:** 20 matches, 0 errors, X-Bow deck plays legally, deterministic reset.
 
 ### Phase 2 — Throughput (1 week)
 
-- [ ] Scale 4 → 8 → 12 workers; record engine-only and end-to-end rates.
-- [ ] Watch CPU, per-process RSS, and the knee where adding workers stops
-      helping.
-- [ ] If engine-only clears 10 matches/s, lock the host size.
-- [ ] If the full observation/policy loop is below target, profile the
+- [x] Scale 4 → 8 → 12 workers; record engine-only and end-to-end rates.
+      *(2026-11-14 active-worker sweep: 300.5 → 486.1 → 474.0 ticks/s
+      aggregate at `decision_ticks=1`; per-worker p50 75.6 → 60.0 → 39.0.
+      The knee is **8 workers** (`recommended_workers: 8`). The sweep's
+      ~4.9k–7.1k-tick matches (bootstrap replay) put this decision-loop rate
+      at ≈0.04 → 0.07 → 0.07 matches/s; it is RPC-bound, not engine-bound.)*
+- [x] Watch CPU, per-process RSS, and the knee where adding workers stops
+      helping. *(RSS flat in the soak; aggregate throughput falls at 12.)*
+- [x] If engine-only clears 10 matches/s, lock the host size.
+      *(2026-11-14 Phase 2 profile: fast-json + 100 ticks/RPC gives **36.4k
+      ticks/s at 8 workers** (≈9.6 matches/s) and **40.2k at 12** (≈10.6).
+      The 10 matches/s engine-only gate is met at 12 and is within 4 % at 8.
+      Lock **8 workers for training**; 12 adds only ≈10 % engine-only and no
+      RPC throughput.)*
+- [x] If the full observation/policy loop is below target, profile the
       observation path before buying more hardware.
-- [ ] Compare with the published sandbox table (0.84–0.93 matches/s at 12–24
+      *(`tools/native_bringup/profile_native_loop.py`; results in
+      [`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md).
+      At one tick/RPC the loop is **0.074 matches/s at 8 workers**, attributed
+      48 % inference, 40 % transition wait, 10 % Python observation/mask. The
+      worker spends ~90 % of its transition on JSON, not the engine.
+      `fast-json` is 1.5–2.1× faster; a 4/8-tick decision interval lifts the
+      same loop to **0.277 / 0.522 matches/s** with the real collector.)*
+- [x] Compare with the published sandbox table (0.84–0.93 matches/s at 12–24
       processes with 4 matches/process).
+      *(Published run used a 25-core host + RTX 5090. On this CPU-only laptop
+      the 8-worker loop is 0.074 matches/s at one tick/RPC and 0.522 at an
+      8-tick interval. The published number is therefore not a CPU baseline;
+      it also confirms inference, not the engine, is the remaining gap.)*
 
 **Gate:** ≥10 matches/s engine-only on the chosen host, or a written bottleneck
-plan with a measured next step.
+plan with a measured next step. **Both are now satisfied:** 10.6 matches/s
+engine-only at 12 workers (9.6 at 8), and the plan in
+[`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md) with a
+measured next step (fast-json + decision interval 4–8; R0 inference needs a
+GPU).
 
 ### Phase 3 — Training (2–3 weeks)
 
@@ -315,7 +356,24 @@ run before this gate.
 
 ## 13. Next action
 
-Phase 0 is complete except the 1 h soak and 4/8/12-worker knee. Phase 1 is
-complete except the A51/16.635.1 golden parity check (no device attached on
-2026-11-13). See [`HANDOFF.md`](HANDOFF.md): attach the A51, capture the golden,
-record the 15.535.29 vs 16.635.1 gap, then start Phase 2 host sizing.
+Phases 0–2 are complete as of 2026-11-14. Soak passed (60 samples, zero ping
+failures, flat RSS), the one-tick sweep knee is **8 workers** (300.5 → 486.1 →
+474.0 ticks/s), and the A51/16.635.1 parity check is recorded (all X-Bow unit
+HP matches except Electro Spirit 215 vs 217; Hero Knight ability matches).
+
+The Phase 2 bottleneck plan is measured and written:
+[`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md).
+Engine-only at 100 ticks/RPC is 9.6 matches/s at 8 workers and 10.6 at 12.
+The one-tick policy loop is 0.074 matches/s at 8 workers (48 % inference,
+40 % transition wait, 10 % Python observation), and the two measured levers
+are `fast-json` (1.5–2.1×) and a 4–8-tick decision interval (0.277 / 0.522
+matches/s). R0 elite-v3 takes 125–269 ms per CPU forward pass, so Phase 3
+needs a GPU for R0 or the CPU-feasible sandbox recurrent policy.
+
+The loop fix is implemented: `decision_ticks` in both collectors,
+`--transition-mode fast-json` as the training default, and the flag plumbed
+through `training/train.py`, `training/evaluate.py` and
+`selfplay_v2/train.py`. Re-measured at 8 workers / interval 8: **0.522
+matches/s**. Next: choose the Phase 3 inference host (R0 needs a GPU; the
+sandbox recurrent policy is CPU-feasible), smoke an iteration, then start the
+PPO run. See [`HANDOFF.md`](HANDOFF.md).

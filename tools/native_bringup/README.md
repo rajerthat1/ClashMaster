@@ -139,6 +139,43 @@ setsid nohup .venv/bin/python -u tools/native_bringup/run_phase0.py \
 `RUNNING` exists while it is active; `DONE` and `phase0-summary.json` are
 written at the end.
 
+## `profile_native_loop.py`
+
+Phase 2 bottleneck profiler. It separates three costs that the Phase 0 sweep
+rolled together:
+
+- **transport** — native ticks with empty joint actions, measuring the client
+  RPC split (serialize / send / receive / parse) and, with
+  `--profile-native`, the worker `timing_v1` split (request parse, joint
+  action, step JNI, step JSON parse, observe JNI, observe JSON parse, response
+  serialization);
+- **loop** — full self-play matches with the sandbox recurrent policy,
+  attributing the Python thread to mask probes, encoding, mask build,
+  inference, reward and trajectory bookkeeping;
+- **model** — forward-pass microbenchmarks for the sandbox recurrent policy
+  and R0 elite-v3.
+
+`--transition-mode fast-json` uses `joint_training_transition_fast_v1`, which
+skips the worker's full `JSONObject` parse/serialize round trip;
+`--transport-steps` / `--loop-steps` set the number of native ticks per RPC
+(decision interval). `--profile-native` adds one extra response serialization
+pass, so use it for attribution shares, not throughput.
+
+```bash
+# 4 workers, all phases, workers started and stopped by the tool
+.venv/bin/python tools/native_bringup/profile_native_loop.py --workers 4
+
+# A/B a running 8-worker set without restarting it
+.venv/bin/python tools/native_bringup/profile_native_loop.py \
+    --ports 39031-39038 --skip-start --phases transport \
+    --transition-mode fast-json --transport-steps 8 \
+    --label w8-fast-steps8
+# -> builds/native/phase2-<UTC>/profile-w8-fast-steps8.json
+```
+
+See [`docs/native/PHASE2_BOTTLENECK.md`](../../docs/native/PHASE2_BOTTLENECK.md)
+for the measured results and the host plan.
+
 ## `smoke_r0_model.py`
 
 Runs the sandbox R0 elite-v3 stack on CPU: one synthetic rollout, one real PPO

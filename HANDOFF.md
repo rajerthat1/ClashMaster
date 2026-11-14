@@ -20,18 +20,49 @@
 Runtime details: [`docs/native/LINUX_BIONIC_RUNTIME.md`](docs/native/LINUX_BIONIC_RUNTIME.md).
 Bring-up evidence and runbook: [`docs/native/PHASE0_BRINGUP.md`](docs/native/PHASE0_BRINGUP.md).
 
-## Right now — Phase 0 soak + sweep running detached (2026-11-14 00:08 UTC)
+## Phase 0 — PASSED: 1 h soak + 4/8/12 sweep (2026-11-14)
 
-The remaining Phase 0 gate is a detached run of
-`tools/native_bringup/run_phase0.py`:
+Evidence directory: `builds/native/phase0-20261114T000821Z/`.
 
-```
-builds/native/phase0-20261114T000821Z/
-```
+1. **Soak: PASS.** 4 workers, 60 samples over 60 minutes, `ping_failures: 0`.
+   RSS stayed flat at 324.6–327.3 MB per process; CPU mean 0.06 %; ping mean
+   ≈0.85 ms. No worker died and no sample failed.
+2. **First sweep attempt: failed, then fixed.** The sweep aborted at
+   `native Tick freeze: 3681->3681`. Root cause: near the terminal the engine
+   holds the native clock for one frame and reports `terminated` on the *next*
+   RPC (`terminal_tick` still 3681). The sweep treated the zero-delta frame as
+   a hard stall. Fix committed in `.resource/cr-native-sandbox`
+   (`48b273f`, tests in `8264789`): `one_transition` retries up to 8 no-action
+   frames before failing a tier.
+3. **Orchestrator fixes** in `tools/native_bringup/run_phase0.py`: the sweep
+   `--output` is now resolved absolute before running from `cwd=SANDBOX`
+   (the failed attempt wrote `sweep.json` inside the sandbox clone), and a
+   failed/missing sweep now marks the whole run failed instead of `complete`.
+4. The 4/8/12 sweep was rerun into the same directory using the passed soak.
+   Result (`sweep-summary.json` / `sweep.json`, 180 s per tier):
 
-It installed 12 rootless worker slots, is soaking 4 workers for 60 minutes
-(60 s sampling), then stops them, starts 12, and runs the active-worker sweep
-for 4/8/12. Expected: soak ends ≈ **01:08 UTC**, sweep ≈ **01:20 UTC**.
+   | Workers | Aggregate ticks/s | Per-worker p50 | Status |
+   | ---: | ---: | ---: | --- |
+   | 4 | 300.5 | 75.6 | complete |
+   | 8 | **486.1** | 60.0 | complete |
+   | 12 | 474.0 | 39.0 | complete |
+
+   `recommended_workers: 8`; **8 is the knee**, 12 is oversubscription (total
+   falls and per-worker p50 drops 60 → 39). Every tier had no
+   `safety_reasons`, 100 % action acceptance, 0 unexpected rejections, and
+   terminal/reset counts matched (8/8, 13/13, 12/12). The failed attempt is
+   preserved as `sweep-failed-attempt.json`.
+
+   Rerun only the sweep (keeps the existing soak result):
+
+   ```bash
+   .venv/bin/python tools/native_bringup/run_phase0.py \
+       --output-dir builds/native/phase0-20261114T000821Z --skip-soak
+   ```
+5. The sweep runs `decision_ticks=1`, so these are RPC-bound per-tick decision
+   rates, not engine-only throughput. With the sweep's ~6.7k-tick matches that
+   is ≈0.04 → 0.07 → 0.07 matches/s. Do not compare with the 100-tick
+   no-policy engine figure.
 
 **Read this first in the next session:**
 
@@ -44,7 +75,7 @@ jq . "$OUT/sweep-summary.json"         # ticks/s per tier, recommended_workers
 tail -20 "$OUT/detached.log"
 ```
 
-What passes:
+What the gates require:
 
 - soak: `ping_failures: 0`, one row per port per minute in `soak.csv`, RSS flat
   (≈325–340 MB/process), no worker disappears;
@@ -53,6 +84,10 @@ What passes:
   **12 workers is an oversubscription point** on this host (10 physical cores,
   12 logical); use the 8-worker number for official host sizing and 12 only as
   the knee/contention data point.
+- The sweep runs `decision_ticks=1`, so its ticks/s is an **RPC-bound
+  per-tick decision loop**, not raw engine throughput. Report it as such;
+  the 100-tick no-policy figure (~8.3k ticks/s/worker) measures a different
+  workload.
 
 If the orchestrator is gone but workers remain, stop them by port:
 
@@ -72,6 +107,138 @@ done
 
 Soak is a **reliability** test; sweep is a **capacity** test. Both write
 machine-readable evidence under `builds/native/phase0-*/`.
+
+## A51 unit-HP + ability parity — completed 2026-11-14 (in parallel with the soak)
+
+The previously open Phase 1 items are now measured at **level 11** on both
+builds, with tools that take the same level normalization and deck:
+
+- `tools/native_analysis/entity_hp_probe.py` — extended with `--level`,
+  `--deck standard|xbow`, `--decisions`, `--deploy-cards`, `--owners`; emits a
+  per-card `unitMaxHp` table. A51 evidence:
+  `builds/native/a51-entity-hp-16.635.1-L11-seed1.json`.
+- `tools/native_bringup/probe_native_entity_hp.py` — native counterpart on a
+  local worker via `NativeRoyaleEnv`; forces target cards into the arena
+  (`--cycle-elixir` keeps a bank so the 6-cost X-Bow can be played) and can
+  press the Hero Knight ability (`--activate-ability`). Evidence:
+  `builds/native/xbow-entity-hp-15.535.29-units-seed1.json` and
+  `xbow-entity-hp-15.535.29-xbow-seed1.json`.
+- `verify_xbow_determinism.py` now also aggregates per-card max HP and ability
+  telemetry (`--entity-hp-output`); the match/action logic is unchanged (seed 1
+  still ends at tick 3815).
+
+Unit max HP, level 11:
+
+| Card | A51 16.635.1 | native 15.535.29 | delta |
+| --- | ---: | ---: | ---: |
+| X-Bow | 1600 | 1600 | 0 |
+| Knight / Hero Knight | 1766 | 1766 | 0 |
+| Archers / Evo Archers | 304 | 304 | 0 |
+| Tesla / Evo Tesla | 1182 | 1182 | 0 |
+| Skeletons | 81 | 81 | 0 |
+| Electro Spirit | **215** | **217** | **−2** |
+
+Towers still match (King 4824, Princess 3052). Squads share HP between base
+and evolution form on both builds. The Electro Spirit delta is real, not a
+level artifact: A51 gives 195 at L10, 215 at L11, 236 at L12, while every other
+card lands exactly on the native L11 value.
+
+Hero Knight ability (`Knight_hero_Ability`, 2 elixir) matches exactly:
+
+| | A51 16.635.1 | native 15.535.29 |
+| --- | --- | --- |
+| before | `buttonState 2`, charges 1/1 | `state 2`, charges 1, mana 2 |
+| activation | accepted, state 6, charges 0 | accepted, `result_code 0`, elixir 6→4 |
+| after | state 6 (`AllChargesConsumed`), 0 charges | state 6, 0 charges |
+| second press | refused | n/a (one press per entity) |
+
+A51 evidence: `builds/native/a51-ability-action-16.635.1.json` (0 problems).
+Native evidence in `xbow-entity-hp-15.535.29-xbow-seed1.json` →
+`abilityActivations`. Combined comparison:
+`builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json`.
+
+Note: the sandbox label table `ABILITY_STATE_NAMES` names code 6 `"disabled"`,
+but the observed post-activation state is zero charges, and the A51 table names
+code 6 `AllChargesConsumed`. Prefer the numeric codes for parity work.
+
+Residual gap: evolution-cycle counters. A51 exposes `evolutionRuntime` only in
+`observe_rich`; the native training state has no equivalent field. Evolution
+forms are passive (no ability button/charges) and deploy with base-form HP.
+
+## Phase 2 — bottleneck plan, measured 2026-11-14
+
+Full write-up: [`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md).
+Evidence: `builds/native/phase2-20261114T015424Z/profile-*.json`. Tool:
+`tools/native_bringup/profile_native_loop.py` (transport / loop / model
+phases; `--transition-mode fast-json`, `--transport-steps`, `--loop-steps`).
+
+**Headline:** the engine is not the bottleneck; the one-tick JSON-RPC boundary
+is. Engine-only at 100 ticks/RPC is **36.4k ticks/s at 8 workers** (≈9.6
+matches/s) and **40.2k at 12** (≈10.6), so the Phase 2 10-matches/s gate is met
+at 12 and within 4 % at 8. At one decision per tick the full sandbox loop is
+**0.074 matches/s at 8 workers** (48 % inference, 40 % transition wait, 10 %
+Python observation/mask).
+
+Transport, 10 s after warm-up, one native tick per RPC:
+
+| Workers | legacy ticks/s | fast-json ticks/s | speed-up |
+| ---: | ---: | ---: | ---: |
+| 4 | 410.3 | 928.3 | 2.26× |
+| 8 | 611.0 | 1,024.9 | 1.68× |
+| 12 | 562.0 | 973.6 | 1.73× |
+
+Fast-json, ticks per RPC (decision interval):
+
+| Ticks/RPC | 8 workers ticks/s | 8 eq. matches/s | 12 workers ticks/s | 12 eq. matches/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1,024.9 | 0.27 | 973.6 | 0.26 |
+| 4 | 3,836.7 | 1.01 | 3,951.7 | 1.04 |
+| 8 | 7,357.7 | 1.94 | 7,383.7 | 1.95 |
+| 100 | 36,382.2 | 9.60 | 40,249.8 | 10.62 |
+
+Full `VectorNativeSelfPlayCollector` loop, one match per worker:
+
+| Workers | Mode | Ticks/decision | Matches/s | Seconds/match |
+| ---: | --- | ---: | ---: | ---: |
+| 4 | legacy | 1 | 0.041 | 24.63 |
+| 4 | fast-json | 1 | 0.058 | 17.13 |
+| 8 | fast-json | 1 | 0.074 | 13.55 |
+| 8 | fast-json | 4 | **0.293** | 3.41 |
+| 8 | fast-json | 8 | **0.503** | 1.99 |
+
+Worker `timing_v1` (8 workers, legacy, profiled) puts the engine at ~8 % of
+transition time: ~51 % response JSON serialization, ~32 % observation JSON
+parse, ~9 % step JSON parse, ~8 % engine JNI. The probe adds one extra
+serialization pass, so profiled throughput (167 ticks/s) is not a capacity
+number.
+
+Model forward on this CPU (median of 20): sandbox recurrent **2.78 ms**
+(batch 2, 1 thread) / **4.47–9.85 ms** (batch 8, 2 threads); R0 elite-v3
+**125–269 ms** (batch 2–8, 1–8 threads). R0 is 20–90× slower and does not
+scale with threads.
+
+**Loop fix — implemented 2026-11-14 in `.resource/cr-native-sandbox`:**
+
+1. ✅ `decision_ticks` added to both collectors
+   (`training/vector_rollout.py`, `training/rollout.py`), with validation.
+2. ✅ `training/train.py` and `selfplay_v2/train.py` expose
+   `--decision-ticks` and `--transition-mode` (default `fast-json`), record
+   both in the run manifest, and scale `native_ticks` by the interval.
+   `training/evaluate.py` accepts the same two flags.
+3. ✅ Re-measured with the real collector at 8 workers / interval 8:
+   **0.522 matches/s**, 2,303 ticks/s, 1.91 s/match
+   (`profile-w8-fast-json-steps8-collector.json`), matching the earlier
+   0.503 monkey-patched run.
+   Test evidence: mask, random-legal, run-contract, evaluation, dashboard,
+   fast-path, active-worker, deck-spec, reward, persistent-client, scaling
+   and v2 suites: **66 passed, 2 skipped, 1 pre-existing failure**
+   (`test_v2_action_rate::test_sample_and_evaluate_log_probability_match`,
+   `_safe_card_mask` shape bug in `selfplay_v2/model.py`; not touched by this
+   change). `test_fast_training_transition.py` is 14 passed, 2 skipped.
+4. Remaining before Phase 3: decide the inference host — R0 needs a GPU (or a
+   smaller/distilled policy); the sandbox recurrent policy stays CPU-feasible.
+5. Keep training at **8 workers**. 12 adds ~10 % engine-only and no RPC
+   throughput; it remains an oversubscription point for one-tick decisions.
 
 ## Status 2026-11-13 (latest session): Phase 1 deck contract + determinism
 
@@ -254,73 +421,92 @@ Published bundles (GitHub releases, not in git): engine
 - No-policy, one worker, 100-tick RPC steps, `-Xint`: ~**8.3k ticks/s** ≈
   **1.33 matches/s** on this 12-thread host (installed root on NVMe).
 - 4 workers concurrently: ~**32.6k ticks/s** ≈ **5.3 matches/s** aggregate.
+- Active-worker sweep 2026-11-14 (`decision_ticks=1`, RPC-bound): **4 →
+  300.5**, **8 → 486.1**, **12 → 474.0 ticks/s**; per-worker p50 75.6 / 60.0 /
+  39.0. Knee at **8 workers**; 12 is oversubscription.
+- Converted to matches/s with the sweep's ~6.7k-tick bootstrap matches:
+  ≈0.04 / 0.07 / 0.07 matches/s for the per-tick decision loop.
+- Engine-only 4-worker (32.6k ticks/s ÷ ~3.8k ticks/match) ≈ **8.6 matches/s**,
+  still below the Phase 2 gate of 10; the sustained 100-match burst (with
+  observation and reset overhead) measured 4.63 matches/s.
 - The old pure-engine figure (~74.7 µs/update → ~13.4k ticks/s) is without the
   bridge's terminal scan/observation work; do not compare directly.
 - Published full loop (4.8M model, decisions every 4 ticks, 25-core host +
   RTX 5090): 12 processes = 0.84 matches/s, 24 = 0.93.
-- So engine-only throughput is already enough; the training bottleneck remains
-  observation/host work, as the Sep-10 cloud note found.
+- Phase 2 profile 2026-11-14 (`docs/native/PHASE2_BOTTLENECK.md`):
+  - engine-only, 100 ticks/RPC, fast-json: 36.4k ticks/s at 8 (≈9.6
+    matches/s), 40.2k at 12 (≈10.6);
+  - one tick/RPC, fast-json: 1,025 ticks/s at 8, 974 at 12; RPC rate is flat
+    at ~920–990/s for 1–8 ticks/RPC, so the JSON-RPC boundary is the limit;
+  - full sandbox loop at 8: 0.074 matches/s at 1 tick/decision, **0.277 at 4,
+    0.522 at 8** with the real `decision_ticks` collector (0.293 / 0.503 in
+    the instrumented harness);
+  - worker time at one tick/RPC is ~90 % JSON (≈51 % serialize, ≈32 % observe
+    parse, ≈9 % step parse) and ~8 % engine JNI;
+  - fast-json is 1.5–2.1× faster than legacy; the decision interval is the
+    largest single lever.
+- So the training bottleneck is the JSON-RPC boundary plus model inference,
+  not the Python observation encoder (~10 % of wall). R0 CPU inference
+  (125–269 ms/pass) needs a GPU before Phase 3.
 
-## Next session — do these in order
+## Next work — do these in order
 
-### 1. Read the Phase 0 result (5 minutes)
+### 1. Phase 0 evidence — already read and recorded (no action left)
 
-```bash
-cd /home/raj/Desktop/ClashMaster
-OUT=$(ls -dt builds/native/phase0-* | head -1)
-cat "$OUT/DONE"
-jq '{passed, samples, ping_failures, workers}' "$OUT/soak-summary.json"
-jq '{status, tiers, recommended_workers}' "$OUT/sweep-summary.json"
-```
+The soak passed and the 4/8/12 sweep is complete; both gates are marked in
+`ROADMAP.md`. Evidence lives in
+`builds/native/phase0-20261114T000821Z/` (`soak-summary.json`, `sweep.json`,
+`sweep-summary.json`, `sweep-failed-attempt.json`). Only revisit it if a
+future run contradicts these numbers.
 
-- If soak passed and RSS is flat, mark the Phase 0 soak gate done in
-  `ROADMAP.md`.
-- Record the 4/8/12 ticks/s and the knee in this handoff and in
-  `ROADMAP.md` Phase 2.
-- Do not rerun the 1 h soak unless the summary shows a failure; inspect
-  `soak.csv` and the failing worker log instead.
+### 2. A51 parity — DONE 2026-11-14 (no action left)
 
-### 2. Finish A51 parity (the only open Phase 1 item)
-
-The A51 (`R58NA0QTHWV`, `SM_A515U`) is attached. Launch the probe and forward
-the control port:
+Level-11 unit HP and the Hero Knight ability are now measured on both builds;
+see **“A51 unit-HP + ability parity”** above. Residual: Electro Spirit
+215 (A51 16.635.1) vs 217 (native 15.535.29); every other card matches, and
+the ability sequence is identical. If a level-11 entity/ability sample is ever
+needed again:
 
 ```bash
 adb forward tcp:26789 tcp:26789
-adb shell monkey -p nullsroyale.rel.free -c android.intent.category.LAUNCHER 1
+.venv/bin/python tools/native_analysis/entity_hp_probe.py --level 11 --deck xbow \
+    --decisions 80 --output builds/native/a51-entity-hp-16.635.1-L11-seed1.json
+.venv/bin/python tools/native_analysis/ability_action_probe.py \
+    --output builds/native/a51-ability-action-16.635.1.json
 ```
 
-Already confirmed: at **level 11**, 16.635.1 and 15.535.29 agree on King HP
-4824, Princess HP 3052, deck ids/order, forms `[0,2,1,1,0,0,0,0]`, all eight
-elixir costs, and starting elixir. Remaining:
+Native side: `tools/native_bringup/probe_native_entity_hp.py --port <worker>
+--targets 27000008 --activate-ability`.
 
-1. Capture a level-11 **unit HP** sample on A51 for Knight, Archers, Tesla,
-   X-Bow, Skeletons and Electro Spirit, and the same tick on native 15.535.29.
-   `tools/native_analysis/entity_hp_probe.py` currently uses `MatchConfig()`
-   defaults (level 1); add a `--level` option (or pass
-   `level_cap/minimum_card_level/king_tower_level=11`) before trusting it.
-2. Compare ability state/charges for Hero Knight and the evolution cards.
-3. Record the residual 15.535.29 vs 16.635.1 gap in this handoff and keep
-   `ROADMAP.md` Phase 1 parity unchecked until it is written.
-4. A51 report shape: `builds/native/a51-scripted-xbow-16.635.1-L11-seed1.json`.
-   Native golden: `builds/native/xbow-golden-15.535.29-seed1.json`.
+### 3. Phase 2 — DONE 2026-11-14 (plan written)
 
-### 3. Then Phase 2 — host sizing
+See **“Phase 2 — bottleneck plan”** above and
+[`docs/native/PHASE2_BOTTLENECK.md`](docs/native/PHASE2_BOTTLENECK.md).
+The one-tick sweep still says **8 workers** is the knee (486.1 ticks/s; 12 is
+oversubscribed at 474.0 with per-worker p50 39 vs 60). Engine-only capacity at
+100 ticks/RPC is 9.6 matches/s at 8 and 10.6 at 12, so the 10-matches/s gate is
+met at 12 and within 4 % at 8. Training stays at 8.
 
-Use the sweep output, not a fresh guess. Official host sizing should stay at or
-below **10 physical cores** (4 and 8 workers); 12 workers is the
-oversubscription/knee point. Convert ticks/s to matches/s with the measured
-average match length (~3,700–4,000 native ticks for the scripted X-Bow loop;
-use the actual `soak`/determinism terminal ticks, not real time).
+### 4. Phase 3 — training, after the measured loop fix
 
-### 4. Only then Phase 3 — training
+The loop fix is in place (fast-json default, `--decision-ticks` 4–8,
+measured **0.522 matches/s at 8 workers / interval 8**). Before the long run:
 
-Do not start the long PPO run until unit-HP/ability parity is recorded. R0
-elite-v3 is the chosen stack; FirstLight v1450 remains a benchmark/opponent.
+1. choose the inference host: R0 elite-v3 needs a GPU (125–269 ms per CPU
+   pass); the sandbox recurrent policy stays CPU-feasible;
+2. pick and record the decision interval (start at 4; 8 is the measured
+   throughput point) and the level/deck contract in the run manifest;
+3. run a short smoke (`--smoke`) and one iteration with checkpoint save/restore
+   before detaching the long PPO run.
 
-**Phase 1 status:** deck/schema ✅, X-Bow config + tokens ✅, 20-match
-determinism/legality ✅, model smoke ✅, A51 tower/card/elixir parity ✅,
-A51 unit HP + abilities ⏳.
+R0 elite-v3 remains the chosen stack; FirstLight v1450 remains a
+benchmark/opponent.
+
+**Phase status:** Phase 0 ✅ (1 h soak, knee 8). Phase 1 ✅ (deck/schema,
+X-Bow config + tokens, 20-match determinism/legality, model smoke, A51
+tower/card/elixir/unit-HP/ability parity; Electro Spirit 215 vs 217 is the one
+documented delta). Phase 2 ✅ (bottleneck plan measured; engine-only gate met
+at 12 workers). Next is the loop fix above, then Phase 3.
 
 ### Starting workers manually (if the detached run is not active)
 
@@ -421,9 +607,12 @@ on the daily driver.
 - What is the 4/8/12-worker knee on this host? **Answer in
   `builds/native/phase0-20261114T000821Z/sweep-summary.json`**; treat 12 as an
   oversubscription point (10 physical cores).
-- How large is the 15.535.29 vs 16.635.93 balance/card gap? **Partially
-  answered:** at level 11 the tower HP, deck ids/forms/costs and starting
-  elixir match 16.635.1. Opening-hand RNG and unit HP/abilities remain.
+- How large is the 15.535.29 vs 16.635.93 balance/card gap? **Answered for the
+  X-Bow deck at level 11:** towers, deck ids/forms/costs, starting elixir and
+  all unit max HP match except **Electro Spirit (A51 215 vs native 217)**.
+  Hero Knight ability state/charges/elixir match exactly. Opening-hand RNG and
+  evolution-cycle counters remain build-dependent/not exposed. Evidence:
+  `builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json`.
 - Is bridging FirstLight v1450 worth it, or train from scratch with the
   sandbox stack?
 - Can the live canary use the existing A51/16.635.1 probe/touch path unchanged?
@@ -435,17 +624,25 @@ on the daily driver.
 | `ROADMAP.md` | The single plan |
 | `ROADMAP_CRFORGE.md` | Ultrafast simulator / CI oracle (reference) |
 | `docs/native/PHASE0_BRINGUP.md` | Cold-start evidence, root causes, rootless runbook |
+| `docs/native/PHASE2_BOTTLENECK.md` | Measured throughput breakdown and Phase 2 plan |
+| `tools/native_bringup/profile_native_loop.py` | Transport / full-loop / model profiler (fast-json and decision-interval A/B) |
+| `builds/native/phase2-20261114T015424Z/` | Phase 2 profile evidence (gitignored) |
 | `tools/native_bringup/preflight_bundle.py` | Static cold-deploy preflight (no root) |
 | `tools/native_bringup/build_host_artifacts.sh` | Rebuild host JAR + bridge |
 | `tools/native_bringup/build_local_overlay.py` | Patch the published bundle + manifest |
 | `tools/native_bringup/run_rootless_worker.sh` | Run a worker via `bwrap` user namespace |
-| `tools/native_bringup/verify_xbow_determinism.py` | X-Bow deck contract + per-tick determinism/legality harness |
+| `tools/native_bringup/verify_xbow_determinism.py` | X-Bow deck contract + per-tick determinism/legality harness (now also per-card HP/ability aggregates) |
+| `tools/native_bringup/probe_native_entity_hp.py` | Native per-card max HP + Hero Knight ability probe (level via replay) |
+| `tools/native_analysis/entity_hp_probe.py` | A51 per-card max HP probe (`--level`, `--deck xbow`, targeted deploys) |
 | `tools/native_bringup/smoke_r0_model.py` | R0 elite-v3 PPO step + checkpoint save/restore smoke |
 | `tools/native_bringup/run_phase0.py` | Detached 1 h soak + 4/8/12-worker sweep + evidence |
 | `builds/native/phase0-*/` | Soak CSV, RSS/CPU summary, sweep report (gitignored) |
 | `builds/native/xbow-determinism-20.json` | 20-seed determinism/legality report |
 | `builds/native/xbow-golden-15.535.29-seed1.json` | Native 15.535.29 golden frames |
 | `builds/native/a51-scripted-xbow-16.635.1-L11-seed1.json` | A51 16.635.1 level-11 fixed-script report |
+| `builds/native/a51-entity-hp-16.635.1-L11-seed1.json` | A51 level-11 per-card max HP |
+| `builds/native/xbow-entity-hp-15.535.29-xbow-seed1.json` | Native level-11 per-card max HP + Hero Knight ability |
+| `builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json` | Combined unit-HP + ability parity table |
 | `.resource/cr-native-sandbox/training/deck_spec.py` | Explicit deck + policy-token contract |
 | `.resource/cr-native-sandbox/configs/decks/xbow-3.0.json` | X-Bow 3.0 deck config |
 | `.resource/cr-native-sandbox/examples/xbow-3.0.json` | X-Bow replay for both sides |

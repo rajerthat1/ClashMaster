@@ -337,8 +337,16 @@ def run_sweep(
             stderr=subprocess.STDOUT,
         )
     if not output.is_file():
-        return {"status": "missing-output", "returncode": completed.returncode}
+        raise RuntimeError(
+            f"active-worker sweep produced no output (returncode {completed.returncode}); "
+            f"see {log_path}"
+        )
     report = json.loads(output.read_text(encoding="utf-8"))
+    if completed.returncode != 0 or report.get("status") == "failed":
+        raise RuntimeError(
+            f"active-worker sweep failed ({report.get('status')}: "
+            f"{report.get('error', 'unknown')}); see {log_path}"
+        )
     summary = {
         "schema": "phase0-sweep-summary-v1",
         "returncode": completed.returncode,
@@ -371,11 +379,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ready-timeout", type=float, default=240.0)
     parser.add_argument("--ping-timeout", type=float, default=10.0)
     parser.add_argument("--no-sweep", action="store_true")
+    parser.add_argument(
+        "--skip-soak",
+        action="store_true",
+        help="rerun only the sweep (reuses an existing soak result)",
+    )
     parser.add_argument("--sweep-tiers", default="4,8,12")
     parser.add_argument("--sweep-measure-seconds", type=float, default=180.0)
     parser.add_argument("--sweep-warmup-seconds", type=float, default=20.0)
     parser.add_argument("--keep-workers", action="store_true")
     args = parser.parse_args(argv)
+    # The sweep subprocess runs with cwd=SANDBOX; keep every evidence path
+    # absolute so output lands under this run directory, not the sandbox.
+    args.output_dir = args.output_dir.resolve()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     marker = args.output_dir / "RUNNING"
@@ -390,6 +406,13 @@ def main(argv: list[str] | None = None) -> int:
             "logical_cpus": os.cpu_count(),
         },
     }
+    if args.skip_soak:
+        prior = args.output_dir / "phase0-summary.json"
+        if prior.is_file():
+            prior_report = json.loads(prior.read_text(encoding="utf-8"))
+            if "soak" in prior_report:
+                report["soak"] = prior_report["soak"]
+            report["soak_source"] = str(prior)
     workers: list[subprocess.Popen] = []
     ports: list[int] = []
     try:
@@ -399,23 +422,24 @@ def main(argv: list[str] | None = None) -> int:
         max_slots = max([args.soak_workers, *tiers]) if tiers else args.soak_workers
         ensure_slots(max_slots, args.output_dir)
 
-        # Phase A: soak on its own worker count.
-        ports = [args.base_port + slot for slot in range(args.soak_workers)]
-        workers = [
-            start_worker(slot, port, args.output_dir)
-            for slot, port in enumerate(ports)
-        ]
-        wait_ready(ports, timeout=args.ready_timeout, output_dir=args.output_dir)
-        report["soak"] = soak(
-            ports, workers,
-            minutes=args.soak_minutes,
-            interval=args.sample_seconds,
-            output_dir=args.output_dir,
-            ping_timeout=args.ping_timeout,
-        )
-        if not args.keep_workers:
-            stop_workers(ports, workers)
-            workers, ports = [], []
+        # Phase A: soak on its own worker count (skippable for sweep reruns).
+        if not args.skip_soak:
+            ports = [args.base_port + slot for slot in range(args.soak_workers)]
+            workers = [
+                start_worker(slot, port, args.output_dir)
+                for slot, port in enumerate(ports)
+            ]
+            wait_ready(ports, timeout=args.ready_timeout, output_dir=args.output_dir)
+            report["soak"] = soak(
+                ports, workers,
+                minutes=args.soak_minutes,
+                interval=args.sample_seconds,
+                output_dir=args.output_dir,
+                ping_timeout=args.ping_timeout,
+            )
+            if not args.keep_workers:
+                stop_workers(ports, workers)
+                workers, ports = [], []
 
         # Phase B: active-worker sweep on the largest tier.
         if tiers:
