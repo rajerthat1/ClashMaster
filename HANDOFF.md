@@ -20,7 +20,86 @@
 Runtime details: [`docs/native/LINUX_BIONIC_RUNTIME.md`](docs/native/LINUX_BIONIC_RUNTIME.md).
 Bring-up evidence and runbook: [`docs/native/PHASE0_BRINGUP.md`](docs/native/PHASE0_BRINGUP.md).
 
-## Status 2026-11-13 (latest session): Phase 0 cold start PASSED without a VM
+## Status 2026-11-13 (latest session): Phase 1 deck contract + determinism
+
+Phase 1 items 1, 2, 3 and 5 are done; item 4 (A51 golden parity) is blocked
+because no device is attached. All code changes are in the sandbox clone
+(`.resource/cr-native-sandbox`, commit `feat(training): explicit deck spec and
+X-Bow policy-token contract`), except the two new tools below.
+
+**1. `training/deck_spec.py` — explicit deck + policy-token contract.**
+`DeckCard(card_id, form, level, token)` and `DeckSpec` replace the hardcoded
+`CARD_IDS` list as the source of truth. The spec owns:
+
+- the ordered eight cards and one stable policy token per card;
+- `index` (base card id → slot) and `native_index` (base **and**
+  evolution/hero form id → slot);
+- `cost()` from the live catalog, `replay_entries()` for replay encoding, and
+  `from_json` / `from_replay_entries` loaders.
+
+It fails closed on an unknown card, an unavailable form, duplicate cards or
+duplicate tokens. `training/schema.py` keeps `CARD_IDS` / `CARD_INDEX` /
+`CARD_COSTS` as bootstrap defaults, but `ObservationEncoder(deck)` and
+`build_action_masks(..., deck=...)` now use the explicit spec. Hand and
+public-action features index by policy slot; entity grid features also accept
+the native form id (and use `base_card_id` for building/troop channel
+classification). The three form cards map as:
+
+| Card | Native form id | Policy token | Slot |
+| --- | ---: | --- | ---: |
+| Hero Knight | 203000000 | `hero_knight` | 1 |
+| Evo Archers | 13000001 | `evo_archers` | 2 |
+| Evo Tesla | 13000102 | `evo_tesla` | 3 |
+
+`ObservationEncoder`, the training/vector collectors, evaluation, behavior
+aggregation and `selfplay_v2` telemetry now take a `DeckSpec`; `train.py` and
+`evaluate.py` derive it from the replay, so the manifest records the exact
+deck/token contract.
+
+**2. X-Bow deck artifacts.**
+`configs/decks/xbow-3.0.json` is the canonical config (deck order, forms, level
+11, explicit tokens, `decision_model: r0-elite-v3`).
+`examples/xbow-3.0.json` is the matching replay (both decks, seed 1), built from
+the bootstrap template. Deck order: X-Bow, Hero Knight, Evo Archers, Evo Tesla,
+Skeletons, Electro Spirit, Fireball, The Log.
+
+**3. Determinism + legality harness.**
+`tools/native_bringup/verify_xbow_determinism.py`: same replay seed + same
+deterministic legal-action script → identical per-tick observation hash chain;
+it also validates hand order, deck indices, form flags, `has_evolution` /
+`has_hero`, and classifies engine refusals (result codes 3/4 = gate, anything
+else = illegal). It supports `--ports` for parallel workers and
+`--golden-output` for the `xbow-native-golden-v1` parity frames.
+
+Recorded run (2026-11-13, 4 workers on 39031–39034, seeds 1–20, two runs per
+seed = 40 matches, 618.35 s wall):
+
+- **20/20 seeds deterministic**; per-tick hash chains match on the repeat.
+- **`illegal: 0`**, `gate_refusals: 0`, `deck_errors: 0`, `failure_count: 0`.
+- Terminal ticks range **3681–6139** (median ≈ 4041).
+- Native golden seed 1: `builds/native/xbow-golden-15.535.29-seed1.json`.
+- Full report: `builds/native/xbow-determinism-20.json`.
+
+**4. A51 golden validation — blocked.** `adb devices` is empty, so the
+15.535.29 vs 16.635.1 comparison could not be run this session. The native
+golden frames are written by the harness; next session attach the A51 and run
+`tools/native_analysis/scripted_xbow_match.py` plus the comparison.
+
+**5. Model smoke.**
+`tools/native_bringup/smoke_r0_model.py --rich` passes on CPU: R0 elite-v3,
+36,853,407 parameters, vocabulary 212, observation schema
+`07c183d2…7426`, one real PPO update, checkpoint 444,213,575 B, save/reload
+bit-exact (`state_dict_sha256 50f08a8f…d014`). The resumed update hits the KL
+guard (`updated: false, reason: kl_guard`), which is expected after applying
+the first update to the same segment.
+
+**Test evidence:** `tests/test_deck_spec.py` plus the existing mask, random-legal,
+run-contract, evaluation, dashboard, fast-path and active-worker tests:
+**37 passed, 2 skipped**. The 20-seed, 40-match determinism/legality run passed
+with `illegal: 0`; details are in the item 3 block above and
+`builds/native/xbow-determinism-20.json`.
+
+## Previous session: Phase 0 cold start PASSED without a VM
 
 The runtime now cold-starts, serves, and completes matches **on this daily
 driver, without root and without a VM**. No host paths were written; everything
@@ -106,16 +185,19 @@ Published bundles (GitHub releases, not in git): engine
 - So engine-only throughput is already enough; the training bottleneck remains
   observation/host work, as the Sep-10 cloud note found.
 
-## Next session — Phase 1 coding (the runtime is already up)
+## Next session — Phase 1 remaining work
 
 ### 0. Housekeeping (10–15 min, optional)
 
 1. **1 h soak** with 4 workers if the strict Phase 0 gate is required:
    leave them up, record RSS/CPU every 10 min, confirm `ping` still works.
-   (This session stopped at 23 min; 0 crashes, RSS flat, 100 matches clean.)
+   (The 2026-11-13 Phase 0 session stopped at 23 min; 0 crashes, RSS flat, 100
+   matches clean.)
 2. Run the active-worker sweep on 4/8/12 workers with
    `cr-native-sandbox/scripts/run_native_active_worker_sweep.py` and record the
    knee. Do not exceed physical cores for host-sizing numbers.
+3. **Attach the A51 and run Phase 1 item 4** (golden parity). `adb devices` was
+   empty this session, so this is the only unfinished Phase 1 item.
 
 ### 1. Start the workers (copy/paste)
 
@@ -151,28 +233,31 @@ done
 
 ### 2. Phase 1 work items, in order
 
-1. **Parameterise `training/schema.py`.** It still hardcodes `CARD_IDS` to the
-   eight-card bootstrap deck and indexes hand/action features by that list.
-   Replace it with a deck spec (ordered `(card_id, form)` entries), derive the
-   feature indices from it, and keep the bootstrap deck as an explicit default
-   so existing tests keep passing. Fail closed on an unknown card/form.
-2. **Add the X-Bow deck config + token contract.** The deck is in the table
-   below. Define explicit policy tokens for the three form cards instead of
-   relying on slot order or `human_vs_ai.py`'s warning. Verify
-   `NativeRoyaleEnv` returns the form flags and hand in the agreed order.
-3. **Determinism harness.** Same replay seed + same action script → identical
-   per-tick observation hash. Run 20 matches with the X-Bow deck; require
-   `illegal: 0` and an action mask consistent with engine refusals.
-4. **Golden validation vs A51/16.635.1.** Fixed script, compare card IDs,
-   tower/unit HP, elixir, tick, hand and abilities. Record the 15.535.29 vs
-   16.635.1 gap in this handoff; it drives the Phase 4 parity decision.
-5. **Model smoke test.** Load the sandbox R0 elite-v3 stack, run one real
-   forward/backward step and a checkpoint save/restore. Do **not** start the
-   long PPO run until items 1–4 pass. FirstLight v1450 stays a benchmark and
-   opponent, not a weight port.
+1. **Parameterise `training/schema.py`.** **Done 2026-11-13.** New
+   `training/deck_spec.py`; bootstrap deck is the explicit default; unknown
+   card/form fails closed.
+2. **Add the X-Bow deck config + token contract.** **Done 2026-11-13.**
+   `configs/decks/xbow-3.0.json` + `examples/xbow-3.0.json`; explicit tokens
+   `xbow`, `hero_knight`, `evo_archers`, `evo_tesla`, `skeletons`,
+   `electro_spirit`, `fireball`, `the_log`; harness validates hand order, deck
+   indices and form flags.
+3. **Determinism harness.** **Done 2026-11-13.**
+   `tools/native_bringup/verify_xbow_determinism.py`; 20 seeds over four
+   workers with two runs per seed (40 matches, 618 s): all deterministic,
+   `illegal: 0`, `gate_refusals: 0`, `deck_errors: 0`. Results are in
+   `builds/native/xbow-determinism-20.json`.
+4. **Golden validation vs A51/16.635.1. — BLOCKED: no device attached.**
+   The native side is captured by `--golden-output` in the determinism harness
+   (`xbow-native-golden-v1`); next session attach the A51, run
+   `tools/native_analysis/scripted_xbow_match.py`, and compare card IDs,
+   tower/unit HP, elixir, tick, hand and abilities. Record the gap here.
+5. **Model smoke test.** **Done 2026-11-13.** R0 elite-v3, 36,853,407
+   parameters, one PPO update and a bit-exact checkpoint save/restore. Do
+   **not** start the long PPO run until the A51 parity item is resolved.
+   FirstLight v1450 stays a benchmark and opponent, not a weight port.
 
-**Exit criteria for the next session:** 20 matches, 0 errors, deterministic
-reset, X-Bow deck plays legally, and one PPO step runs end-to-end.
+**Exit criteria status:** 20 matches ✅, `illegal: 0` ✅, deterministic reset ✅,
+X-Bow deck legal ✅, one PPO step end-to-end ✅. A51 parity ⏳.
 
 ## Phase 1 readiness — deck and schema (source audit)
 
@@ -193,18 +278,19 @@ forms, game version `15.535.29`):
 
 The deck is representable: `card_catalog.py` encodes per-card form flags in
 `el` (base 0, evolution 1, hero 2, both 3) and `NativeRoyaleEnv` reads them into
-`form_flags`. Two gaps remain before training:
+`form_flags`. Both gaps identified in the Phase 0 session are now closed:
 
-- `training/schema.py` hardcodes `CARD_IDS` to the eight-card bootstrap deck
-  and indexes hand/action features by that list; it must be parameterised for
-  the X-Bow deck (and the 3 form cards) before any observation test.
-- `human_vs_ai.py` warns that combined hero/evolution decks need an explicit
-  token contract; define the policy token vocabulary explicitly rather than
-  relying on slot order.
+- `training/schema.py` no longer hardcodes the bootstrap deck: `DeckSpec` in
+  `training/deck_spec.py` owns the ordered cards, policy tokens and native-id
+  aliases, and the encoder/masks/collectors take it explicitly.
+- The token contract is explicit (`configs/decks/xbow-3.0.json`) and does not
+  rely on slot order or `human_vs_ai.py`'s warning. The determinism harness
+  verifies the engine-reported hand order, deck index, form flags,
+  `has_evolution` and `has_hero` against that contract.
 
 Deck order for the config: **X-Bow, Hero Knight, Evo Archers, Evo Tesla,
-Skeletons, Electro Spirit, Fireball, The Log**. Keep the model decision
-explicit in the config (R0 elite-v3 first; v1450 is a benchmark/opponent).
+Skeletons, Electro Spirit, Fireball, The Log**. The model decision is explicit
+in the config (R0 elite-v3 first; v1450 is a benchmark/opponent).
 
 ## `/apex` and `/system` — why the warning
 
@@ -240,8 +326,15 @@ on the daily driver.
   `data_manifest.toml` are needed, not the 886 MB APK.
 - ~~Does the rebuilt host JAR/bridge pass a full match?~~ **Answered:** yes,
   terminal tick 6147.
+- ~~Is the X-Bow deck representable, and does the engine report its forms/hand
+  consistently?~~ **Answered:** yes; the deck/token contract and the
+  determinism harness validate hand order, deck indices, form flags and
+  abilities. See `builds/native/xbow-determinism-20.json`.
+- ~~Can one PPO step run on the sandbox R0 elite-v3 stack?~~ **Answered:** yes,
+  CPU smoke with a bit-exact checkpoint restore.
 - What is the 4/8/12-worker knee on this host? (soak + sweep next).
-- How large is the 15.535.29 vs 16.635.93 balance/card gap?
+- How large is the 15.535.29 vs 16.635.93 balance/card gap? (A51 golden still
+  to be captured; `adb devices` was empty this session.)
 - Is bridging FirstLight v1450 worth it, or train from scratch with the
   sandbox stack?
 - Can the live canary use the existing A51/16.635.1 probe/touch path unchanged?
@@ -257,6 +350,11 @@ on the daily driver.
 | `tools/native_bringup/build_host_artifacts.sh` | Rebuild host JAR + bridge |
 | `tools/native_bringup/build_local_overlay.py` | Patch the published bundle + manifest |
 | `tools/native_bringup/run_rootless_worker.sh` | Run a worker via `bwrap` user namespace |
+| `tools/native_bringup/verify_xbow_determinism.py` | X-Bow deck contract + per-tick determinism/legality harness |
+| `tools/native_bringup/smoke_r0_model.py` | R0 elite-v3 PPO step + checkpoint save/restore smoke |
+| `.resource/cr-native-sandbox/training/deck_spec.py` | Explicit deck + policy-token contract |
+| `.resource/cr-native-sandbox/configs/decks/xbow-3.0.json` | X-Bow 3.0 deck config |
+| `.resource/cr-native-sandbox/examples/xbow-3.0.json` | X-Bow replay for both sides |
 | `docs/native/LINUX_BIONIC_RUNTIME.md` | Runtime evaluation, hashes, commands |
 | `builds/bundles/` | Verified bundles + local overlay (gitignored) |
 | `builds/rootless/` | Rootless `--system-root` install + runtime (gitignored) |

@@ -96,3 +96,35 @@ tools/native_bringup/run_rootless_worker.sh --slot 0 --port 39031
 Why this exists: the published `150535029` bundle passes `verify-bundle` and
 `doctor` but fails every cold-start check. See
 [`docs/native/PHASE0_BRINGUP.md`](../../docs/native/PHASE0_BRINGUP.md).
+
+## `verify_xbow_determinism.py`
+
+Phase 1 harness for the X-Bow 3.0 deck. It uses the explicit deck/token
+contract in `.resource/cr-native-sandbox/training/deck_spec.py`, checks that
+`NativeRoyaleEnv` reports the expected hand order and form flags, runs a
+deterministic legal-action script, and hashes the full observation (grid +
+scalars for both sides plus the canonical state) every tick. Each seed is run
+twice; the two per-tick hash chains must match. Engine refusals with result
+codes 3/4 are counted as gate refusals, anything else is `illegal`.
+
+```bash
+# workers already listening on 39031..39034
+.venv/bin/python tools/native_bringup/verify_xbow_determinism.py \
+    --matches 20 --ports 39031,39032,39033,39034 \
+    --golden-output builds/native/xbow-golden-15.535.29-seed1.json
+# -> builds/native/xbow-determinism-<UTC>.json
+```
+
+`--golden-output` writes the initial/sparse/terminal frames in the
+`xbow-native-golden-v1` shape for the Phase 4 A51/16.635.1 parity comparison.
+
+## `smoke_r0_model.py`
+
+Runs the sandbox R0 elite-v3 stack on CPU: one synthetic rollout, one real PPO
+update, then a checkpoint save/reload with a bit-exact state-dict check. It
+does not start a worker, read a dataset, or use the GPU.
+
+```bash
+.venv/bin/python tools/native_bringup/smoke_r0_model.py --rich
+# -> builds/native/r0-model-smoke.json
+```

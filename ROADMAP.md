@@ -120,15 +120,14 @@ compatible with 16.635.1 or the 160402002 ARM64 build.
 
 ### Phase 1 — Native API, X-Bow deck, determinism (3–5 days)
 
-- [ ] Install `cr-native-sandbox`; connect `NativeRoyaleEnv` to the workers.
-- [ ] Configure the X-Bow deck: X-Bow, Hero Knight, Evo Archers, Evo Tesla,
+- [x] Install `cr-native-sandbox`; connect `NativeRoyaleEnv` to the workers.
+- [x] Configure the X-Bow deck: X-Bow, Hero Knight, Evo Archers, Evo Tesla,
       Skeletons, Electro Spirit, Fireball, The Log. Record forms and levels.
-- [ ] Exercise `reset` / `observe` / `act` / `step`; 20 matches.
-- [ ] Same seed + same actions → same observations (determinism).
+- [x] Exercise `reset` / `observe` / `act` / `step`; 20 matches.
+- [x] Same seed + same actions → same observations (determinism).
 - [ ] Validate observations against A51/16.635.1 goldens: card IDs, HP, elixir,
       tick, hand, abilities. Note 15.535.29 vs 16.635.93 differences.
-- [ ] Decide the model: sandbox R0 elite-v3, FirstLight v1450 benchmark, or a
-      fresh smaller model.
+- [x] Decide the model: sandbox R0 elite-v3 (v1450 stays a benchmark).
 
 **Gate:** 20 matches, 0 errors, X-Bow deck plays legally, deterministic reset.
 
@@ -312,6 +311,7 @@ run before this gate.
 
 ## 13. Next action
 
-Run **Phase 0** from [`HANDOFF.md`](HANDOFF.md): dedicated VM → verify bundles →
-`doctor` → 4 workers → `smoke` → engine-only throughput. Report the numbers
-before writing any training code.
+Phase 0 is complete except the 1 h soak and 4/8/12-worker knee. Phase 1 is
+complete except the A51/16.635.1 golden parity check (no device attached on
+2026-11-13). See [`HANDOFF.md`](HANDOFF.md): attach the A51, capture the golden,
+record the 15.535.29 vs 16.635.1 gap, then start Phase 2 host sizing.
