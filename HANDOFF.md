@@ -258,6 +258,7 @@ Scale options if the A51 cannot feed training:
 | --- | --- |
 | `ROADMAP.md` | The single plan |
 | `docs/native/16.635.1/FINDINGS.md` | 16.635.1 probe port evidence log |
+| `ROADMAP_CRFORGE.md` | 16.635.1 Java simulator / CI oracle (not a trainer) |
 | `docs/native/16.635.1/*.json` | Relocation, field offsets, vtables, overrides |
 | `tools/native_analysis/` | A51 parity/probe tools |
 | `tools/native_analysis/scripted_xbow_match.py` | Scripted X-Bow match on the probe |

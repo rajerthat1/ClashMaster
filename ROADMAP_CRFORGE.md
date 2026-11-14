@@ -3,7 +3,9 @@
 Status: **optional, off the critical path**, revised 2026-11-13
 Role: deterministic ultrafast simulator, differential-test oracle, and CI
 reference. **Not a trainer.**
-Primary plan: [`ROADMAP.md`](ROADMAP.md) — cr-native Linux runtime.
+Primary plan: [`ROADMAP.md`](ROADMAP.md) — Null's Royale 16.635.1 ladder
+(A51 probe engine + FirstLight V4 General). The cr-native 15.535.29 x86 runtime
+is a proxy lab, not the deployment path.
 
 **Use it for quick sanity checks, CI, and differential testing. Do not train the
 primary policy here and do not extend `observe-rich` on the critical path.**
@@ -20,9 +22,8 @@ It runs without Android, KVM, a game client, or a GPU, which makes it valuable a
 3. a **second implementation** for differential testing (lane flips, side swaps,
    entity identity).
 
-It is **not** the primary trainer. The cr-native Linux runtime runs the real
-engine and is the training path; crforge's remaining cost is open-ended
-`observe-rich` fidelity.
+It is **not** the primary trainer. The 16.635.1 probe/A51 is the deployment and
+training engine; crforge's remaining cost is open-ended `observe-rich` fidelity.
 
 ---
 
@@ -33,7 +34,7 @@ engine and is the training path; crforge's remaining cost is open-ended
 | CI needs a deterministic no-Android test | Use crforge |
 | Quick check of a policy/rule change | Use crforge |
 | Differential test vs the real engine | Use crforge |
-| Bulk PPO / self-play training | **Use cr-native, not crforge** |
+| Bulk PPO / self-play training | **Use the 16.635.1 probe/A51, not crforge** |
 | `observe-rich` extension | Deferred unless a concrete parity need appears |
 
 The single plan in `ROADMAP.md` is the authority. This document is a technical

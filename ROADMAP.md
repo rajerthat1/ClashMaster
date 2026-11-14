@@ -136,6 +136,10 @@ Next actions, in order:
 
 **Gate:** N0 and N2.
 
+`crforge` (`ROADMAP_CRFORGE.md`) reimplements the 16.635.1 client rules without
+Android. Use it as a deterministic CI/differential oracle for the probe; it is
+not a trainer.
+
 ---
 
 ## 5. Workstream B — General baseline
