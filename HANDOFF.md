@@ -80,10 +80,30 @@ seed = 40 matches, 618.35 s wall):
 - Native golden seed 1: `builds/native/xbow-golden-15.535.29-seed1.json`.
 - Full report: `builds/native/xbow-determinism-20.json`.
 
-**4. A51 golden validation — blocked.** `adb devices` is empty, so the
-15.535.29 vs 16.635.1 comparison could not be run this session. The native
-golden frames are written by the harness; next session attach the A51 and run
-`tools/native_analysis/scripted_xbow_match.py` plus the comparison.
+**4. A51 golden validation — first pass complete.** The A51 (`SM_A515U`,
+`R58NA0QTHWV`) was attached and the 16.635.1 probe served
+`coldReady: true`. `tools/native_analysis/scripted_xbow_match.py --level 11`
+completed a fixed X-Bow match with **0 problems, 0 ability rejections**:
+175 decisions, 42 actions, terminal tick **3601**, crowns `[1, 0]` at level 1
+and `[0, 1]` at level 11 (same seed, different tower levels).
+
+Level normalisation is the key: A51 `MatchConfig` defaults to level 1. With
+`--level 11` (`level_cap=11`, `cardlvlmin=11`, `king_tower_level=11`) the
+tower HP matches 15.535.29 exactly:
+
+| Field | 15.535.29 native | 16.635.1 A51 L11 |
+| --- | ---: | ---: |
+| King tower max HP | 4824 | 4824 |
+| Princess tower max HP | 3052 | 3052 |
+| Deck card ids / order | exact | exact |
+| Form flags | `[0,2,1,1,0,0,0,0]` | `[0,2,1,1,0,0,0,0]` |
+| Card costs | XBow 6, Knight 3, Archers 3, Tesla 4, Skeleton 1, Spirit 1, Fireball 4, Log 2 | same |
+| Starting elixir | 6.0 at tick 0 (7.0 at tick 100) | 6.0 at tick 0 |
+
+The opening hand differs for the same seed (build-dependent RNG), and unit-HP /
+ability parity still needs a level-11 entity probe. Reports:
+`builds/native/a51-scripted-xbow-16.635.1-L11-seed1.json` and
+`a51-scripted-xbow-16.635.1-seed1.json` (level-1 baseline).
 
 **5. Model smoke.**
 `tools/native_bringup/smoke_r0_model.py --rich` passes on CPU: R0 elite-v3,
@@ -246,18 +266,19 @@ done
    workers with two runs per seed (40 matches, 618 s): all deterministic,
    `illegal: 0`, `gate_refusals: 0`, `deck_errors: 0`. Results are in
    `builds/native/xbow-determinism-20.json`.
-4. **Golden validation vs A51/16.635.1. — BLOCKED: no device attached.**
-   The native side is captured by `--golden-output` in the determinism harness
-   (`xbow-native-golden-v1`); next session attach the A51, run
-   `tools/native_analysis/scripted_xbow_match.py`, and compare card IDs,
-   tower/unit HP, elixir, tick, hand and abilities. Record the gap here.
+4. **Golden validation vs A51/16.635.1.** **First pass done 2026-11-13.**
+   A51 attached; `scripted_xbow_match.py --level 11` matches tower HP
+   (4824/3052), card ids/forms/costs and starting elixir. Opening hand and
+   unit-HP/ability parity still need a level-11 entity probe. Do not compare
+   A51 defaults: `MatchConfig` is level 1 unless `--level 11` is passed.
 5. **Model smoke test.** **Done 2026-11-13.** R0 elite-v3, 36,853,407
    parameters, one PPO update and a bit-exact checkpoint save/restore. Do
    **not** start the long PPO run until the A51 parity item is resolved.
    FirstLight v1450 stays a benchmark and opponent, not a weight port.
 
 **Exit criteria status:** 20 matches ✅, `illegal: 0` ✅, deterministic reset ✅,
-X-Bow deck legal ✅, one PPO step end-to-end ✅. A51 parity ⏳.
+X-Bow deck legal ✅, one PPO step end-to-end ✅. A51 parity: tower/card/elixir
+✅, unit HP + abilities ⏳.
 
 ## Phase 1 readiness — deck and schema (source audit)
 
@@ -333,8 +354,9 @@ on the daily driver.
 - ~~Can one PPO step run on the sandbox R0 elite-v3 stack?~~ **Answered:** yes,
   CPU smoke with a bit-exact checkpoint restore.
 - What is the 4/8/12-worker knee on this host? (soak + sweep next).
-- How large is the 15.535.29 vs 16.635.93 balance/card gap? (A51 golden still
-  to be captured; `adb devices` was empty this session.)
+- How large is the 15.535.29 vs 16.635.93 balance/card gap? **Partially
+  answered:** at level 11 the tower HP, deck ids/forms/costs and starting
+  elixir match 16.635.1. Opening-hand RNG and unit HP/abilities remain.
 - Is bridging FirstLight v1450 worth it, or train from scratch with the
   sandbox stack?
 - Can the live canary use the existing A51/16.635.1 probe/touch path unchanged?
@@ -352,6 +374,8 @@ on the daily driver.
 | `tools/native_bringup/run_rootless_worker.sh` | Run a worker via `bwrap` user namespace |
 | `tools/native_bringup/verify_xbow_determinism.py` | X-Bow deck contract + per-tick determinism/legality harness |
 | `tools/native_bringup/smoke_r0_model.py` | R0 elite-v3 PPO step + checkpoint save/restore smoke |
+| `tools/native_bringup/run_phase0.py` | Detached 1 h soak + 4/8/12-worker sweep + evidence |
+| `builds/native/phase0-*/` | Soak CSV, RSS/CPU summary, sweep report (gitignored) |
 | `.resource/cr-native-sandbox/training/deck_spec.py` | Explicit deck + policy-token contract |
 | `.resource/cr-native-sandbox/configs/decks/xbow-3.0.json` | X-Bow 3.0 deck config |
 | `.resource/cr-native-sandbox/examples/xbow-3.0.json` | X-Bow replay for both sides |

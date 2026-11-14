@@ -118,6 +118,27 @@ codes 3/4 are counted as gate refusals, anything else is `illegal`.
 `--golden-output` writes the initial/sparse/terminal frames in the
 `xbow-native-golden-v1` shape for the Phase 4 A51/16.635.1 parity comparison.
 
+## `run_phase0.py`
+
+Unattended Phase 0 gate. Ensures the rootless slots are installed (up to 12),
+starts the soak workers, pings and samples RSS/CPU every minute for the soak
+window, stops them, then starts the largest sweep tier and runs the existing
+`run_native_active_worker_sweep.py` for 4/8/12 workers. It writes `soak.csv`,
+`soak-summary.json`, `sweep-summary.json` and `phase0-summary.json`, and stops
+every worker it started.
+
+```bash
+OUT=builds/native/phase0-$(date -u +%Y%m%dT%H%M%SZ)
+setsid nohup .venv/bin/python -u tools/native_bringup/run_phase0.py \
+    --output-dir "$OUT" \
+    --soak-workers 4 --soak-minutes 60 \
+    --sweep-tiers 4,8,12 --sweep-warmup-seconds 20 --sweep-measure-seconds 180 \
+    >"$OUT/detached.log" 2>&1 </dev/null &
+```
+
+`RUNNING` exists while it is active; `DONE` and `phase0-summary.json` are
+written at the end.
+
 ## `smoke_r0_model.py`
 
 Runs the sandbox R0 elite-v3 stack on CPU: one synthetic rollout, one real PPO

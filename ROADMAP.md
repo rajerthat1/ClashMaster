@@ -114,6 +114,8 @@ compatible with 16.635.1 or the 160402002 ARM64 build.
 - [x] 4 workers ping; one worker completed a full match (tick 6147).
 - [ ] Measure **engine-only** ticks/s per worker at 4 / 8 / 12 workers.
 - [ ] 1 h soak; record CPU/RSS and the knee.
+      *(Running detached via `tools/native_bringup/run_phase0.py`; evidence
+      lands under `builds/native/phase0-*/`.)*
 
 **Gate:** `doctor` hard-pass, 4 workers healthy, one worker completes a match,
 1 h with no crash.
@@ -127,6 +129,8 @@ compatible with 16.635.1 or the 160402002 ARM64 build.
 - [x] Same seed + same actions → same observations (determinism).
 - [ ] Validate observations against A51/16.635.1 goldens: card IDs, HP, elixir,
       tick, hand, abilities. Note 15.535.29 vs 16.635.93 differences.
+      *(First pass: level-11 tower HP 4824/3052, deck ids/forms/costs and
+      starting elixir match; unit HP and abilities pending.)*
 - [x] Decide the model: sandbox R0 elite-v3 (v1450 stays a benchmark).
 
 **Gate:** 20 matches, 0 errors, X-Bow deck plays legally, deterministic reset.

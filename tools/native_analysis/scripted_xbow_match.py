@@ -575,6 +575,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         deck0_form_availability=XBOW_FORMS,
         deck1_form_availability=XBOW_FORMS,
         seed=args.seed,
+        level_cap=max(0, int(args.level)),
+        minimum_card_level=max(0, int(args.level)),
+        king_tower_level=int(args.level) or None,
     )
     report: dict[str, Any] = {
         "clientVersion": status.get("clientVersion"),
@@ -786,6 +789,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--advance", type=int, default=20, help="ticks advanced per decision (20 = one live second)")
     parser.add_argument("--max-ticks", type=int, default=7200, help="stop at this tick if the match has not ended")
     parser.add_argument("--max-decisions", type=int, default=800)
+    parser.add_argument(
+        "--level",
+        type=int,
+        default=0,
+        help="normalize cards and both King Towers to this level (0 = template)",
+    )
     parser.add_argument("--owners", default="0,1")
     parser.add_argument(
         "--abilities",
