@@ -13,6 +13,12 @@ https://github.com/IMAX9D/cr-native-sandbox
 https://github.com/IMAX9D/cr-native-linux-bionic
 https://github.com/IMAX9D/r0-elite-training
 https://github.com/IMAX9D/royaleapi-downloader
+New Repos:
+https://github.com/arronwang01/clash-royale-battle-engine
+https://github.com/arronwang01/clash-royale-simulator-trial
+https://github.com/arronwang01/clash-ai-releases
+https://github.com/Ashpp2223/CRkonwledagebase
+https://github.com/Ashpp2223/clashroyalereplay
 ------------------------------------------------------------
 Dataset:
 https://huggingface.co/datasets/VanguardX101/IL_Replay
