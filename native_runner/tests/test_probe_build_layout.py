@@ -8,6 +8,7 @@ to emit a sentinel for a core function the runner path calls directly.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import struct
@@ -21,9 +22,27 @@ from native_runner.paths import REPOSITORY_ROOT
 
 PROBE_ROOT = REPOSITORY_ROOT / "native_runner" / "probe"
 HEADER = PROBE_ROOT / "build_16_635_1_layout.h"
+HEADER_X86 = PROBE_ROOT / "build_16_635_1_layout_x86.h"
 PROBE_SOURCE = PROBE_ROOT / "cr_replay_probe.cpp"
 REFERENCE = REPOSITORY_ROOT / ".resource" / "native" / "16.635.1" / "reference" / "libg.so"
+OFFSET_DIFF = REPOSITORY_ROOT / "docs" / "native" / "16.635.1" / "offset-diff.json"
 TOOLS = REPOSITORY_ROOT / "tools" / "native_analysis"
+
+# Vtables used to classify objects before any rich hook ring is installed.
+# Both ABI headers must expose the same set of names; the ARM values are pinned
+# to the relocation table below.  A stale entry silently degrades the live
+# observation (FINDINGS §3.35), so drift must fail here instead of on device.
+RICH_VTABLES = (
+    "kBuffAssetVtableOffset",
+    "kProjectileVtableOffset",
+    "kCharacterVtableOffset",
+    "kCaptureCharacterActionDataVtableOffset",
+    "kCaptureCharacterRuntimeVtableOffset",
+    "kThresholdRelocationActionDataVtableOffset",
+    "kThresholdRelocationRuntimeVtableOffset",
+    "kPeriodicAttackModifierActionDataVtableOffset",
+    "kPeriodicAttackModifierRuntimeVtableOffset",
+)
 
 _OFFSET = re.compile(r"inline constexpr std::uintptr_t (\w+) = 0x([0-9a-fA-F]+);")
 _PROLOGUE = re.compile(r"inline constexpr std::uint8_t (\w+)\[16\] = \{([^}]*)\};")
@@ -86,7 +105,12 @@ def test_unresolved_anchors_are_explicit_and_never_have_prologues() -> None:
     header = read_header()
     match = _UNRESOLVED.search(header)
     assert match is not None, "header is missing kUnresolvedAnchors"
-    names = [name.strip().strip('"') for name in match.group(1).split(",") if name.strip()]
+    # ``{nullptr}`` is the C++ sentinel for "no unresolved anchors".
+    names = [
+        name.strip().strip('"')
+        for name in match.group(1).split(",")
+        if name.strip() and name.strip() != "nullptr"
+    ]
     resolved = {name: value == "true" for name, value in _RESOLVED.findall(header)}
     prologues = {name.removesuffix("Prologue") for name, _values in _PROLOGUE.findall(header)}
 
@@ -109,6 +133,39 @@ def test_probe_selects_the_generated_header_and_keeps_defaults_isolated() -> Non
     assert "kJsonMemberFindResolved" in source
     assert "kLogicCommandParseResolved" in source
     assert "kLocationTileMapEnsureResolved" in source
+    # Rich-classification vtables come from the generated header on every
+    # architecture, never only on x86_64 (the A51 observation regression in
+    # FINDINGS §3.35).
+    for name in RICH_VTABLES:
+        assert f"probe_target::{name}" in source
+    assert "CR_PROBE_TARGET_16_635_1) && defined(__x86_64__)" not in source
+
+
+def test_rich_vtable_anchors_are_shared_by_both_abi_headers() -> None:
+    arm_offsets = {name: int(value, 16) for name, value in _OFFSET.findall(read_header())}
+    missing_arm = [name for name in RICH_VTABLES if name not in arm_offsets]
+    assert not missing_arm, f"ARM64 header is missing {missing_arm}"
+    if not HEADER_X86.is_file():
+        pytest.skip("x86_64 layout header is not present")
+    x86_offsets = {name: int(value, 16) for name, value in _OFFSET.findall(HEADER_X86.read_text(encoding="utf-8"))}
+    missing_x86 = [name for name in RICH_VTABLES if name not in x86_offsets]
+    assert not missing_x86, f"x86_64 header is missing {missing_x86}"
+    for name in RICH_VTABLES:
+        assert arm_offsets[name] % 8 == 0
+        assert x86_offsets[name] % 8 == 0
+
+
+def test_arm_rich_vtable_anchors_match_the_relocation_table() -> None:
+    if not OFFSET_DIFF.is_file():
+        pytest.skip("16.635.1 offset-diff.json is not present")
+    payload = json.loads(OFFSET_DIFF.read_text(encoding="utf-8"))
+    rows = {row["hook"]: row for row in payload["anchors"]}
+    offsets = {name: int(value, 16) for name, value in _OFFSET.findall(read_header())}
+    for name in RICH_VTABLES:
+        hook = name.removesuffix("Offset")
+        assert hook in rows, f"{hook} is not in offset-diff.json"
+        expected = int(rows[hook]["new_offset"], 16)
+        assert offsets[name] == expected, f"{name} drifted from offset-diff.json"
 
 
 def test_header_compiles_as_cpp17(tmp_path: Path) -> None:

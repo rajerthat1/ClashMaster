@@ -10,6 +10,12 @@ const char* g_libg_path = "";
 #define LOGE(...) ((void)0)
 #define LOGI(...) ((void)0)
 
+// The host contract test pins wire JSON, not a platform mapping.  The probe
+// emits ARM logical offsets on both ABIs; identity is what AArch64 produces.
+[[maybe_unused]] static inline std::uint64_t arm_logical_offset(std::uint64_t offset) { return offset; }
+[[maybe_unused]] static inline std::uint64_t arm_logical_vtable(std::uint64_t offset) { return offset; }
+[[maybe_unused]] static inline std::uint64_t arm_logical_func(std::uint64_t offset) { return offset; }
+
 template <typename T>
 T read_object_field(const void* object, std::size_t offset) {
     T value{};

@@ -42,6 +42,29 @@ bool engine_instance_parse_process_id(std::int32_t *engine_id) {
   return true;
 }
 
+// Process identity is normally discovered from the Android process name or the
+// per-user cr_engine_id file.  A host-attached runtime (the x86_64 engine under
+// crx) has neither: several engine processes are plain `python` invocations on
+// one machine, so they need an explicit identity.  Both overrides are optional
+// and leave the Android path untouched:
+//   CR_PROBE_ENGINE_ID     engine index 0..23 (also selects the control cpu)
+//   CR_PROBE_CONTROL_PORT  explicit listen port, wins over kControlPort + id
+bool engine_instance_read_env_int(const char *name, long minimum, long maximum, long *value) {
+  const char *raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return false;
+  }
+  errno = 0;
+  char *end = nullptr;
+  const long parsed = std::strtol(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0' || parsed < minimum || parsed > maximum) {
+    LOGE("%s must be an integer in %ld..%ld, got %s", name, minimum, maximum, raw);
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
 bool engine_instance_read_id(const char *path, std::int32_t *engine_id) {
   if (path == nullptr || engine_id == nullptr) {
     return false;
@@ -70,7 +93,13 @@ void initialize_engine_instance() {
   std::snprintf(engine_id_path, sizeof(engine_id_path), "/data/user/%d/%s/files/cr_engine_id", android_user_id,
                 kPackageName);
   std::int32_t engine_id = 0;
-  if (!engine_instance_parse_process_id(&engine_id) && !engine_instance_read_id(engine_id_path, &engine_id)) {
+  const bool discovered =
+      engine_instance_parse_process_id(&engine_id) || engine_instance_read_id(engine_id_path, &engine_id);
+  long env_engine_id = 0;
+  if (engine_instance_read_env_int("CR_PROBE_ENGINE_ID", 0,
+                                   static_cast<long>(kEngineInstanceMaxCount - 1), &env_engine_id)) {
+    engine_id = static_cast<std::int32_t>(env_engine_id);
+  } else if (!discovered) {
     // Fresh Android secondary users start at id 10.  This fallback lets
     // older multi-user development harnesses remain usable.  Production
     // cluster launchers use manifest process names instead.
@@ -79,7 +108,12 @@ void initialize_engine_instance() {
     }
   }
   g_engine_instance_id = engine_id;
-  g_engine_instance_port = static_cast<std::uint16_t>(kControlPort + engine_id);
+  long env_port = 0;
+  if (engine_instance_read_env_int("CR_PROBE_CONTROL_PORT", 1, 65535, &env_port)) {
+    g_engine_instance_port = static_cast<std::uint16_t>(env_port);
+  } else {
+    g_engine_instance_port = static_cast<std::uint16_t>(kControlPort + engine_id);
+  }
 
   std::snprintf(g_user_fingerprint_path, sizeof(g_user_fingerprint_path), "/data/user/%d/%s/update/fingerprint.json",
                 android_user_id, kPackageName);

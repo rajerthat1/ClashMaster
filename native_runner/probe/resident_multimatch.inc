@@ -1269,8 +1269,9 @@ bool build_resident_training_capture(std::uint8_t *response, std::size_t respons
     if (!writer.u64(record.sequence) || !writer.i32(record.tick) ||
         !writer.u8(static_cast<std::uint8_t>(record.kind)) || !writer.u8(static_cast<std::uint8_t>(record.pool)) ||
         !writer.u8(static_cast<std::uint8_t>(record.terminal_reason)) ||
-        !writer.u8(static_cast<std::uint8_t>(event_flags)) || !writer.u16(0) || !writer.u64(record.hook_offset) ||
-        !writer.u64(record.caller_offset) || !writer.u64(record.cause_sequence) ||
+        !writer.u8(static_cast<std::uint8_t>(event_flags)) || !writer.u16(0) ||
+        !writer.u64(arm_logical_offset(record.hook_offset)) ||
+        !writer.u64(arm_logical_offset(record.caller_offset)) || !writer.u64(record.cause_sequence) ||
         !writer.i32(record.requested_amount) || !writer.i32(record.actual_amount) || !writer.i32(record.pre_hp) ||
         !writer.i32(record.post_hp) || !writer.i32(record.pre_builtin_shield) ||
         !writer.i32(record.post_builtin_shield) || !writer.i32(record.pre_buff_shield) ||

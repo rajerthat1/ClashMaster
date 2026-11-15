@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Build libcrprobe.so for arm64-v8a on Linux.
+# Build libcrprobe.so for arm64-v8a (or x86_64) on Linux.
 #
 # The PowerShell script remains the canonical Windows path.  This mirrors it so
 # the same probe can be compiled on a Linux host with the Android NDK.
 #
 # Usage:
 #   native_runner/probe/build_probe.sh [--target-build 15.535.13|16.635.1] \
-#       [--ndk <NDK root>] [--output <path/to/libcrprobe.so>]
+#       [--abi arm64-v8a|x86_64] [--ndk <NDK root>] [--output <path/to/libcrprobe.so>]
 #
-# Environment fallbacks: CR_NDK_ROOT, CR_PROBE.
+# Environment fallbacks: CR_NDK_ROOT, CR_PROBE, CR_TARGET_BUILD, CR_PROBE_ABI.
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,11 +16,13 @@ repo_root="$(cd -- "$script_dir/../.." && pwd)"
 
 target_build="${CR_TARGET_BUILD:-15.535.13}"
 ndk_root="${CR_NDK_ROOT:-}"
+abi="${CR_PROBE_ABI:-arm64-v8a}"
 output="${CR_PROBE:-$script_dir/out/libcrprobe.so}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target-build) target_build="${2:?missing value}"; shift 2 ;;
+    --abi) abi="${2:?missing value}"; shift 2 ;;
     --ndk) ndk_root="${2:?missing value}"; shift 2 ;;
     --output) output="${2:?missing value}"; shift 2 ;;
     -h|--help)
@@ -47,7 +49,19 @@ if [[ -z "$ndk_root" || ! -d "$ndk_root" ]]; then
   exit 1
 fi
 
-compiler="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++"
+case "$abi" in
+  arm64-v8a)
+    triple="aarch64-linux-android24"
+    arch_sources=("$script_dir/native_call_arm64.S" "$script_dir/remaining_runtime_arm64.S")
+    ;;
+  x86_64)
+    triple="x86_64-linux-android24"
+    arch_sources=("$script_dir/native_call_x86_64.cpp")
+    ;;
+  *) echo "unsupported abi: $abi" >&2; exit 2 ;;
+esac
+
+compiler="$ndk_root/toolchains/llvm/prebuilt/linux-x86_64/bin/${triple}-clang++"
 if [[ ! -x "$compiler" ]]; then
   echo "Missing NDK compiler: $compiler" >&2
   exit 1
@@ -55,7 +69,7 @@ fi
 
 mkdir -p "$(dirname -- "$output")"
 
-echo "Building $target_build probe -> $output"
+echo "Building $target_build $abi probe -> $output"
 "$compiler" \
   -std=c++17 \
   -O2 \
@@ -69,8 +83,7 @@ echo "Building $target_build probe -> $output"
   -o "$output" \
   "$script_dir/cr_replay_probe.cpp" \
   "$script_dir/native_touch_interceptor.cpp" \
-  "$script_dir/native_call_arm64.S" \
-  "$script_dir/remaining_runtime_arm64.S" \
+  "${arch_sources[@]}" \
   -llog \
   -ldl \
   -lz

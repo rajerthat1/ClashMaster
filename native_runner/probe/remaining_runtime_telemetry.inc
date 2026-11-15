@@ -2014,7 +2014,7 @@ bool append_remaining_record_json(char *response, std::size_t response_size, std
   json.field("sequence", record.sequence);
   json.field("tick", record.tick);
   json.field("kind", remaining_raw_kind_label(record.kind));
-  json.field("hookOffset", record.hook_offset);
+  json.field("hookOffset", arm_logical_offset(record.hook_offset));
   json.nullable("callerOffset", record.caller_offset, record.caller_offset != 0);
   struct EntityField {
     const char *name;

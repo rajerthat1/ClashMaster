@@ -338,12 +338,12 @@ bool append_action_movement_runtime_events_json(std::uint64_t generation, std::u
         json.field("kind", kind);
         json.field("mode", action_movement_mode_label(record.kind));
         json.field("stage", action_movement_stage_label(record.kind));
-        json.field("hookOffset", record.hook_offset);
-        json.field("callerOffset", record.caller_offset);
+        json.field("hookOffset", arm_logical_offset(record.hook_offset));
+        json.field("callerOffset", arm_logical_offset(record.caller_offset));
         json.field("actionDataGlobalId", record.action_data_global_id);
         json.optional("actionName", true, append_json_utf8_string, record.action_name, record.action_name_size);
-        json.field("actionClassVtableOffset", record.action_class_vtable_offset);
-        json.nullable("runtimeClassVtableOffset", record.runtime_class_vtable_offset,
+        json.field("actionClassVtableOffset", arm_logical_vtable(record.action_class_vtable_offset));
+        json.nullable("runtimeClassVtableOffset", arm_logical_vtable(record.runtime_class_vtable_offset),
                       record.runtime_class_vtable_offset != 0);
         json.optional("sourceBefore", true, append_combat_entity_fact, record.source_before);
         json.optional("sourceAfter", true, append_combat_entity_fact, record.source_after);

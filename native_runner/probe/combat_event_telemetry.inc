@@ -1524,7 +1524,7 @@ bool append_combat_spawn_provenance(char *response, std::size_t response_size, s
   }
   json.begin_object();
   json.field("kind", combat_spawn_provenance_label(provenance.kind));
-  json.field("hookOffset", provenance.hook_offset);
+  json.field("hookOffset", arm_logical_offset(provenance.hook_offset));
   json.field("sourceDataGlobalId", static_cast<std::uint32_t>(provenance.source_data_global_id));
   return json.end_object();
 }
@@ -1547,8 +1547,8 @@ bool append_combat_record(JsonWriter &json, const CombatRawRecord &record) {
   json.field("generation", record.generation);
   json.field("stateEpoch", record.state_epoch);
   json.field("kind", combat_raw_kind_label(record.kind));
-  json.field("hookOffset", record.hook_offset);
-  json.nullable("callerOffset", record.caller_offset, record.caller_offset != 0);
+  json.field("hookOffset", arm_logical_offset(record.hook_offset));
+  json.nullable("callerOffset", arm_logical_offset(record.caller_offset), record.caller_offset != 0);
   json.nullable("causeSequence", record.cause_sequence, record.cause_sequence != 0);
   json.field("pool", combat_pool_label(record.pool));
   json.field("terminalReason", combat_terminal_reason_label(record.terminal_reason));

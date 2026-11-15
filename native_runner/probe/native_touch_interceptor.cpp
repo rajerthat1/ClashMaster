@@ -14,6 +14,10 @@
 
 #include <pthread.h>
 
+#if defined(__x86_64__)
+#include "x86_hook.h"
+#endif
+
 namespace {
 
 constexpr const char *kLogTag = "CRNativeTouch";
@@ -220,7 +224,44 @@ bool make_page_writable(void *address, int protection) {
 } // namespace
 
 bool install_native_touch_interceptor(std::uintptr_t libg_base, const NativeTouchBindings &bindings) {
-#if !defined(__aarch64__)
+#if defined(__x86_64__)
+  if (libg_base == 0 || bindings.is_native_render_ready == nullptr || bindings.native_render_generation == nullptr ||
+      bindings.submit_hand_action == nullptr) {
+    TOUCH_LOGE("native touch bindings are incomplete");
+    return false;
+  }
+  if (g_installed.load(std::memory_order_acquire)) {
+    return true;
+  }
+  const std::uintptr_t touch_offset = bindings.hook_offset != 0 ? bindings.hook_offset : kGameAppTouchOffset;
+  const std::uint8_t *touch_prologue = bindings.prologue != nullptr ? bindings.prologue : kGameAppTouchPrologue;
+  auto *target = reinterpret_cast<std::uint8_t *>(libg_base + touch_offset);
+  if (std::memcmp(target, touch_prologue, 16) != 0) {
+    TOUCH_LOGE("GameApp.nOnTouchEvent prologue mismatch at +0x%zx", static_cast<std::size_t>(touch_offset));
+    return false;
+  }
+  auto *trampoline = static_cast<std::uint8_t *>(
+      mmap(nullptr, 256, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  if (trampoline == MAP_FAILED) {
+    TOUCH_LOGE("mmap touch trampoline failed");
+    return false;
+  }
+  const int steal = x86hook::build_trampoline(target, trampoline);
+  if (steal < 0 || steal > 32 || !make_page_writable(target, PROT_READ | PROT_WRITE | PROT_EXEC) ||
+      !make_page_writable(target + steal, PROT_READ | PROT_WRITE | PROT_EXEC)) {
+    TOUCH_LOGE("touch hook: prologue not relocatable or mprotect failed (steal=%d)", steal);
+    munmap(trampoline, 256);
+    return false;
+  }
+  g_bindings = bindings;
+  g_original_game_app_touch = reinterpret_cast<GameAppTouch>(trampoline);
+  x86hook::emit_abs_jump(target, reinterpret_cast<const void *>(&native_touch_game_app_hook));
+  make_page_writable(target, PROT_READ | PROT_EXEC);
+  make_page_writable(target + steal, PROT_READ | PROT_EXEC);
+  g_installed.store(true, std::memory_order_release);
+  TOUCH_LOGI("GameApp.nOnTouchEvent hook installed (x86_64) target=%p trampoline=%p", target, trampoline);
+  return true;
+#elif !defined(__aarch64__)
   (void)libg_base;
   (void)bindings;
   return false;

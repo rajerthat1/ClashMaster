@@ -33,8 +33,8 @@ inline constexpr std::uintptr_t kReplayBattleControllerLifecycleOffset = 0x00d9a
 inline constexpr std::uint8_t kReplayBattleControllerLifecyclePrologue[16] = {0xff, 0x43, 0x04, 0xd1, 0xe8, 0x63, 0x00, 0xfd, 0xfd, 0xfb, 0x0c, 0xa9, 0xfc, 0x6f, 0x00, 0xf9};
 inline constexpr std::uintptr_t kReplayBattleControllerFullUpdateOffset = 0x00d9bba0;
 inline constexpr std::uint8_t kReplayBattleControllerFullUpdatePrologue[16] = {0xff, 0x83, 0x02, 0xd1, 0xeb, 0x2b, 0x04, 0x6d, 0xe9, 0x23, 0x05, 0x6d, 0xfd, 0x7b, 0x06, 0xa9};
-inline constexpr std::uintptr_t kReplayBattleControllerClockOffset = 0x00d9c284;
-inline constexpr std::uint8_t kReplayBattleControllerClockPrologue[16] = {0xff, 0x83, 0x03, 0xd1, 0xe8, 0x43, 0x00, 0xfd, 0xfd, 0xfb, 0x08, 0xa9, 0xfb, 0x4f, 0x00, 0xf9};
+inline constexpr std::uintptr_t kReplayBattleControllerClockOffset = 0x00d9c278;
+inline constexpr std::uint8_t kReplayBattleControllerClockPrologue[16] = {0x08, 0xf0, 0x45, 0x39, 0x48, 0x00, 0x00, 0x34, 0xc0, 0x03, 0x5f, 0xd6, 0xff, 0x83, 0x03, 0xd1};
 inline constexpr std::uintptr_t kReplayBattleControllerAlternateUpdateOffset = 0x00d9cc24;
 inline constexpr std::uint8_t kReplayBattleControllerAlternateUpdatePrologue[16] = {0xe8, 0x0f, 0x1e, 0xfc, 0xfd, 0xfb, 0x00, 0xa9, 0xf3, 0x0f, 0x00, 0xf9, 0xfd, 0x23, 0x00, 0x91};
 inline constexpr std::uintptr_t kGameStateLoadOffset = 0x011d2dc4;
@@ -45,14 +45,14 @@ inline constexpr std::uintptr_t kGameAppTouchOffset = 0x0156f790;
 inline constexpr std::uint8_t kGameAppTouchPrologue[16] = {0xfd, 0x7b, 0xbc, 0xa9, 0xf8, 0x5f, 0x01, 0xa9, 0xf6, 0x57, 0x02, 0xa9, 0xf4, 0x4f, 0x03, 0xa9};
 
 // Core code anchors called directly by the runner path.
-inline constexpr std::uintptr_t kReplayManagerGetterOffset = 0x00da0670;
-inline constexpr std::uint8_t kReplayManagerGetterPrologue[16] = {0xff, 0xc3, 0x01, 0xd1, 0xfd, 0x7b, 0x02, 0xa9, 0xf9, 0x1b, 0x00, 0xf9, 0xf8, 0x5f, 0x04, 0xa9};
+inline constexpr std::uintptr_t kReplayManagerGetterOffset = 0x00da0658;
+inline constexpr std::uint8_t kReplayManagerGetterPrologue[16] = {0xe8, 0x6e, 0x00, 0xb0, 0x00, 0x09, 0x41, 0xf9, 0xc0, 0x03, 0x5f, 0xd6, 0x00, 0x28, 0x40, 0xf9};
 inline constexpr bool kReplayManagerGetterResolved = true;
-inline constexpr std::uintptr_t kLibgStringFromUtf8Offset = 0x015267f0;
-inline constexpr std::uint8_t kLibgStringFromUtf8Prologue[16] = {0xfd, 0x7b, 0xbd, 0xa9, 0xf6, 0x57, 0x01, 0xa9, 0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00, 0x91};
+inline constexpr std::uintptr_t kLibgStringFromUtf8Offset = 0x0153de30;
+inline constexpr std::uint8_t kLibgStringFromUtf8Prologue[16] = {0xe0, 0xe5, 0x00, 0x2f, 0x1f, 0x04, 0x00, 0xf9, 0x00, 0x00, 0x00, 0xfd, 0xc4, 0xff, 0xff, 0x17};
 inline constexpr bool kLibgStringFromUtf8Resolved = true;
-inline constexpr std::uintptr_t kGameAppGetterOffset = 0x007c27ac;
-inline constexpr std::uint8_t kGameAppGetterPrologue[16] = {0xdd, 0x2c, 0x47, 0x14, 0x5f, 0x24, 0x03, 0xd5, 0x83, 0x8e, 0x00, 0xb0, 0x63, 0xc0, 0x17, 0x91};
+inline constexpr std::uintptr_t kGameAppGetterOffset = 0x007c2808;
+inline constexpr std::uint8_t kGameAppGetterPrologue[16] = {0x48, 0x9c, 0x00, 0xb0, 0x00, 0x91, 0x43, 0xf9, 0xc0, 0x03, 0x5f, 0xd6, 0x00, 0xa8, 0x41, 0xbd};
 inline constexpr bool kGameAppGetterResolved = true;
 inline constexpr std::uintptr_t kGameAppPauseGuardOffset = 0x007c99ac;
 inline constexpr std::uint8_t kGameAppPauseGuardPrologue[16] = {0x08, 0xc4, 0x41, 0xb9, 0x1f, 0x01, 0x00, 0x71, 0xe0, 0x07, 0x9f, 0x1a, 0xc0, 0x03, 0x5f, 0xd6};
@@ -96,8 +96,8 @@ inline constexpr bool kJsonParseResolved = true;
 inline constexpr std::uintptr_t kStateSnapshotOffset = 0x00bb3ac4;
 inline constexpr std::uint8_t kStateSnapshotPrologue[16] = {0xfd, 0x7b, 0xbd, 0xa9, 0xf5, 0x0b, 0x00, 0xf9, 0xf4, 0x4f, 0x02, 0xa9, 0xfd, 0x03, 0x00, 0x91};
 inline constexpr bool kStateSnapshotResolved = true;
-inline constexpr std::uintptr_t kStateSnapshotDeleteOffset = 0x011cfb78;
-inline constexpr std::uint8_t kStateSnapshotDeletePrologue[16] = {0x6d, 0xf5, 0xff, 0x97, 0xe1, 0x4d, 0x00, 0xf0, 0x21, 0x60, 0x36, 0x91, 0x80, 0x62, 0x00, 0x91};
+inline constexpr std::uintptr_t kStateSnapshotDeleteOffset = 0x011ccee8;
+inline constexpr std::uint8_t kStateSnapshotDeletePrologue[16] = {0xfd, 0x7b, 0xbe, 0xa9, 0xf3, 0x0b, 0x00, 0xf9, 0xfd, 0x03, 0x00, 0x91, 0x68, 0x46, 0x00, 0xf0};
 inline constexpr bool kStateSnapshotDeleteResolved = true;
 inline constexpr std::uintptr_t kCardSelectionBuildOffset = 0x00f671a0;
 inline constexpr std::uint8_t kCardSelectionBuildPrologue[16] = {0xa0, 0x00, 0x00, 0xb4, 0x09, 0x00, 0x40, 0xf9, 0x42, 0x00, 0x00, 0x12, 0x23, 0x89, 0x40, 0xf9};
@@ -150,8 +150,9 @@ inline constexpr bool kLocationTileMapEnsureResolved = true;
 inline constexpr std::uintptr_t kLocationTileMapLookupOffset = 0x00f2edec;
 inline constexpr std::uint8_t kLocationTileMapLookupPrologue[16] = {0xfd, 0x7b, 0xbe, 0xa9, 0xf4, 0x4f, 0x01, 0xa9, 0xfd, 0x03, 0x00, 0x91, 0xf3, 0x03, 0x00, 0xaa};
 inline constexpr bool kLocationTileMapLookupResolved = true;
-inline constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = kUnavailableOffset;
-inline constexpr bool kBuffAssetClassNameGetterResolved = false;
+inline constexpr std::uintptr_t kBuffAssetClassNameGetterOffset = 0x00ebf530;
+inline constexpr std::uint8_t kBuffAssetClassNameGetterPrologue[16] = {0x80, 0xa1, 0xff, 0xb0, 0x00, 0x24, 0x39, 0x91, 0xc0, 0x03, 0x5f, 0xd6, 0x00, 0xa4, 0x40, 0xf9};
+inline constexpr bool kBuffAssetClassNameGetterResolved = true;
 
 // Data anchors (GOT/global slots; read the slot, never fingerprint it).
 inline constexpr std::uintptr_t kEglSwapBuffersGotOffset = 0x01a9d6b0;
@@ -167,6 +168,21 @@ inline constexpr std::uintptr_t kChampionControllerVtableOffset = 0x01a51c30;
 inline constexpr bool kChampionControllerVtableResolved = true;
 inline constexpr std::uintptr_t kCharacterAbilityDataVtableOffset = 0x01a348e0;
 inline constexpr bool kCharacterAbilityDataVtableResolved = true;
+
+// Rich-telemetry vtable anchors (ARM64 values from offset-diff.json, §3.33).
+// These classify entities/projectiles before any hook ring is installed; the
+// x86_64 header carries the same names with its own build's values.  This
+// block is maintained here because gen_layout.py does not emit vtable
+// anchors; tests/test_probe_build_layout.py fails if the two lists drift.
+inline constexpr std::uintptr_t kBuffAssetVtableOffset = 0x01a349f0;
+inline constexpr std::uintptr_t kProjectileVtableOffset = 0x01a50348;
+inline constexpr std::uintptr_t kCharacterVtableOffset = 0x01a4fbb8;
+inline constexpr std::uintptr_t kCaptureCharacterActionDataVtableOffset = 0x01a3fab0;
+inline constexpr std::uintptr_t kCaptureCharacterRuntimeVtableOffset = 0x01a51a20;
+inline constexpr std::uintptr_t kThresholdRelocationActionDataVtableOffset = 0x01a41da0;
+inline constexpr std::uintptr_t kThresholdRelocationRuntimeVtableOffset = 0x01a52fc0;
+inline constexpr std::uintptr_t kPeriodicAttackModifierActionDataVtableOffset = 0x01a41998;
+inline constexpr std::uintptr_t kPeriodicAttackModifierRuntimeVtableOffset = 0x01a52ca8;
 
 // Champion ability-data field offsets (LogicCharacterAbilityData).
 inline constexpr std::size_t kCharacterAbilityConfiguredCooldownOffset = 0x00b8;  // was 0x00b4
@@ -184,7 +200,7 @@ inline constexpr std::size_t kGameStateManagerAllocationSize = 0x240;  // was 0x
 inline constexpr std::size_t kGameStateCommandContextOffset = 0x210;  // was 0x208
 
 // Anchors the probe intentionally leaves unavailable on this build.
-inline constexpr const char *kUnresolvedAnchors[] = {"kBuffAssetClassNameGetter"};
+inline constexpr const char *kUnresolvedAnchors[] = {nullptr};
 
 inline constexpr HookAnchor kRunnerHooks[] = {
     {"kNativeReplayRunner", kNativeReplayRunnerOffset, kNativeReplayRunnerPrologue},

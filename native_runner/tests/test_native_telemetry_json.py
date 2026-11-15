@@ -68,6 +68,9 @@ def test_native_telemetry_wire_contract(tmp_path: Path) -> None:
 #define LOGE(...) ((void)0)
 constexpr std::int32_t kNativeObjectIdEntityKeyTag = -2;
 constexpr int kPlayerCount = 2;
+[[maybe_unused]] static inline std::uint64_t arm_logical_offset(std::uint64_t offset) { return offset; }
+[[maybe_unused]] static inline std::uint64_t arm_logical_vtable(std::uint64_t offset) { return offset; }
+[[maybe_unused]] static inline std::uint64_t arm_logical_func(std::uint64_t offset) { return offset; }
 '''
     for name in (
         "json_boolean",

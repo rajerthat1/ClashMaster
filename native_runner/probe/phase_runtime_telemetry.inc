@@ -927,8 +927,8 @@ bool append_phase_record(JsonWriter &json, const PhaseRawRecord &record) {
   json.field("sequence", record.sequence);
   json.field("tick", record.tick);
   json.field("kind", phase_raw_kind_label(record.kind));
-  json.field("hookOffset", record.hook_offset);
-  json.nullable("callerOffset", record.caller_offset, record.caller_offset != 0);
+  json.field("hookOffset", arm_logical_offset(record.hook_offset));
+  json.nullable("callerOffset", arm_logical_offset(record.caller_offset), record.caller_offset != 0);
   json.record("entity", append_combat_entity_fact, record.entity);
   json.record("targetBefore", append_combat_entity_fact, record.target_before);
   json.record("targetAfter", append_combat_entity_fact, record.target_after);

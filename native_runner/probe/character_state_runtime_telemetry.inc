@@ -180,8 +180,8 @@ bool append_character_state_runtime_events_json(std::uint64_t generation, std::u
         json.field("sequence", record.sequence);
         json.field("tick", record.tick);
         json.field("kind", "native_character_state_transition");
-        json.field("hookOffset", record.hook_offset);
-        json.field("callerOffset", record.caller_offset);
+        json.field("hookOffset", arm_logical_offset(record.hook_offset));
+        json.field("callerOffset", arm_logical_offset(record.caller_offset));
         json.field("previousState", record.previous_state);
         json.field("requestedState", record.requested_state);
         json.field("committedState", record.committed_state);

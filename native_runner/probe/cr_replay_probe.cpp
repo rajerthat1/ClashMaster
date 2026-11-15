@@ -44,7 +44,14 @@
 // hook prologues, the resolved core call offsets, and sentinels for anchors
 // that are still AMBIGUOUS/MISSING so nothing silently falls back to 15.535.
 #if defined(CR_PROBE_TARGET_16_635_1)
+// The generated header carries the target-build anchors.  x86_64 has its own
+// table (Clashback `libg.so`, sha c4721bd9…); the names are identical so the
+// rest of the probe never branches on architecture for an address.
+#if defined(__x86_64__)
+#include "build_16_635_1_layout_x86.h"
+#else
 #include "build_16_635_1_layout.h"
+#endif
 #endif
 
 namespace {
@@ -56,7 +63,15 @@ constexpr std::size_t kEngineInstanceSlots = 8;
 constexpr const char *kAttestationVersion = "runner-attestation.v1";
 constexpr const char *kProtocolVersion = "cr-native-control.v1";
 constexpr const char *kPackageName = "nullsroyale.rel.free";
+#if defined(__x86_64__)
+constexpr const char *kAbi = "x86_64";
+#else
 constexpr const char *kAbi = "arm64-v8a";
+#endif
+// Host-attached runtimes may describe a different client package (the official
+// x86_64 build, not Null's ARM64 APK).  The control protocol keeps the default;
+// attestation reports the identity the host declared.
+const char *g_attestation_package = kPackageName;
 char g_user_fingerprint_path[256] = {};
 char g_user_assets_path[256] = {};
 const char *g_fingerprint_paths[] = {
@@ -256,14 +271,21 @@ constexpr const char *kMirrorDeployCommandFormat =
         : "{\"ct\":86,\"c\":{\"t\":%d,\"t2\":%d,\"idHi\":%u,\"idLo\":%llu,"
           "\"px\":%d,\"py\":%d,\"sid\":-1,\"sel\":{\"os\":%u,\"pd\":%u}}}%n";
 
-// The rich-telemetry vtable anchors are still 15.535.13 values.  The probe
-// only compares them against an object's vtable, so an unmatched build simply
-// withholds the envelope instead of calling through a stale pointer.  The
-// Champion controller trio used by ability activation is build-selectable
-// (see below).
+// The rich-telemetry vtable anchors are build-selectable.  The generated
+// 16.635.1 headers (ARM64 and x86_64) carry this build's corrected values, so
+// entity/projectile classification matches the target on both architectures.
+// The probe only compares them against an object's vtable, so an unmatched
+// object simply withholds the envelope instead of calling through a stale
+// pointer.
+#if defined(CR_PROBE_TARGET_16_635_1)
+constexpr std::uintptr_t kBuffAssetVtableOffset = probe_target::kBuffAssetVtableOffset;
+constexpr std::uintptr_t kProjectileVtableOffset = probe_target::kProjectileVtableOffset;
+constexpr std::uintptr_t kCharacterVtableOffset = probe_target::kCharacterVtableOffset;
+#else
 constexpr std::uintptr_t kBuffAssetVtableOffset = 0x01882500;
 constexpr std::uintptr_t kProjectileVtableOffset = 0x0189cc28;
 constexpr std::uintptr_t kCharacterVtableOffset = 0x0189c4e8;
+#endif
 constexpr std::size_t kProjectileDragStageOffset = 0x189;
 constexpr std::size_t kProjectileDragBackSpeedOffset = 0x1b0;
 #if defined(CR_PROBE_TARGET_16_635_1)
@@ -290,17 +312,37 @@ constexpr std::size_t kCharacterAbilityConfiguredCooldownOffset = 0x00b4;
 constexpr std::size_t kCharacterAbilityExtraSpawnBaseOffset = 0x104;
 constexpr std::size_t kCharacterAbilityExtraSpawnLimitOffset = 0x108;
 constexpr std::size_t kCharacterExtraSpawnAccumulatorOffset = 0x1f0;
+#if defined(CR_PROBE_TARGET_16_635_1)
+constexpr std::uintptr_t kCaptureCharacterActionDataVtableOffset =
+    probe_target::kCaptureCharacterActionDataVtableOffset;
+constexpr std::uintptr_t kCaptureCharacterRuntimeVtableOffset = probe_target::kCaptureCharacterRuntimeVtableOffset;
+#else
 constexpr std::uintptr_t kCaptureCharacterActionDataVtableOffset = 0x0188c848;
 constexpr std::uintptr_t kCaptureCharacterRuntimeVtableOffset = 0x0189e2d8;
+#endif
 constexpr std::size_t kCaptureRuntimeMaximumTargets = 160;
 constexpr std::int32_t kCaptureRuntimeMaximumVectorCapacity = 1024;
 constexpr std::int32_t kCaptureRuntimeMaximumConfiguredLimit = 1000;
+#if defined(CR_PROBE_TARGET_16_635_1)
+constexpr std::uintptr_t kThresholdRelocationActionDataVtableOffset =
+    probe_target::kThresholdRelocationActionDataVtableOffset;
+constexpr std::uintptr_t kThresholdRelocationRuntimeVtableOffset =
+    probe_target::kThresholdRelocationRuntimeVtableOffset;
+#else
 constexpr std::uintptr_t kThresholdRelocationActionDataVtableOffset = 0x0188ef18;
 constexpr std::uintptr_t kThresholdRelocationRuntimeVtableOffset = 0x0189f6f0;
+#endif
 constexpr std::int32_t kThresholdRelocationMaximumThresholds = 16;
 constexpr std::int32_t kThresholdRelocationMaximumVectorCapacity = 64;
+#if defined(CR_PROBE_TARGET_16_635_1)
+constexpr std::uintptr_t kPeriodicAttackModifierActionDataVtableOffset =
+    probe_target::kPeriodicAttackModifierActionDataVtableOffset;
+constexpr std::uintptr_t kPeriodicAttackModifierRuntimeVtableOffset =
+    probe_target::kPeriodicAttackModifierRuntimeVtableOffset;
+#else
 constexpr std::uintptr_t kPeriodicAttackModifierActionDataVtableOffset = 0x0188eac8;
 constexpr std::uintptr_t kPeriodicAttackModifierRuntimeVtableOffset = 0x0189f3d8;
+#endif
 constexpr const char *kRichTelemetrySchema = "native-rich-telemetry.v3";
 // Raw objectIndex/secondaryIndex remain authoritative engine fields, but they
 // are not a globally unique identity: projectiles can copy their source
@@ -591,6 +633,75 @@ std::atomic<void *> g_last_location_data{nullptr};
 std::atomic<void *> g_last_tilemap{nullptr};
 pthread_mutex_t g_tilemap_ensure_mutex = PTHREAD_MUTEX_INITIALIZER;
 std::uintptr_t g_libg_base = 0;
+// x86_64 offsets -> the ARM64 values every tool and corpus already speaks.
+// The tables are generated from the RoyaleFish x86/ARM mapping for this exact
+// client build (docs/native/16.635.1/royalefish-crosscheck.json).  On AArch64
+// the mapping is the identity, so JSON stays byte-identical to the A51.
+#include "logical_offsets.inc"
+[[maybe_unused]] static inline std::uint64_t arm_logical_offset(std::uint64_t offset) {
+#if defined(__x86_64__)
+  if (offset == 0) {
+    return 0;
+  }
+  std::size_t lo = 0, hi = sizeof(kLogicalOffsets) / sizeof(kLogicalOffsets[0]);
+  while (lo < hi) {
+    const std::size_t mid = (lo + hi) / 2;
+    if (kLogicalOffsets[mid].x86 < offset) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo < sizeof(kLogicalOffsets) / sizeof(kLogicalOffsets[0]) && kLogicalOffsets[lo].x86 == offset) {
+    return kLogicalOffsets[lo].arm;
+  }
+#endif
+  return offset;
+}
+#include "logical_vtables.inc"
+// x86 vtable offset -> ARM vtable offset (identical RW layout, piecewise shift).
+[[maybe_unused]] static inline std::uint64_t arm_logical_vtable(std::uint64_t offset) {
+#if defined(__x86_64__)
+  if (offset == 0) {
+    return 0;
+  }
+  std::size_t lo = 0, hi = sizeof(kLogicalDataWindows) / sizeof(kLogicalDataWindows[0]);
+  while (lo < hi) {
+    const std::size_t mid = (lo + hi) / 2;
+    if (kLogicalDataWindows[mid].hi <= offset) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo < sizeof(kLogicalDataWindows) / sizeof(kLogicalDataWindows[0]) && kLogicalDataWindows[lo].lo <= offset &&
+      offset < kLogicalDataWindows[lo].hi) {
+    return offset - kLogicalDataWindows[lo].delta;
+  }
+#endif
+  return offset;
+}
+#include "logical_funcs.inc"
+// x86 function offset (read from a vtable slot) -> ARM function offset.
+[[maybe_unused]] static inline std::uint64_t arm_logical_func(std::uint64_t offset) {
+#if defined(__x86_64__)
+  std::size_t lo = 0, hi = sizeof(kLogicalFuncs) / sizeof(kLogicalFuncs[0]);
+  while (lo < hi) {
+    const std::size_t mid = (lo + hi) / 2;
+    if (kLogicalFuncs[mid].x86 < offset) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo < sizeof(kLogicalFuncs) / sizeof(kLogicalFuncs[0]) && kLogicalFuncs[lo].x86 == offset) {
+    return kLogicalFuncs[lo].arm;
+  }
+  return arm_logical_offset(offset);
+#else
+  return offset;
+#endif
+}
 const ElfW(Phdr) *g_libg_phdr = nullptr;
 ElfW(Half) g_libg_phnum = 0;
 char g_libg_path[1024] = {};
@@ -974,8 +1085,19 @@ bool inspect_content_runtime(void **root_out = nullptr, void **context_out = nul
   return root != nullptr && context != nullptr && post_process_ready == 1;
 }
 
+#if defined(__x86_64__)
+// The crx Linux host has no logcat; mirror the probe's own lines to stderr so a
+// host-driven run is diagnosable.
+#define LOGI(...)                                                                            \
+  (__android_log_print(ANDROID_LOG_INFO, kLogTag, __VA_ARGS__), std::fprintf(stderr, "[probe I] " __VA_ARGS__), \
+   std::fputc('\n', stderr), std::fflush(stderr))
+#define LOGE(...)                                                                            \
+  (__android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__), std::fprintf(stderr, "[probe E] " __VA_ARGS__), \
+   std::fputc('\n', stderr), std::fflush(stderr))
+#else
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, kLogTag, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, kLogTag, __VA_ARGS__)
+#endif
 
 bool prewarm_location_tilemap(void *content_context, std::int32_t location_id) {
   const std::uint32_t call = g_tilemap_ensure_calls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1348,8 +1470,17 @@ bool collect_runner_attestation(RunnerAttestationSnapshot *result) {
   *result = RunnerAttestationSnapshot{};
 
   Dl_info probe_info{};
+  bool probe_hashed = false;
   if (dladdr(reinterpret_cast<const void *>(&sha256_file), &probe_info) != 0 && probe_info.dli_fname != nullptr) {
-    sha256_file(probe_info.dli_fname, result->probe_sha256);
+    probe_hashed = sha256_file(probe_info.dli_fname, result->probe_sha256);
+  }
+  if (!probe_hashed) {
+    // Host-attached runtimes (crx on Linux) map the probe anonymously, so
+    // dladdr cannot name it.  The host passes the file it loaded.
+    const char *self_path = std::getenv("CR_PROBE_SELF_PATH");
+    if (self_path != nullptr && *self_path != '\0') {
+      sha256_file(self_path, result->probe_sha256);
+    }
   }
   sha256_file(g_libg_path, result->libg_sha256);
   libg_build_id(result->libg_build_id);
@@ -1405,6 +1536,13 @@ bool collect_runner_attestation(RunnerAttestationSnapshot *result) {
                                          g_logic_command_queue_constructor != nullptr;
   result->content_ready = inspect_content_runtime();
   result->content_assets_mapped = process_maps_contains("assets.scdb");
+#if defined(__x86_64__)
+  // crx serves assets through a file shim instead of mapping assets.scdb.
+  const char *host_assets_mapped = std::getenv("CR_PROBE_ASSETS_MAPPED");
+  if (host_assets_mapped != nullptr && std::strcmp(host_assets_mapped, "1") == 0) {
+    result->content_assets_mapped = true;
+  }
+#endif
 
   const bool hashes_complete =
       is_lower_hex_string(result->probe_sha256, 64) && is_lower_hex_string(result->libg_sha256, 64) &&
@@ -1441,7 +1579,7 @@ bool collect_runner_attestation(RunnerAttestationSnapshot *result) {
       json_boolean(result->hook_install_ok), json_boolean(result->hook_game_state_load),
       json_boolean(result->hook_game_state_step), json_boolean(result->hook_native_replay_runner),
       json_boolean(result->hook_render_gate), json_boolean(result->hook_replay_json_setter), result->libg_build_id,
-      result->libg_sha256, kPackageName, result->probe_sha256, kProtocolVersion, kAttestationVersion);
+      result->libg_sha256, g_attestation_package, result->probe_sha256, kProtocolVersion, kAttestationVersion);
   if (identity_size <= 0 || static_cast<std::size_t>(identity_size) >= sizeof(identity)) {
     return false;
   }
@@ -1471,7 +1609,7 @@ bool format_runner_attestation(char *response, std::size_t response_size) {
       "\"structured_observation\":%s,\"two_sided_actions\":%s},"
       "\"content_ready\":%s,\"content_assets_mapped\":%s,"
       "\"production_ready\":%s,\"attestation_digest\":\"%s\"}}",
-      kAttestationVersion, kProtocolVersion, kPackageName, kAbi, attestation.probe_sha256, attestation.libg_sha256,
+      kAttestationVersion, kProtocolVersion, g_attestation_package, kAbi, attestation.probe_sha256, attestation.libg_sha256,
       attestation.libg_build_id, attestation.content_fingerprint_sha256, attestation.content_assets_sha256,
       attestation.content_version, attestation.content_manifest_sha1, json_boolean(attestation.hook_install_ok),
       json_boolean(attestation.hook_game_state_load), json_boolean(attestation.hook_game_state_step),
@@ -1771,11 +1909,17 @@ void *lookup_json_member(void *json_object, const char *key) {
   }
   void *const map = static_cast<std::uint8_t *>(json_object) + 0x18;
   void *entry = nullptr;
-#if defined(CR_PROBE_TARGET_16_635_1)
-  // 16.635 changed the key ABI: the map lookup takes a 16-byte StringView
-  // {data,size} (ldp x8,x1,[x1] at the target) instead of a LibgString
-  // (length at +4, data at +8).  The map offset (+0x18) and the entry value
-  // offset (+0x20) are unchanged.
+#if defined(CR_PROBE_TARGET_16_635_1) && !defined(__x86_64__)
+  // 16.635.1's JSON map lookup takes a 16-byte StringView {data,size}: the
+  // wrapper at 0x139cadc builds `stp x1,x2,[sp]` and the finder at 0xe38d60
+  // reads `ldp x8,x1,[x1]`.  That caller chain is the exact equivalent of the
+  // 15.535 wrapper 0x1217934 -> 0xd0e100, so the ABI really did change here.
+  // Do not "simplify" this to LibgString: the finder at 0xc40d68 is a different
+  // map implementation (key length at +4, data at +8) and is not the one the
+  // game's JSON path calls.
+  //
+  // The x86_64 build is the exception: its JSON path calls the 0xc40d68-shaped
+  // finder (x86 0xc76a60), which keeps the legacy LibgString ABI.
   struct JsonStringView {
     const char *data;
     std::int64_t size;
@@ -8845,10 +8989,46 @@ void native_replay_runner_hook(void *owner, void *battle, void *command_array) {
 }
 
 #include "native_touch_probe_glue.inc"
+#if defined(__x86_64__)
+#include "x86_hook.h"
+#endif
 
 bool install_inline_hook(std::uintptr_t libg_base, std::uintptr_t offset, const std::uint8_t (&expected_prologue)[16],
                          const void *replacement, void **original, const char *label) {
-#if !defined(__aarch64__)
+#if defined(__x86_64__)
+  auto *target = reinterpret_cast<std::uint8_t *>(libg_base + offset);
+  if (std::memcmp(target, expected_prologue, sizeof(expected_prologue)) != 0) {
+    LOGE("%s prologue mismatch at +0x%zx", label, static_cast<std::size_t>(offset));
+    return false;
+  }
+  auto *trampoline = static_cast<std::uint8_t *>(
+      mmap(nullptr, 256, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  if (trampoline == MAP_FAILED) {
+    LOGE("mmap trampoline failed");
+    return false;
+  }
+  const int steal = x86hook::build_trampoline(target, trampoline);
+  if (steal < 0 || steal > 32) {
+    LOGE("%s: prologue at +0x%zx is not relocatable (steal=%d)", label, static_cast<std::size_t>(offset), steal);
+    munmap(trampoline, 256);
+    return false;
+  }
+  if (!make_page_writable(target, PROT_READ | PROT_WRITE | PROT_EXEC) ||
+      !make_page_writable(target + steal, PROT_READ | PROT_WRITE | PROT_EXEC)) {
+    LOGE("mprotect RWX failed");
+    munmap(trampoline, 256);
+    return false;
+  }
+  *original = trampoline;
+  x86hook::emit_abs_jump(target, replacement);
+  for (int i = static_cast<int>(x86hook::kAbsJumpSize); i < steal; ++i) {
+    target[i] = 0xcc;  // never reached: the jump leaves before the stolen tail
+  }
+  make_page_writable(target, PROT_READ | PROT_EXEC);
+  make_page_writable(target + steal, PROT_READ | PROT_EXEC);
+  LOGI("%s hook installed (x86_64, steal=%d): target=%p trampoline=%p", label, steal, target, trampoline);
+  return true;
+#elif !defined(__aarch64__)
   (void)libg_base;
   (void)offset;
   (void)expected_prologue;
@@ -9096,6 +9276,47 @@ void start_deferred_probe_bootstrap() {
 }
 
 } // namespace
+
+// Host-driven attach for runtimes that map libg themselves (crx on Linux):
+// no dlopen, no /proc maps entry, so the host passes the load base explicitly.
+extern "C" __attribute__((visibility("default"))) std::int32_t cr_probe_attach(std::uintptr_t libg_base) {
+  if (libg_base == 0) {
+    LOGE("cr_probe_attach: null libg base");
+    return 0;
+  }
+  const auto *header = reinterpret_cast<const ElfW(Ehdr) *>(libg_base);
+  if (std::memcmp(header->e_ident, ELFMAG, SELFMAG) != 0 || header->e_phentsize != sizeof(ElfW(Phdr)) ||
+      header->e_phnum == 0) {
+    LOGE("cr_probe_attach: no ELF header at base=%p", reinterpret_cast<void *>(libg_base));
+    return 0;
+  }
+  g_libg_phdr = reinterpret_cast<const ElfW(Phdr) *>(libg_base + header->e_phoff);
+  g_libg_phnum = header->e_phnum;
+  // The host loader never calls JNI_OnLoad, so this is the only place engine
+  // identity is bound on the crx path.  It still honours CR_PROBE_ENGINE_ID /
+  // CR_PROBE_CONTROL_PORT set by the host before attach.
+  initialize_engine_instance();
+  std::snprintf(g_libg_path, sizeof(g_libg_path), "host-attached:libg.so");
+  // The host owns the on-disk files an anonymous mapping hides; take them from
+  // the environment so attestation stays exact instead of empty.
+  const char *host_libg_path = std::getenv("CR_PROBE_LIBG_PATH");
+  if (host_libg_path != nullptr && *host_libg_path != '\0') {
+    std::snprintf(g_libg_path, sizeof(g_libg_path), "%s", host_libg_path);
+  }
+  const char *content_root = std::getenv("CR_PROBE_CONTENT_ROOT");
+  if (content_root != nullptr && *content_root != '\0') {
+    std::snprintf(g_user_fingerprint_path, sizeof(g_user_fingerprint_path), "%s/fingerprint.json", content_root);
+    std::snprintf(g_user_assets_path, sizeof(g_user_assets_path), "%s/assets.scdb", content_root);
+  }
+  const char *host_package = std::getenv("CR_PROBE_PACKAGE");
+  if (host_package != nullptr && *host_package != '\0') {
+    g_attestation_package = host_package;
+  }
+  LOGI("host attach: libg base=%p phnum=%u libg=%s", reinterpret_cast<void *>(libg_base),
+       static_cast<unsigned>(g_libg_phnum), g_libg_path);
+  initialize_probe_runtime_once(libg_base);
+  return 1;
+}
 
 extern "C" JNIEXPORT void JNICALL Java_com_supercell_titan_GameApp_nativeBootstrapProbe(JNIEnv *, jclass) {
   std::uintptr_t libg_base = find_libg_base();
