@@ -100,97 +100,108 @@ do not start another R0 run.
 > at the chosen config is 10/10 clean (4,097 native parses, 0 failures, no
 > `env 6`), so the GPU gate is unblocked. See `FINDINGS.md` §3.40.
 
+> **2026-11-15 (session 8): the learner loop is pipelined, and the ladder's
+> ceilings were measured against the wrong workload.** A single `ppo-inference`
+> thread with one batch in flight now stages receives during the forward, and
+> boundary bootstraps share that thread (10/10 segments, 20,480 owner frames,
+> clean). With a cheap forward the non-model wall falls 14 %; with the real
+> 17.5M checkpoint the loop is neutral, because the forward is 98 % of wall and
+> both loops idle only 0.19 s/segment once warm. The important result is
+> diagnostic: the per-packet floor is **32 ms native step + observation build,
+> 14 ms tensorize, 6 ms channel**, so the raw channel "ceilings" in the old
+> ladder (0.61/s per engine, 2.44/s for four) overstate the training rate ~7x —
+> four engines measured 0.736 aggregate because one Python client decodes every
+> lane. The gates (1x >=0.45/s, 8x >=2.5/s) are not reachable on this worker
+> path; the next lever is the worker's per-packet cost, not the loop. See
+> `FINDINGS.md` §3.41.
+
 ---
 
-## Next session (2026-11-15, session 8) — pipeline the learner loop
+## Next session (2026-11-16, session 9) — attack the per-packet worker cost
 
-**Read first:** this section, `FINDINGS.md` §3.40, `ROADMAP.md` §7 item 8.
-Everything is committed (`620ead5`), tree clean, suite **1,292 passed / 18
-skipped**. No GPU is rented and none is needed for this session.
+**Read first:** this section, `FINDINGS.md` §3.41, `ROADMAP.md` §7 item 8.
+Suite is **1,293 passed / 18 skipped**. No GPU rented, none needed for the
+first task.
 
-### The one open problem
+### What session 8 changed
 
-The learner loop resolves **one packet per forward** and pays the whole closed
-loop per packet: ~416 ms wall on the GPU box, of which the model forward is
-27 ms and assembly 4 ms. Measured today: **0.04–0.05 matches/s** (4×A51, 8 lanes,
-30–38 lane-decisions/s). Nothing else in the stack is blocking.
+`async_cluster_self_play.py` is now pipelined: one `ppo-inference` thread with
+at most one batch in flight, the coordinator stages every completed receive
+while the forward runs, and segment-boundary bootstraps use the same thread.
+The 2 ms coalescing window is kept and also applied at the job boundary. All
+1,293 tests pass and a 10-segment real-checkpoint run on 4 x86 engines completed
+cleanly. With a cheap (synthetic) forward the loop is 7 % faster on wall and
+14 % on non-model time; with the real 17.5M checkpoint it is neutral — the
+forward is 98 % of wall. It is a prerequisite for the GPU/8-engine rig, not a
+CPU throughput win.
 
-### Gate ladder — corrected (0.5/s is a *1× x86* number)
+### The corrected throughput reality
 
-| Rig | Channel ceiling (measured) | Gate to pass | Today |
-| --- | --- | --- | --- |
-| **1× x86 process** | **0.61 matches/s** | **0.5/s** | 0.033/s |
-| 4× x86 | 2.44/s | 1.5–2.0/s | — |
-| **8× x86** | 4.9/s | **2.5/s (goal)** | — |
-| 16× x86 | 9.8/s | 5–8/s (stretch ≈ FirstLight-Zero) | — |
-| **4× A51** | **0.26/s** | 0.15–0.2/s | 0.05/s |
+The old gate ladder used ceilings measured on the raw resident channel, which
+does no observation decode and no tensorization. Those are ~90 % of a real
+packet:
 
-4 A51 engines **cannot** reach 0.5/s — the phone channel caps at 0.26/s. The
-0.5/s gate is one x86 engine; 2.5/s is eight of them.
+| Rig (8 lanes, 2 ms window) | Old "ceiling" | **Measured training floor** |
+| --- | --- | --- |
+| 1× x86 | 0.61/s | **0.082/s** (0.138 in profiler units) |
+| 2× x86 | 1.22/s | 0.10/s |
+| 4× x86 (only 2 real cores here) | 2.44/s | 0.15–0.16/s |
+| 4× A51 | 0.26/s | 0.05/s (unchanged) |
+
+Per packet on one x86 engine: **32 ms native step + observation build, 14 ms
+tensorize, 6 ms channel** — 51 ms median / 82 ms mean. The 2.5/s goal at 8
+engines needs ~21 ms/packet, i.e. the worker cost must roughly halve.
+Pipelining cannot do that; it removes ~12 ms/packet of coordinator idle.
 
 ### Task order
 
-1. **Rewrite `native_runner/training/v4/async_cluster_self_play.py`**:
-   continuous-batched inference instead of a cohort wave. Dispatch queue plus one
-   inference thread that batches *all pending* requests (bounded rows) with a
-   2–5 ms coalescing window; decode and apply each request as its result lands;
-   keep per-(engine, lane) LSTM state; preserve `CR_PPO_FAILURE_DUMP` and the
-   rejected-action accounting.
-2. **Measure in this order**, because the CPU model is ~93 % of local wall time
-   and would mask the gain:
-   - `profile_cluster_collection.py` (scripted responder) — the transport + loop
-     floor: 1× x86 **≥0.45/s**, 8× x86 **≥2.5/s**;
-   - `profile_real_collection.py` on GPU — 1× x86 **≥0.5/s**, 8× x86 **≥2.5/s**;
-   - compare against the 4-engine baseline: **311.5 s mean** for 4×8×40 decisions.
-3. **Gates on the rewrite:** 10 consecutive segments clean, 0 rejected,
-   packets/forward ≥8, wall time down. Record as `FINDINGS.md` §3.41.
-4. **Fallback if the rewrite stalls:** N independent collector processes
-   aggregated by the learner. Each is model-bound on one core, so 4–6 processes
-   is a near-linear 4–6× without touching the loop.
-5. **Only after ≥0.5/s:** rent the A6000 and run the 400+ paired-game gate
-   (Wilson intervals), then the PPO fine-tune.
-
-### Reference numbers
-
-- 1× x86 channel ceiling 0.61 matches/s at 5 ticks; 4× A51 0.26; 1× A51 0.065.
-- FirstLight-Zero: **1,024 episodes / ~104 s ≈ 9.85 matches/s**, 1.17M params,
-  async server, ~16 collectors × 8 resident.
-- daybreak-cr: ~10 matches/s, 50 collectors, 4 decision servers, 4×A100 learner,
-  25–45k decisions/s serving.
-- Our serving cost is higher: 17.5M params, 21-column schema, ~4–5× theirs.
+1. **Cut the observation build** (26 ms/packet outside the channel,
+   `BattleEnvV1.step` building semantic observations for 16 owners). Profile it
+   first with `profile_cluster_collection.py --diagnostic-timing`, then make
+   only what the tensorizer reads. Gate: 1× x86 scripted ≥0.20/s, no behaviour
+   change (the parity corpus is the check).
+2. **Parallelise tensorization.** The worker is pinned to a CPU group but runs
+   `torch.set_num_threads(1)` and tensorizes 16 rows serially. Try a per-lane
+   thread pool inside `frame_packet`. Gate: tensorize ≤7 ms/16 rows.
+3. **Re-measure the ladder** with the corrected units before quoting any
+   matches/s number. Use the profiler's 720-decision denominator and say so, or
+   convert to 6,068-tick matches. The two conventions differ by 1.69×.
+4. **Only then rent the A6000** for `profile_real_collection.py --device cuda`
+   (the CUDA path of the new inference thread is still unverified) and the 400+
+   paired-game gate.
+5. If the worker cost resists: add engines. Linear on distinct real cores —
+   ~18 engines for 2.5/s — and the x86 farm is cheap, but this laptop has only
+   2 performance cores, so measure 4+ on the rented host.
 
 ### Do not
 
-- Do not raise `CR_PPO_INFERENCE_BATCH_WAIT_MS` again (250 ms is a measured loss).
-- Do not build a CPU trainer (same ~30 lane-decisions/s, days of NCCL/CUDA work).
-- Do not use phones as a throughput farm (~150 A51s for 10/s); 16 x86 cores is
-  the equivalent and they stay the deployment/parity oracle.
-- Do not start the crforge adapter unless 16–20 x86 cores still miss 2.5/s.
-- Do not rent a GPU before the scripted 1× x86 gate passes.
-- Do not rebuild the x86 probe without re-pinning `probe_sha256`; do not edit
-  generated `logical_*.inc`.
-- Do not trust in-engine win rates as ladder evidence.
-
-### Watch for
-
-The one-off A51 `env 6` (16 consecutive clean segments since) and the one-off
-x86 `crx` host death at step 5 (unreproduced). Keep `CR_PPO_FAILURE_DUMP` set and
-`adb logcat -s CRNativeProbe` running on any real-engine gate; both remain
-diagnostic, not claimed fixed.
+- Do not quote `resident_batch_throughput` matches/s as a training rate. Four
+  engines gave 0.736 aggregate because one Python client decodes every lane.
+- Do not expect loop pipelining to lift a row-bound CPU forward (§3.40); it
+  pays only when the forward is fixed-cost (GPU) and there are enough engines
+  that the coordinator would be the serial resource.
+- Do not raise `CR_PPO_INFERENCE_BATCH_WAIT_MS` — still a measured loss.
+- Do not run the new inference thread on CUDA until graph capture/replay,
+  autocast and the `model_streams` waits are confirmed there.
+- Everything else in "Do not do" below still applies.
 
 ### Start state
 
-Engines are **stopped**; the phone is attached and idle (`R58NA0QTHWV`).
-
 ```bash
-# x86 engines, one process per core, ports 26789+N
+# x86 engines, one per core, ports 26789+N.  Kill by PID: `pkill -f` also
+# matches the shell that runs it.
 for i in 0 1 2 3; do
-  .venv/bin/python tools/native_analysis/crx_engine_host.py \
-      --engine-index "$i" --seconds 3600 &
+  setsid .venv/bin/python tools/native_analysis/crx_engine_host.py \
+      --engine-index "$i" --seconds 3600 > /tmp/opencode/engine$i.log 2>&1 &
 done
-# A51 (optional this session; use --base-port 26799 to avoid the x86 engine)
-./launch_cluster_a51.sh --engines 4 --base-port 26799
+# Worker processes take the FIRST N allowed CPUs, so pin the profiler's group
+# away from the engine hosts when both run on this laptop.
+taskset -c 4-11 .venv/bin/python tools/native_analysis/profile_cluster_collection.py \
+    --engines 4 --lanes 8 --steps 120 --diagnostic-timing --allow-cpu-sharing
 ```
+
+A51, if needed for a parity comparison only:
+`./launch_cluster_a51.sh --engines 1 --base-port 26799`.
 
 ---
 
@@ -340,7 +351,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | PPO trainer on this host | **CPU-blocked** (collector is CUDA/NCCL-only), but a **full update ran on a rented A6000** with 0 rejected actions (`runs/gpu-smoke-20261114/`); throughput is the open problem, not correctness |
 | x86 PPO worker path | **working** — zlib is preloaded `RTLD_GLOBAL` in `crx_engine_host.py` (a `RTLD_LOCAL` preload made crx's stub return `Z_OK` with a zero-byte payload); the host now fails closed if the probe's zlib imports are unresolved (§3.37) |
 | 16.635 remote training | **working on CPU** — engine specs carry `competitive_release` + `model_config`; `B-general-v275` collects through the worker with 0 UNKNOWN effects, 29 lane-decisions/s, 1 engine × 8 lanes (§3.37) |
-| Learner-loop batching | **measured; not a win** — 250 ms + gate 1.0 coalesces **3.98–4.00 packets/forward, 321 → 160 forwards**, but the added wait makes it **slower than 2 ms** (271 s vs 288–331 s, §3.40). Keep 2 ms; the lever is loop pipelining, not forward coalescing |
+| Learner-loop batching | **measured; not a win** — 250 ms + gate 1.0 coalesces **3.98–4.00 packets/forward, 321 → 160 forwards**, but the added wait makes it **slower than 2 ms** (271 s vs 288–331 s, §3.40). Keep 2 ms; session 8 then pipelined the loop instead of widening the window (§3.41) |
 | Full-rate ACT collection | **working** — `delay_aware_legality` ported (decoder + env + expert, §3.39); gate 1.0 is clean on 5/5 single-engine seeds, the 4-engine shape, and a **10/10 stress gate** (4,097 native parses / 0 failures, 16 consecutive clean segments). The one post-port `env 6` did not recur; `CR_PPO_FAILURE_DUMP` stays armed |
 | 16.635.1 x86_64 engine | **running on this host** — `.resource/Clashback/game/engine/libg.so` (sha `c4721bd9…`) booted headless by the crx ELF loader in 0.3 s; no Android/bionic bundle needed |
 | 16.635.1 x86_64 probe | **built** — `native_runner/probe/out/x86_64/libcrprobe.so` (`cd303311…`), `--abi x86_64`; all runner hooks install, `attest` reports `production_ready: true` |
@@ -349,8 +360,9 @@ Yes — but as a **parity oracle**, not the training engine.
 | 16.635 catalogs | **adopted as a verified release** — `native_runner/data/competitive-16.635/` + `native_runner/releases/16.635.1.json`; all 5 catalog ids match `B-general-v275` |
 | 16.635 models | **`B-general-v275` and `A-hog26-v738` load and play on the A51** (17.5M, LSTM 768, schema 21; 0 rejected in the play smoke) |
 | Cloud GPU | **1× A6000 @ $0.35/h ran and was deleted** (~$0.23). Do not re-rent until a local segment completes in <10 min; the GPU sat at 4 % utilisation |
-| Decision-rate reality | A51 4×8 @ 5 ticks = **0.26 matches/s**; one x86_64 process = **0.61**; learner loop on the A51 = **0.04**. See the GPU-smoke section |
-| Loop-pipelining gates | **0.5/s on 1× x86** (80 % of its 0.61 ceiling) and **2.5/s on 8× x86** (~50 % of 4.9); 4× A51 caps at 0.26/s, so its gate is 0.15–0.2/s. Measure scripted first, then real-model on GPU |
+| Decision-rate reality | A51 4×8 @ 5 ticks = **0.26 matches/s** (raw channel); one x86_64 process = **0.61** raw, **0.082** measured *training* floor; learner loop on the A51 = **0.04**. Raw ceilings exclude the observation build + tensorize (§3.41) |
+| Loop pipelining | **done, CPU-verified** — one `ppo-inference` thread, one batch in flight, receives staged during the forward (§3.41). Non-model wall −14 % with a cheap forward, neutral with the 17.5M model (forward = 98 % of wall). 10/10 segments clean. CUDA path unverified until a GPU run |
+| Training-floor gates | **not reachable as written** — 1× x86 measures 0.138 profiler-matches/s (0.082 in 6,068-tick units) and 4× x86 measures 0.278; the 0.45/2.5 gates assume raw-channel ceilings that skip ~90 % of a real packet (§3.41). Next gates: observation build and tensorize cost |
 | cr-native proxy | working, 15.535.29 only |
 
 ### State at handoff (processes are ephemeral)
@@ -1140,7 +1152,9 @@ Scale options, in order of leverage:
 | `ROADMAP.md` | The single plan |
 | `docs/native/16.635.1/FINDINGS.md` | 16.635.1 probe port evidence log (§3.35 = x86_64 host) |
 | `tools/native_analysis/crx_engine_host.py` | Boot the x86_64 16.635.1 engine on Linux (crx) and attach the probe; `--engine-index N` for multiple host engines |
-| `tools/native_analysis/profile_real_collection.py` | Real V4 collector on CPU; use it to measure batching/throughput without a GPU |
+| `tools/native_analysis/profile_real_collection.py` | Real V4 collector on CPU. `--synthetic-model` runs the checkpoint's contract at narrow widths (isolates loop from forward); `--segments N` exercises boundary bootstrap + resume |
+| `tools/native_analysis/profile_cluster_collection.py` | Scripted transport floor. `--diagnostic-timing` splits each worker round into decode / native step / tensorize / channel |
+| `runs/loop-pipeline-20261115/` | Session-8 evidence: scripted decomposition, old-vs-new loop A/B, 10-segment stress |
 | `native_runner/probe/build_16_635_1_layout_x86.h` | Generated x86_64 core anchors |
 | `native_runner/versions/native-16.635.1-x86_64.json` | x86_64 build pin (select with `CR_NATIVE_BUILD_ABI=x86_64`) |
 | `native_runner/probe/out/x86_64/libcrprobe.so` | x86_64 probe (build artifact, pinned by hash) |
@@ -1205,6 +1219,17 @@ Scale options, in order of leverage:
 - Do not read §3.30's 12–14 matches/s as a training decision rate: it was
   measured at 600 ticks per RPC. At the PPO 5-tick cadence four A51 engines are
   worth **0.26 matches/s** and one x86_64 process **0.61**.
+- Do not read `resident_batch_throughput.py` matches/s as a training rate. It is
+  a raw transport ceiling: four engines measured 0.736 aggregate because one
+  Python client decodes every lane, while the real worker floor is ~0.08
+  matches/s per engine (§3.41). Convert units explicitly (720 decisions vs
+  6,068 ticks per match, 1.69x apart).
+- Do not expect loop pipelining to raise a row-bound CPU forward. It pays on a
+  fixed-cost (GPU) forward and at engine counts where the coordinator would
+  otherwise be serial (§3.40–§3.41).
+- Do not run the pipelined collector's inference thread on CUDA until graph
+  capture/replay, autocast and the `model_streams` waits are confirmed there;
+  it is CPU-verified only.
 - Do not raise `CR_PPO_INFERENCE_BATCH_WAIT_MS` to coalesce engines. 250 ms does
   hit 4.0 packets/forward, but the wait costs more than the saved forward: it is
   net slower than 2 ms on both row-bound CPU and a ~2 ms GPU forward (§3.40).

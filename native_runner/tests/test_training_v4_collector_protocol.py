@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from dataclasses import fields, is_dataclass
 from types import SimpleNamespace
 import hashlib
+import threading
 import torch
 from native_runner.tests.test_training_v4_model import _batch, _model
 from native_runner.training.v4 import async_cluster_self_play as collector
@@ -23,10 +24,13 @@ def fingerprint(value):
 
 
 class EagerGraph:
-    def __init__(self, validate=False):
+    def __init__(self, validate=False, threads=None):
         self.validate = validate
+        self.threads = threads
 
     def run(self, model, batch, state, episode_start, packed):
+        if self.threads is not None:
+            self.threads.append(threading.current_thread().name)
         return model.act(batch.to_model_input("cpu"), state, episode_start=episode_start, validate=self.validate)
 
 
@@ -46,7 +50,7 @@ class RecordedConnection:
         pass
 
 
-def collect_recorded_segments(monkeypatch, *, validate=False, dynamic_effects=False):
+def collect_recorded_segments(monkeypatch, *, validate=False, dynamic_effects=False, threads=None):
     torch.manual_seed(923)
     model = _model().eval()
 
@@ -87,7 +91,11 @@ def collect_recorded_segments(monkeypatch, *, validate=False, dynamic_effects=Fa
     ]
     connection = RecordedConnection(packets)
     monkeypatch.setattr(collector.RemoteWorkerConnection, "connect", lambda *args, **kwargs: connection)
-    monkeypatch.setattr(collector, "_persistent_rollout_graph_v4", lambda *args, **kwargs: EagerGraph(validate))
+    monkeypatch.setattr(
+        collector,
+        "_persistent_rollout_graph_v4",
+        lambda *args, **kwargs: EagerGraph(validate, threads),
+    )
     monkeypatch.setattr(collector.os, "sched_getaffinity", lambda pid: {0}, raising=False)
     monkeypatch.setattr(collector.os, "sched_setaffinity", lambda pid, cpus: None, raising=False)
     spec = collector.AsyncResidentEngineSpecV4(engine_index=0, cpu=0, lanes=2, worker_host="test", worker_port=1)
@@ -138,3 +146,12 @@ def collect_recorded_segments(monkeypatch, *, validate=False, dynamic_effects=Fa
 
 def test_collector_preserves_partial_episodes_across_schema_changes_and_resume(monkeypatch):
     collect_recorded_segments(monkeypatch)
+
+
+def test_collector_runs_the_forward_on_the_inference_thread(monkeypatch):
+    """Continuous batching must keep the model off the receive/apply thread."""
+
+    threads: list[str] = []
+    collect_recorded_segments(monkeypatch, threads=threads)
+    assert threads
+    assert all(name.startswith("ppo-inference") for name in threads), threads

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 import sys
 import time
@@ -38,8 +39,10 @@ from native_runner.training.v4.async_cluster_self_play import (  # noqa: E402
 from contextlib import nullcontext  # noqa: E402
 
 from native_runner.competitive_release import load_release, use_release  # noqa: E402
+from native_runner.training.v4.factory import build_production_model_v4  # noqa: E402
 from native_runner.training.v4.policy_session import (  # noqa: E402
     load_policy_v4,
+    model_config_from_mapping,
     resolve_checkpoint_release,
 )
 from native_runner.training.v4.ppo_runtime import ppo_environment_config_v4  # noqa: E402
@@ -67,6 +70,20 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument(
+        "--segments",
+        type=int,
+        default=1,
+        help="collect N consecutive segments (exercises boundary bootstrap + resume)",
+    )
+    parser.add_argument(
+        "--synthetic-model",
+        action="store_true",
+        help=(
+            "build a narrowed model from --checkpoint's contract instead of loading its weights; "
+            "isolates loop cost from the (CPU) forward"
+        ),
+    )
     parser.add_argument("--gate-temperature", type=float, default=1.0)
     parser.add_argument("--affinity-width", type=int, choices=(1, 2, 4), default=1)
     parser.add_argument("--allow-cpu-sharing", action="store_true")
@@ -83,10 +100,31 @@ def main() -> int:
     environment = ppo_environment_config_v4()
     max_decision_steps = math.ceil(environment.max_battle_ticks / 5) + 4
 
-    loaded = load_policy_v4(args.checkpoint, device=device)
-    model = loaded.model
-    payload = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    release_name, _bundle = resolve_checkpoint_release(payload["contract"])
+    if args.synthetic_model:
+        # The same contract shape and catalogs as the checkpoint, but narrow
+        # widths: a CPU forward is then cheap enough that the measured rate is
+        # the collection loop's, not the model's.
+        payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+        contract = payload["contract"]
+        config = model_config_from_mapping(contract["model_config"], origin="synthetic profile")
+        config = replace(
+            config,
+            transformer_layers=1,
+            attention_heads=4,
+            transformer_ffn_dim=128,
+            spatial_hidden_channels=16,
+            spatial_res_blocks=1,
+            lstm_input_dim=256,
+            lstm_hidden_dim=64,
+            decoder_hidden_dim=64,
+        )
+        release_name, _bundle = resolve_checkpoint_release(contract)
+        model = build_production_model_v4(config=config, release=release_name, device=device)
+    else:
+        loaded = load_policy_v4(args.checkpoint, device=device)
+        model = loaded.model
+        payload = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        release_name, _bundle = resolve_checkpoint_release(payload["contract"])
     model.set_ppo_gate_temperature(args.gate_temperature)
     model.set_ppo_action_temperature(1.0)
     release_context = use_release(load_release(release_name)) if release_name else nullcontext()
@@ -120,10 +158,14 @@ def main() -> int:
         )
     )
 
-    state = {"segments": 0, "started": time.perf_counter()}
+    state = {"segments": 0, "started": time.perf_counter(), "frames": 0}
 
     def segment_callback(collection: object) -> str | None:
         state["segments"] += 1
+        rollout = getattr(collection, "rollout", None)
+        valid = getattr(rollout, "valid_mask", None)
+        if valid is not None:
+            state["frames"] += int(valid.sum())
         print(
             json.dumps(
                 {
@@ -136,7 +178,7 @@ def main() -> int:
             ),
             flush=True,
         )
-        return None
+        return f"cpu-profile-{state['segments'] + 1}" if state["segments"] < args.segments else None
 
     started = time.perf_counter()
     server = None
@@ -173,7 +215,10 @@ def main() -> int:
                 server.kill()
     elapsed = time.perf_counter() - started
     timing = dict(collection.timing)
-    frames = int(collection.rollout.valid_mask.sum()) if hasattr(collection.rollout, "valid_mask") else 0
+    last_frames = int(collection.rollout.valid_mask.sum()) if hasattr(collection.rollout, "valid_mask") else 0
+    # ``frames`` is every owner frame collected across the requested segments, so
+    # the rates below stay meaningful with --segments > 1.
+    frames = state["frames"] or last_frames
     lanes = args.engines * args.lanes
     summary = {
         "engines": args.engines,
@@ -182,11 +227,13 @@ def main() -> int:
         "elapsed_seconds": elapsed,
         "segments": state["segments"],
         "frames": frames,
+        "last_segment_frames": last_frames,
         "packets_per_second": (frames / lanes / elapsed) if lanes and frames else 0.0,
         "lane_decisions_per_second": (frames / elapsed) if frames else 0.0,
         "matches_per_second": ((frames / elapsed) / (3600 / 5)) if frames else 0.0,
         "device": str(device),
         "release": release_name,
+        "synthetic_model": args.synthetic_model,
         "checkpoint": str(args.checkpoint),
         **{f"timing_{key}": value for key, value in timing.items()},
     }

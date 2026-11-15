@@ -2322,3 +2322,136 @@ the pairing before a GPU run. Evidence:
 
 
 
+### 3.41 The learner loop is pipelined; the per-packet floor is observation work (2026-11-15)
+
+Session 8 had one task: stop resolving **one packet per forward** and paying the
+whole closed loop per packet. The loop is now pipelined — and the measurements
+that gate it also correct the throughput ladder, because the ceilings the plan
+used were measured **without observation decode or tensorization**, which is
+~90 % of a real training packet.
+
+**Loop change** (`training/v4/async_cluster_self_play.py`). The old loop was a
+single-thread wave: receive → 2 ms window → assemble → forward (blocking) →
+send → store. The forward therefore sat between two receive windows, and
+nothing was staged while it ran. The collector now has:
+
+- one **inference thread** (`ppo-inference`, `max_workers=1`) and at most one
+  batch in flight, so the LSTM-state read/modify/write, the CUDA-graph replay
+  and the forced-ACT re-forward stay ordered;
+- the coordinator **stages** every completed receive while the forward runs,
+  then hands the whole staged set to the inference thread (continuous
+  batching); the 2 ms coalescing window is applied at the job boundary too, so
+  a drain does not forward one engine at a time;
+- segment **boundary bootstraps** run on the same inference thread (they share
+  the model, the state table and the graph cache);
+- per-actor ordering is preserved structurally: a lane cannot produce a new
+  frame before its act was sent, so at most one packet per lane is in flight
+  and the rollout row order is unchanged. `CR_PPO_FAILURE_DUMP`, the
+  rejected-action accounting and the reward semantics are untouched.
+
+**The transport floor, decomposed.** `profile_cluster_collection.py` now takes
+`--diagnostic-timing`, which asks each worker for its per-round split. One
+x86_64 16.635.1 engine, 8 lanes, 2 ms window, x86 host (i5-1235U, 2 P-cores +
+8 E-cores):
+
+| Component | Per packet |
+| --- | --- |
+| `advance` (worker round) | **38.2 ms** |
+| — native `step` incl. observation build | **32.1 ms** |
+| — tensorize 16 owner rows | **13.8 ms** |
+| — action decode | 0.3 ms |
+| batch channel total | 5.6 ms (send 0.4 / ack 1.5 / receive 2.5 / decode 2.8) |
+| outside the channel (observation objects) | 26.4 ms |
+| **measured packet interval** | **51.1 ms median / 81.6 ms mean** |
+
+So one engine × 8 lanes runs **12.4 packets/s = 0.138 matches/s** (3,600-tick
+matches) = **0.082 matches/s in the ladder's 6,068-tick units** — 12 % of the
+0.61 "channel ceiling". Scaling: 2 engines 14.9 packets/s, 4 engines 22.5–25.1
+(total, i.e. 5.5–6.3 each), 16 lanes on one engine 7.1 packets/s (95 ms). The
+per-engine cost is per *slot*: 8→16 lanes raises the packet interval from 51 to
+95 ms and matches/s only from 0.138 to 0.158.
+
+**The ladder's ceilings are not engine ceilings.** `resident_batch_throughput`
+without a policy gives 0.661 matches/s for one engine (3,922 slot-ticks/s), but
+**0.736 aggregate for four engines**, not 2.6. During the four-engine run the
+client process sat at 100 % CPU while every engine host was at 7–9 %: that
+number is a single Python client's decode limit. It is a useful *transport*
+ceiling and no more. Observation capture and tensorization add ~46 ms to the
+raw 10 ms packet, so the usable per-engine training rate is the 0.14
+packets-side number above, not 0.61.
+
+**A/B of the loop itself.** With the real 17.5M checkpoint the CPU collector is
+model-bound (92–93 % of wall), so the loop cannot be seen. `profile_real_collection.py`
+therefore gained `--synthetic-model`, which builds the checkpoint's *contract*
+(same release, same schema, same flags) at narrow widths. 4 x86 engines × 8
+lanes × 32 decisions, seed 1, same host:
+
+| Loop | Wall s (3 runs) | Model s | `ready_wait` s |
+| --- | --- | --- | --- |
+| old wave | 33.72 / 33.94 / 32.71 | 17.3 | 13.1 |
+| **pipelined** | 28.67 / 30.68 / 33.77 | 17.0 | **11.5** |
+
+Non-model wall falls from ~16 s to ~14 s (−14 %) and the idle `ready_wait` from
+13.1 s to 11.5 s; model time is unchanged within noise. That is the whole
+available win at this engine count when the forward is row-bound; with the real
+(17.5M) model the forward is 98 % of the wall and the loop makes no measurable
+difference (below). The gain is therefore for the fixed-cost forward, i.e. a
+GPU, which is §3.40's argument extended to pipelining.
+
+**The multi-segment steady state is model-bound in both loops.** With the real
+checkpoint, 4 x86 engines, seed 7, three segments each:
+
+| Loop | Seg 1 wall / model / wait | Seg 2 | Seg 3 |
+| --- | --- | --- | --- |
+| old wave | 95.4 / 77.7 / **15.37** s | 80.6 / 79.5 / 0.20 s | 67.1 / 66.2 / 0.19 s |
+| **pipelined** | 81.4 / 66.7 / **12.93** s | 68.8 / 68.0 / 0.18 s | 56.4 / 55.6 / 0.19 s |
+
+Only the **first** segment idles: the cluster is cold and the engines are
+starting. From segment 2 on, *both* loops sit at 0.19–0.20 s of idle and
+wall ≈ model, because the CPU forward is 98 % of the wall time. So the
+pipelining gain is **not** visible with this model on this host; it shows only
+when the forward is cheap relative to the worker (the synthetic A/B above:
+−7.5 % wall, −14 % non-model), which is the GPU regime — and there only at
+engine counts where the coordinator would otherwise be the serial resource
+(~4 engines × 35 ms/packet of bookkeeping ≈ 28 packets/s cap). The rewrite is
+therefore a prerequisite for the GPU/8-engine rig, not a CPU throughput win,
+and it is neutral (within model noise) wherever it is not a win.
+
+**Gates.**
+
+- `native_runner/tests`: **1,293 passed / 18 skipped**, including the
+  deterministic collector-protocol fingerprint test.
+- Real checkpoint (`B-general-v275`), 4 x86 engines x 8 lanes x 32 decisions,
+  gate 1.0, seed 7, **10 consecutive segments: 10/10, exit 0**, 20,480 owner
+  frames, no rejected-action error and **no `CR_PPO_FAILURE_DUMP` file**.
+  Wall 56.4-81.4 s per segment (mean **69.5 s** for segments 2-10) against
+  **68.6 s of model time**, with `ready_wait` **0.18-0.20 s** — the steady state
+  is 99 % forward, i.e. the coordinator is no longer the serial resource. Full
+  packetisation stays at 2.00 packets/forward (4 engines on 2 physical
+  performance cores).
+- Scripted 1×8 floor is **0.138 matches/s**, 4×8 is **0.278** (profiler units).
+  The plan's gates (1× x86 ≥0.45/s, 8× ≥2.5/s) are **not reachable** on this
+  worker path: they are 3–9× above the measured floor, and 2.5/s at 8 engines
+  would need the per-packet worker cost to fall from ~80 ms mean to ~21 ms.
+  Pipelining is necessary for scale but not sufficient.
+
+**What is actually left.** Ranked by measured share of the packet:
+
+1. **Observation build, ~26 ms/packet** (`BattleEnvV1.step` constructs the
+   semantic observation objects for 16 owners per packet). Biggest single term;
+   it is Python object construction, not the native step (5.6 ms channel).
+2. **Tensorize, ~14 ms/packet** for 16 rows. Parallelising rows across a
+   worker's CPU group (`worker_cpus` currently only sets affinity; the worker
+   still runs `torch.set_num_threads(1)`) is the obvious attempt.
+3. **More engines.** Linear on distinct real cores: 4 engines ≈ 0.55
+   ladder-matches/s, 8 ≈ 1.1, ~18 engines ≈ 2.5. This host has 2 P-cores and 8
+   E-cores, so it can demonstrate 1–2 engines honestly and for 4+ it must be
+   read as per-core-normalised.
+
+**Unverified.** The CUDA path was not exercised in this session (no GPU): the
+inference thread is CPU-verified only. Before a paid run, confirm on the box
+that graph capture/replay, the autocast context and the `model_streams`
+cross-stream waits behave from a non-main thread — the collector-protocol test
+covers the eager/CPU sampler.
+
+Evidence: `runs/loop-pipeline-20261115/` (`s8-*.json`, stress log).

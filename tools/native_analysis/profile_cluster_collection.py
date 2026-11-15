@@ -175,6 +175,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--startup-timeout", type=float, default=120.0)
     parser.add_argument("--model-ms", type=float, default=0.0, help="artificial per-batch model cost")
+    parser.add_argument(
+        "--diagnostic-timing",
+        action="store_true",
+        help="ask each worker to report per-round decode/step/tensorize/channel time",
+    )
     parser.add_argument("--no-server", action="store_true", help="reuse an already running worker server")
     parser.add_argument("--log", type=Path, default=Path("/tmp/opencode/profile-collection-worker.log"))
     parser.add_argument("--output", type=Path)
@@ -194,6 +199,7 @@ def main() -> int:
             worker_host="127.0.0.1",
             worker_port=args.worker_port,
             segment_decision_steps=args.steps * 4,
+            diagnostic_timing=args.diagnostic_timing,
         )
         for index in range(args.engines)
     )
@@ -260,6 +266,8 @@ def main() -> int:
         wait_seconds = 0.0
         receive_seconds = 0.0
         answer_seconds = 0.0
+        worker_timing: dict[str, float] = {}
+        channel_timing: dict[str, float] = {}
         packet_intervals: list[float] = []
         started = time.perf_counter()
         last_packet_at: float | None = None
@@ -286,6 +294,10 @@ def main() -> int:
                 if kind != "frame":
                     raise RuntimeError(f"unexpected worker packet kind: {kind!r}")
                 actor_rows = tuple(int(row) for row in packet["actor_rows"])
+                for name, value in (packet.get("worker_round_timing") or {}).items():
+                    worker_timing[name] = worker_timing.get(name, 0.0) + float(value)
+                for name, value in (packet.get("native_channel_timing") or {}).items():
+                    channel_timing[name] = channel_timing.get(name, 0.0) + float(value)
                 answer_started = time.perf_counter()
                 if args.model_ms > 0.0:
                     time.sleep(args.model_ms / 1000.0)
@@ -338,6 +350,12 @@ def main() -> int:
         "packet_interval_p90_ms": (
             statistics.quantiles(packet_intervals, n=10)[8] * 1000.0 if len(packet_intervals) > 9 else 0.0
         ),
+        "worker_mean_ms": {
+            name: (1000.0 * value / max(total_packets, 1)) for name, value in sorted(worker_timing.items())
+        },
+        "channel_mean_ms": {
+            name: (1000.0 * value / max(total_packets, 1)) for name, value in sorted(channel_timing.items())
+        },
     }
     print(json.dumps(summary, sort_keys=True))
     if args.output is not None:

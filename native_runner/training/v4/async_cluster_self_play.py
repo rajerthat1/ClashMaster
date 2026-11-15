@@ -772,6 +772,18 @@ def _inference_model_key(actor: _ActorIdentityV4) -> str:
     return actor.model_key
 
 
+@dataclass(slots=True)
+class _InferenceJobResultV4:
+    """Output of one continuous-batched forward, consumed by the coordinator."""
+
+    entries_by_model: Mapping[str, list[_ActorIdentityV4]]
+    outputs: Mapping[str, Any]
+    current_storage_packed: _RowPackedTensorRecordV4 | None
+    forced_rows_by_key: Mapping[str, Tensor]
+    model_seconds: float
+    inference_seconds: float
+
+
 class _StochasticCudaGraphV4:
     """Fixed-shape PPO sampler whose replay advances CUDA RNG state."""
 
@@ -1927,6 +1939,10 @@ def collect_async_cluster_wave_v4(
     # Keep exactly one blocking receive outstanding per remote engine. Frames
     # can arrive while the main thread runs GPU inference and rollout storage.
     receive_executor = ThreadPoolExecutor(max_workers=len(normalized_specs), thread_name_prefix="ppo-remote-receive")
+    # One inference thread: continuous batching keeps the forward off the
+    # receive/apply path while every engine stays in flight.  A single lane also
+    # keeps LSTM-state read/modify/write and CUDA-graph replay ordered.
+    inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ppo-inference")
 
     def apply_reward_updates(engine_index: int, updates: object) -> None:
         if not isinstance(updates, tuple):
@@ -2030,14 +2046,23 @@ def collect_async_cluster_wave_v4(
         state = states["current"].index_select(state_indices)
         assembly_seconds += time.perf_counter() - assembly_started
         model_started = time.perf_counter()
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-            context = current_model.forward(
-                model_batch.to_model_input(device),
-                state,
-                episode_start=torch.zeros(len(selected), dtype=torch.bool, device=device),
-                validate=validate_tensors,
-            )
-        values = _stored_tensor(context.value, dtype=torch.float32)
+
+        def bootstrap() -> Tensor:
+            with torch.inference_mode():
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                    context = current_model.forward(
+                        model_batch.to_model_input(device),
+                        state,
+                        episode_start=torch.zeros(len(selected), dtype=torch.bool, device=device),
+                        validate=validate_tensors,
+                    )
+                return _stored_tensor(context.value, dtype=torch.float32)
+
+        # The boundary forward shares the model, the RNN state table and the
+        # CUDA-graph cache with the rollout forward, so it must run on the same
+        # single inference thread.  Boundaries occur once per engine per
+        # segment, so serialising the coordinator for one forward is free.
+        values = inference_executor.submit(bootstrap).result()
         model_seconds += time.perf_counter() - model_started
         for value_row, (_source_row, actor) in enumerate(selected):
             storage_row = current_row_by_actor[(actor.engine_index, actor.local_actor)]
@@ -2354,226 +2379,122 @@ def collect_async_cluster_wave_v4(
         progress_packet_interval = 100 * len(normalized_specs)
         actor_by_engine_local = {(actor.engine_index, actor.local_actor): actor for actor in actors}
 
-        def fetch_and_prepare_batch() -> dict[str, Any] | None:
-            """Receive and assemble the next inference batch."""
+        def assemble_inference_batch(frames: list[tuple[int, Mapping[str, object]]]) -> dict[str, Any]:
+            """Assemble the staged frames of one or more engines into one batch."""
 
-            nonlocal ready_wait_seconds, receive_seconds
-            nonlocal receive_pipeline_wait_seconds
-            nonlocal receive_pipeline_thread_seconds
             nonlocal assembly_seconds, direct_row_packed_batches
             nonlocal direct_row_packed_fallbacks
             nonlocal packed_relation_capacity, packed_effect_capacity
             nonlocal packed_schema_expansions
-            while pending:
-                ready_wait_started = time.perf_counter()
-                ready_futures, _unfinished = wait_futures(tuple(receive_futures), return_when=FIRST_COMPLETED)
-                deadline = time.perf_counter() + batch_wait_seconds
-                while True:
-                    remaining = deadline - time.perf_counter()
-                    if remaining <= 0:
-                        break
-                    extra, _unfinished = wait_futures(
-                        tuple(future for future in receive_futures if future not in ready_futures),
-                        timeout=remaining,
-                        return_when=FIRST_COMPLETED,
-                    )
-                    if not extra:
-                        break
-                    ready_futures.update(extra)
-                ready_wait_seconds += time.perf_counter() - ready_wait_started
-
-                receive_started = time.perf_counter()
-                received_with_durations = tuple(future.result() for future in ready_futures)
-                for future in ready_futures:
-                    del receive_futures[future]
-                received = tuple((connection, packet) for connection, packet, _duration in received_with_durations)
-                receive_pipeline_thread_seconds += sum(
-                    duration for _connection, _packet, duration in received_with_durations
+            frames.sort(key=lambda item: item[0])
+            assembly_started = time.perf_counter()
+            active_actors: list[_ActorIdentityV4] = []
+            active_force_flags: list[bool] = []
+            storage_actors: list[_ActorIdentityV4] = []
+            frame_batches: list[UniversalSemanticBatchV4] = []
+            frame_packed_batches: list[Any] = []
+            for engine_index, packet in frames:
+                actor_rows = packet.get("actor_rows")
+                storage_actor_rows = packet.get("storage_actor_rows")
+                force_act_actor_rows = packet.get("force_act_actor_rows")
+                replacement_batch = packet.get("batch")
+                row_packed_batch = packet.get("row_packed_batch")
+                if replacement_batch is not None:
+                    if not isinstance(replacement_batch, UniversalSemanticBatchV4):
+                        raise RuntimeError("async shared batch changed type")
+                    shared_batches[engine_index] = replacement_batch
+                batch = shared_batches.get(engine_index)
+                if (
+                    not isinstance(actor_rows, tuple)
+                    or not isinstance(storage_actor_rows, tuple)
+                    or not isinstance(force_act_actor_rows, tuple)
+                    or batch is None
+                ):
+                    raise RuntimeError("async frame tensor payload is invalid")
+                force_act_set = {int(value) for value in force_act_actor_rows}
+                if not force_act_set.issubset({int(value) for value in actor_rows}):
+                    raise RuntimeError("forced ACT rows are outside the frame")
+                engine_packet_counts[engine_index] += 1
+                engine_actor_rows[engine_index] += len(actor_rows)
+                engine_first_packet_elapsed.setdefault(engine_index, time.perf_counter() - started)
+                active_actors.extend(
+                    actor_by_engine_local[(engine_index, int(local_actor))] for local_actor in actor_rows
                 )
-                receive_pipeline_wait_seconds += time.perf_counter() - ready_wait_started
-                receive_seconds += time.perf_counter() - receive_started
+                active_force_flags.extend(int(local_actor) in force_act_set for local_actor in actor_rows)
+                storage_actors.extend(
+                    actor_by_engine_local[(engine_index, int(local_actor))] for local_actor in storage_actor_rows
+                )
+                frame_batches.append(
+                    batch
+                    if len(actor_rows) == batch.batch_size
+                    else cast(UniversalSemanticBatchV4, batch.narrow_batch(0, len(actor_rows)))
+                )
+                if row_packed_batch is not None:
+                    if not hasattr(row_packed_batch, "narrow_rows"):
+                        raise RuntimeError("async row-packed frame changed type")
+                    frame_packed_batches.append(row_packed_batch.narrow_rows(0, len(actor_rows)))
 
-                frames: list[tuple[int, Mapping[str, object]]] = []
-                deferred_reward_updates: list[tuple[int, object]] = []
-                for connection, packet in received:
-                    engine_index = connection_to_engine[connection]
-                    if not isinstance(packet, Mapping):
-                        raise RuntimeError("async worker packet changed type")
-                    kind = packet.get("kind")
-                    if kind == "error":
-                        raise RuntimeError(
-                            f"async engine {engine_index} failed: {packet.get('error')}\n{packet.get('traceback')}"
-                        )
-                    deferred_reward_updates.append((engine_index, packet.get("rewards", ())))
-                    if kind == "frame" and packet.get("segment_boundary") is True:
-                        timing = packet.get("timing")
-                        if not isinstance(timing, Mapping):
-                            raise RuntimeError("async segment timing is invalid")
-                        apply_segment_boundary(engine_index, packet)
-                        timings.append(cast(Mapping[str, float], timing))
-                        pending.remove(engine_index)
-                        continue
-                    if kind == "done":
-                        raw_reports = packet.get("reports")
-                        timing = packet.get("timing")
-                        if not isinstance(raw_reports, tuple) or not isinstance(timing, Mapping):
-                            raise RuntimeError("async terminal packet is invalid")
-                        reports.extend(cast(tuple[dict[str, object], ...], raw_reports))
-                        timings.append(cast(Mapping[str, float], timing))
-                        pending.remove(engine_index)
-                        live_engines.remove(engine_index)
-                        connection.close()
-                        continue
-                    if kind != "frame":
-                        raise RuntimeError("async worker emitted an unknown packet")
-                    frames.append((engine_index, packet))
-
-                if not frames:
-                    return {"frames": (), "deferred_reward_updates": deferred_reward_updates}
-
-                frames.sort(key=lambda item: item[0])
-                assembly_started = time.perf_counter()
-                active_actors: list[_ActorIdentityV4] = []
-                active_force_flags: list[bool] = []
-                storage_actors: list[_ActorIdentityV4] = []
-                frame_batches: list[UniversalSemanticBatchV4] = []
-                frame_packed_batches: list[Any] = []
-                for engine_index, packet in frames:
-                    actor_rows = packet.get("actor_rows")
-                    storage_actor_rows = packet.get("storage_actor_rows")
-                    force_act_actor_rows = packet.get("force_act_actor_rows")
-                    replacement_batch = packet.get("batch")
-                    row_packed_batch = packet.get("row_packed_batch")
-                    if replacement_batch is not None:
-                        if not isinstance(replacement_batch, UniversalSemanticBatchV4):
-                            raise RuntimeError("async shared batch changed type")
-                        shared_batches[engine_index] = replacement_batch
-                    batch = shared_batches.get(engine_index)
+            with torch.inference_mode(False):
+                direct_packed_batch = (
+                    _concatenate_row_packed_records_v4(frame_packed_batches)
+                    if len(frame_packed_batches) == len(frame_batches)
+                    else None
+                )
+                if direct_packed_batch is None:
+                    direct_row_packed_fallbacks += 1
+                    active_batch = cast(
+                        UniversalSemanticBatchV4, concatenate_padded_tensor_records_v4(tuple(frame_batches))
+                    )
+                else:
+                    direct_row_packed_batches += 1
+                    active_batch = cast(UniversalSemanticBatchV4, direct_packed_batch.record)
+                if direct_packed_batch is None:
+                    next_relation_capacity = max(
+                        packed_relation_capacity, int(active_batch.relation_edges.mask.shape[1])
+                    )
+                    next_effect_capacity = max(
+                        packed_effect_capacity, int(active_batch.active_effects.mask.shape[1])
+                    )
                     if (
-                        not isinstance(actor_rows, tuple)
-                        or not isinstance(storage_actor_rows, tuple)
-                        or not isinstance(force_act_actor_rows, tuple)
-                        or batch is None
+                        next_relation_capacity != packed_relation_capacity
+                        or next_effect_capacity != packed_effect_capacity
                     ):
-                        raise RuntimeError("async frame tensor payload is invalid")
-                    force_act_set = {int(value) for value in force_act_actor_rows}
-                    if not force_act_set.issubset({int(value) for value in actor_rows}):
-                        raise RuntimeError("forced ACT rows are outside the frame")
-                    engine_packet_counts[engine_index] += 1
-                    engine_actor_rows[engine_index] += len(actor_rows)
-                    engine_first_packet_elapsed.setdefault(engine_index, time.perf_counter() - started)
-                    active_actors.extend(
-                        actor_by_engine_local[(engine_index, int(local_actor))] for local_actor in actor_rows
-                    )
-                    active_force_flags.extend(int(local_actor) in force_act_set for local_actor in actor_rows)
-                    storage_actors.extend(
-                        actor_by_engine_local[(engine_index, int(local_actor))] for local_actor in storage_actor_rows
-                    )
-                    frame_batches.append(
-                        batch
-                        if len(actor_rows) == batch.batch_size
-                        else cast(UniversalSemanticBatchV4, batch.narrow_batch(0, len(actor_rows)))
-                    )
-                    if row_packed_batch is not None:
-                        if not hasattr(row_packed_batch, "narrow_rows"):
-                            raise RuntimeError("async row-packed frame changed type")
-                        frame_packed_batches.append(row_packed_batch.narrow_rows(0, len(actor_rows)))
+                        packed_schema_expansions += 1
+                    packed_relation_capacity = next_relation_capacity
+                    packed_effect_capacity = next_effect_capacity
+                    active_batch = _pad_relation_edges(active_batch, packed_relation_capacity)
+                    active_batch = _pad_active_effects(active_batch, packed_effect_capacity)
+                active_packed_batch = (
+                    direct_packed_batch
+                    if direct_packed_batch is not None
+                    else _RowPackedTensorRecordV4(active_batch)
+                )
+                active_batch = cast(UniversalSemanticBatchV4, active_packed_batch.record)
 
-                with torch.inference_mode(False):
-                    direct_packed_batch = (
-                        _concatenate_row_packed_records_v4(frame_packed_batches)
-                        if len(frame_packed_batches) == len(frame_batches)
-                        else None
-                    )
-                    if direct_packed_batch is None:
-                        direct_row_packed_fallbacks += 1
-                        active_batch = cast(
-                            UniversalSemanticBatchV4, concatenate_padded_tensor_records_v4(tuple(frame_batches))
-                        )
-                    else:
-                        direct_row_packed_batches += 1
-                        active_batch = cast(UniversalSemanticBatchV4, direct_packed_batch.record)
-                    if direct_packed_batch is None:
-                        next_relation_capacity = max(
-                            packed_relation_capacity, int(active_batch.relation_edges.mask.shape[1])
-                        )
-                        next_effect_capacity = max(
-                            packed_effect_capacity, int(active_batch.active_effects.mask.shape[1])
-                        )
-                        if (
-                            next_relation_capacity != packed_relation_capacity
-                            or next_effect_capacity != packed_effect_capacity
-                        ):
-                            packed_schema_expansions += 1
-                        packed_relation_capacity = next_relation_capacity
-                        packed_effect_capacity = next_effect_capacity
-                        active_batch = _pad_relation_edges(active_batch, packed_relation_capacity)
-                        active_batch = _pad_active_effects(active_batch, packed_effect_capacity)
-                    active_packed_batch = (
-                        direct_packed_batch
-                        if direct_packed_batch is not None
-                        else _RowPackedTensorRecordV4(active_batch)
-                    )
-                    active_batch = cast(UniversalSemanticBatchV4, active_packed_batch.record)
+            entries_by_model: dict[str, list[_ActorIdentityV4]] = {key: [] for key in actors_by_key}
+            source_rows_by_model: dict[str, list[int]] = {key: [] for key in actors_by_key}
+            for source_row, actor in enumerate(active_actors):
+                inference_key = _inference_model_key(actor)
+                entries_by_model[inference_key].append(actor)
+                source_rows_by_model[inference_key].append(source_row)
+            current_storage_entries = entries_by_model.get("current", [])
+            if storage_actors != current_storage_entries:
+                raise RuntimeError("async current-policy storage row order changed")
+            assembly_seconds += time.perf_counter() - assembly_started
+            return {
+                "frames": frames,
+                "active_batch": active_batch,
+                "active_packed_batch": active_packed_batch,
+                "entries_by_model": entries_by_model,
+                "source_rows_by_model": source_rows_by_model,
+                "active_force_flags": active_force_flags,
+                "actor_rows": len(active_actors),
+            }
 
-                entries_by_model: dict[str, list[_ActorIdentityV4]] = {key: [] for key in actors_by_key}
-                source_rows_by_model: dict[str, list[int]] = {key: [] for key in actors_by_key}
-                for source_row, actor in enumerate(active_actors):
-                    inference_key = _inference_model_key(actor)
-                    entries_by_model[inference_key].append(actor)
-                    source_rows_by_model[inference_key].append(source_row)
-                current_storage_entries = entries_by_model.get("current", [])
-                if storage_actors != current_storage_entries:
-                    raise RuntimeError("async current-policy storage row order changed")
-                assembly_seconds += time.perf_counter() - assembly_started
-                return {
-                    "frames": frames,
-                    "deferred_reward_updates": deferred_reward_updates,
-                    "active_batch": active_batch,
-                    "active_packed_batch": active_packed_batch,
-                    "entries_by_model": entries_by_model,
-                    "source_rows_by_model": source_rows_by_model,
-                    "active_force_flags": active_force_flags,
-                    "actor_rows": len(active_actors),
-                }
-            return None
+        @torch.inference_mode()
+        def run_inference_job(prepared: Mapping[str, Any]) -> _InferenceJobResultV4:
+            """Run one assembled batch on the single inference thread."""
 
-        final_segment_collection: ClusterCollectionV4 | None = None
-        while pending or bool(sync_valid):
-            if not pending:
-                segment_elapsed = time.perf_counter() - started
-                segment_rollout = finalize_segment_rollout()
-                final_segment_collection = build_segment_collection(segment_rollout, elapsed_seconds=segment_elapsed)
-                next_policy_state_id = segment_callback(final_segment_collection)
-                if next_policy_state_id is None or not live_engines:
-                    for engine_index in tuple(live_engines):
-                        parents[engine_index].send({"kind": "stop"})
-                    break
-                if not isinstance(next_policy_state_id, str) or not (next_policy_state_id):
-                    raise RuntimeError("async segment callback returned no policy id")
-                reset_parent_segment(next_policy_state_id)
-                pending.update(live_engines)
-                for engine_index in tuple(live_engines):
-                    connection = parents[engine_index]
-                    connection.send({"kind": "resume", "policy_state_id": next_policy_state_id})
-                    future = receive_executor.submit(receive, connection)
-                    receive_futures[future] = connection
-                continue
-            prepared = fetch_and_prepare_batch()
-            if prepared is None:
-                break
-
-            frames = cast(list[tuple[int, Mapping[str, object]]], prepared["frames"])
-            deferred_reward_updates = cast(list[tuple[int, object]], prepared["deferred_reward_updates"])
-            if not frames:
-                for engine_index, updates in deferred_reward_updates:
-                    apply_reward_updates(engine_index, updates)
-                continue
-
-            inference_batches += 1
-            inference_frame_packets += len(frames)
-            inference_max_frame_packets = max(inference_max_frame_packets, len(frames))
-            inference_actor_rows += int(prepared["actor_rows"])
             inference_started = time.perf_counter()
             active_packed_batch = cast(_RowPackedTensorRecordV4, prepared["active_packed_batch"])
             entries_by_model = cast(dict[str, list[_ActorIdentityV4]], prepared["entries_by_model"])
@@ -2725,8 +2646,30 @@ def collect_async_cluster_wave_v4(
                     0, forced_indices, forced_output.log_prob - forced_output.action_components.gate_log_prob
                 )
                 forced_rows_by_key[key] = host_indices
-            model_seconds += time.perf_counter() - model_started
+            return _InferenceJobResultV4(
+                entries_by_model=entries_by_model,
+                outputs=outputs,
+                current_storage_packed=current_storage_packed,
+                forced_rows_by_key=forced_rows_by_key,
+                model_seconds=time.perf_counter() - model_started,
+                inference_seconds=time.perf_counter() - inference_started,
+            )
 
+        def apply_inference_result(prepared: Mapping[str, Any], result: _InferenceJobResultV4) -> None:
+            """Send one batch of actions, then store its learner rows."""
+
+            nonlocal inference_batches, inference_frame_packets, inference_actor_rows
+            nonlocal inference_max_frame_packets, inference_seconds, model_seconds
+            nonlocal packet_count, action_seconds, command_seconds, storage_seconds
+            frames = cast(list[tuple[int, Mapping[str, object]]], prepared["frames"])
+            entries_by_model = result.entries_by_model
+            outputs = result.outputs
+            forced_rows_by_key = result.forced_rows_by_key
+            current_storage_packed = result.current_storage_packed
+            inference_batches += 1
+            inference_frame_packets += len(frames)
+            inference_max_frame_packets = max(inference_max_frame_packets, len(frames))
+            inference_actor_rows += int(prepared["actor_rows"])
             action_started = time.perf_counter()
             command_actor_rows: dict[int, list[int]] = {engine_index: [] for engine_index, _packet in frames}
             command_action_rows: dict[int, list[Tensor]] = {engine_index: [] for engine_index, _packet in frames}
@@ -2769,8 +2712,6 @@ def collect_async_cluster_wave_v4(
 
             # Copy graph-owned scalar outputs before materializing the exact
             # on-policy rows; the next graph replay may reuse those buffers.
-            for engine_index, updates in deferred_reward_updates:
-                apply_reward_updates(engine_index, updates)
             current_entries = tuple(entries_by_model.get("current", ()))
             if current_entries:
                 current_output = outputs.get("current")
@@ -2794,7 +2735,8 @@ def collect_async_cluster_wave_v4(
                     stored_log_prob,
                     stored_value,
                 )
-            inference_seconds += time.perf_counter() - inference_started
+            model_seconds += result.model_seconds
+            inference_seconds += result.inference_seconds
             packet_count += len(frames)
             if packet_count % progress_packet_interval < len(frames):
                 progress_elapsed = time.perf_counter() - started
@@ -2826,6 +2768,165 @@ def collect_async_cluster_wave_v4(
                     },
                     flush=True,
                 )
+
+        final_segment_collection: ClusterCollectionV4 | None = None
+        inference_job: tuple[Any, Mapping[str, Any]] | None = None
+        staged_frames: list[tuple[int, Mapping[str, object]]] = []
+        staged_boundaries: list[tuple[int, Mapping[str, object]]] = []
+
+        def stage_inbound(*, window_seconds: float, block: bool) -> int:
+            """Move completed remote receives into the staging lists.
+
+            ``block`` waits for the first completion (plus ``window_seconds`` for
+            stragglers); otherwise the call only gives engines that much time to
+            join, which is how a drain during an in-flight forward still
+            coalesces a full wave.  Only the coordinator thread stages packets,
+            so reward accounting, segment bookkeeping and per-actor ordering stay
+            single threaded while the forward runs on the inference thread.
+            """
+
+            nonlocal ready_wait_seconds, receive_seconds
+            nonlocal receive_pipeline_wait_seconds, receive_pipeline_thread_seconds
+            if not receive_futures:
+                if block:
+                    raise RuntimeError("async collector is waiting on an engine with no outstanding receive")
+                return 0
+            wait_started = time.perf_counter()
+            ready, _unfinished = wait_futures(
+                tuple(receive_futures),
+                timeout=None if block else window_seconds,
+                return_when=FIRST_COMPLETED,
+            )
+            if not ready:
+                wait_elapsed = time.perf_counter() - wait_started
+                ready_wait_seconds += wait_elapsed
+                receive_pipeline_wait_seconds += wait_elapsed
+                return 0
+            deadline = time.perf_counter() + window_seconds
+            while True:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0.0:
+                    break
+                extra, _unfinished = wait_futures(
+                    tuple(future for future in receive_futures if future not in ready),
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not extra:
+                    break
+                ready.update(extra)
+            wait_elapsed = time.perf_counter() - wait_started
+            ready_wait_seconds += wait_elapsed
+            receive_pipeline_wait_seconds += wait_elapsed
+            received = tuple(future.result() for future in ready)
+            for future in ready:
+                del receive_futures[future]
+            processed = 0
+            receive_started = time.perf_counter()
+            # Completion order is a timing artifact; stage by engine so rewards,
+            # timings and reports are reproducible run to run.
+            for connection, packet, duration in sorted(received, key=lambda item: connection_to_engine[item[0]]):
+                receive_pipeline_thread_seconds += duration
+                if not isinstance(packet, Mapping):
+                    raise RuntimeError("async worker packet changed type")
+                engine_index = connection_to_engine[connection]
+                kind = packet.get("kind")
+                if kind == "error":
+                    raise RuntimeError(
+                        f"async engine {engine_index} failed: {packet.get('error')}\n{packet.get('traceback')}"
+                    )
+                apply_reward_updates(engine_index, packet.get("rewards", ()))
+                if kind == "frame" and packet.get("segment_boundary") is True:
+                    timing = packet.get("timing")
+                    if not isinstance(timing, Mapping):
+                        raise RuntimeError("async segment timing is invalid")
+                    timings.append(cast(Mapping[str, float], timing))
+                    pending.remove(engine_index)
+                    staged_boundaries.append((engine_index, packet))
+                    processed += 1
+                    continue
+                if kind == "done":
+                    raw_reports = packet.get("reports")
+                    timing = packet.get("timing")
+                    if not isinstance(raw_reports, tuple) or not isinstance(timing, Mapping):
+                        raise RuntimeError("async terminal packet is invalid")
+                    reports.extend(cast(tuple[dict[str, object], ...], raw_reports))
+                    timings.append(cast(Mapping[str, float], timing))
+                    pending.remove(engine_index)
+                    live_engines.remove(engine_index)
+                    connection.close()
+                    processed += 1
+                    continue
+                if kind != "frame":
+                    raise RuntimeError("async worker emitted an unknown packet")
+                staged_frames.append((engine_index, packet))
+                processed += 1
+            receive_seconds += time.perf_counter() - receive_started
+            return processed
+
+        def submit_inference() -> None:
+            """Hand every staged frame to the inference thread as one batch."""
+
+            nonlocal inference_job, staged_frames
+            if inference_job is not None or not staged_frames:
+                return
+            # The forward just finished; give the engines that are still in
+            # flight the same coalescing window the wave loop used, so a drain
+            # does not forward one lane at a time.
+            stage_inbound(window_seconds=batch_wait_seconds, block=False)
+            frames, staged_frames = tuple(staged_frames), []
+            prepared = assemble_inference_batch(list(frames))
+            inference_job = (inference_executor.submit(run_inference_job, prepared), prepared)
+
+        while (
+            pending
+            or staged_frames
+            or staged_boundaries
+            or inference_job is not None
+            or bool(sync_valid)
+        ):
+            if inference_job is not None:
+                result_future, prepared = inference_job
+                if receive_futures:
+                    done, _unfinished = wait_futures(
+                        (result_future, *receive_futures), return_when=FIRST_COMPLETED
+                    )
+                    if any(future is not result_future for future in done):
+                        stage_inbound(window_seconds=0.0, block=False)
+                else:
+                    wait_futures((result_future,), return_when=FIRST_COMPLETED)
+                if not result_future.done():
+                    continue
+                apply_inference_result(prepared, result_future.result())
+                inference_job = None
+                continue
+            if staged_boundaries:
+                engine_index, boundary_packet = staged_boundaries.pop(0)
+                apply_segment_boundary(engine_index, boundary_packet)
+                continue
+            if staged_frames:
+                submit_inference()
+                continue
+            if not pending:
+                segment_elapsed = time.perf_counter() - started
+                segment_rollout = finalize_segment_rollout()
+                final_segment_collection = build_segment_collection(segment_rollout, elapsed_seconds=segment_elapsed)
+                next_policy_state_id = segment_callback(final_segment_collection)
+                if next_policy_state_id is None or not live_engines:
+                    for engine_index in tuple(live_engines):
+                        parents[engine_index].send({"kind": "stop"})
+                    break
+                if not isinstance(next_policy_state_id, str) or not (next_policy_state_id):
+                    raise RuntimeError("async segment callback returned no policy id")
+                reset_parent_segment(next_policy_state_id)
+                pending.update(live_engines)
+                for engine_index in tuple(live_engines):
+                    connection = parents[engine_index]
+                    connection.send({"kind": "resume", "policy_state_id": next_policy_state_id})
+                    future = receive_executor.submit(receive, connection)
+                    receive_futures[future] = connection
+                continue
+            stage_inbound(window_seconds=batch_wait_seconds, block=True)
     finally:
         for connection in parents.values():
             try:
@@ -2833,6 +2934,7 @@ def collect_async_cluster_wave_v4(
             except OSError:
                 pass
         receive_executor.shutdown(wait=True, cancel_futures=True)
+        inference_executor.shutdown(wait=True, cancel_futures=True)
         os.sched_setaffinity(0, collector_affinity)
     if final_segment_collection is None:
         raise RuntimeError("segmented collection produced no rollout")

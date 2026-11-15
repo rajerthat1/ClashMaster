@@ -301,14 +301,20 @@ Order of work now:
 5. ~~Port the x86_64 16.635.1 engine and reproduce the parity corpus~~ (done, §3.35–§3.36).
 6. ~~Port delay-aware candidate legality and validate gate 1.0 collection~~ (done, §3.39).
 7. ~~Re-measure batching at gate 1.0~~ (done, **negative** — keep 2 ms, §3.40).
-8. Pipeline the learner loop (receive/decode/apply across engines): the measured
-   critical path is the ~390 ms per-packet closed loop, not forward count.
-   Continuous-batched inference (dispatch queue + 2–5 ms coalescing window), then
-   the gates: scripted 1× x86 **≥0.45/s**, scripted 8× x86 **≥2.5/s**, real-model
-   GPU 1× x86 **≥0.5/s**, real-model GPU 8× x86 **≥2.5/s**. 0.5/s is a one-x86
-   number; 4× A51 caps at 0.26/s and is not the throughput rig. Fallback: N
-   independent collector processes aggregated by the learner.
-9. Rent a GPU and run 400+ paired eval games before any long fine-tune.
+8. ~~Pipeline the learner loop~~ (**done 2026-11-15, §3.41**). Continuous
+   batching: one `ppo-inference` thread with one batch in flight, receives staged
+   during the forward, boundary bootstraps on the same thread. CPU-verified
+   (non-model wall −14 % with a cheap forward, **neutral with the 17.5M model**;
+   10/10 segments clean); the CUDA path is still unverified. **The gates in the
+   old plan were wrong**: their "ceilings" came from the raw resident channel,
+   which skips the observation build (~26 ms/packet) and tensorization (~14 ms),
+   i.e. ~90 % of a real packet. Measured training floor: **1× x86 0.082/s,
+   2× 0.10/s, 4× 0.15/s** in 6,068-tick matches. Corrected next step: cut the
+   per-packet worker cost (observation build, then parallel tensorization) before
+   adding engines, and do not quote raw-channel matches/s.
+9. Rent a GPU and run 400+ paired eval games before any long fine-tune. Do this
+   only after the worker cost drops or the engine count grows — at the measured
+   per-engine floor the forward is not the bottleneck, so a GPU would sit idle.
 
 Rent only when a local segment completes in <10 min; do not spend GPU hours on
 CPU-bound prep. Training throughput notes and the portable `ever_*` techniques
