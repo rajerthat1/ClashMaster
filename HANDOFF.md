@@ -102,6 +102,98 @@ do not start another R0 run.
 
 ---
 
+## Next session (2026-11-15, session 8) — pipeline the learner loop
+
+**Read first:** this section, `FINDINGS.md` §3.40, `ROADMAP.md` §7 item 8.
+Everything is committed (`620ead5`), tree clean, suite **1,292 passed / 18
+skipped**. No GPU is rented and none is needed for this session.
+
+### The one open problem
+
+The learner loop resolves **one packet per forward** and pays the whole closed
+loop per packet: ~416 ms wall on the GPU box, of which the model forward is
+27 ms and assembly 4 ms. Measured today: **0.04–0.05 matches/s** (4×A51, 8 lanes,
+30–38 lane-decisions/s). Nothing else in the stack is blocking.
+
+### Gate ladder — corrected (0.5/s is a *1× x86* number)
+
+| Rig | Channel ceiling (measured) | Gate to pass | Today |
+| --- | --- | --- | --- |
+| **1× x86 process** | **0.61 matches/s** | **0.5/s** | 0.033/s |
+| 4× x86 | 2.44/s | 1.5–2.0/s | — |
+| **8× x86** | 4.9/s | **2.5/s (goal)** | — |
+| 16× x86 | 9.8/s | 5–8/s (stretch ≈ FirstLight-Zero) | — |
+| **4× A51** | **0.26/s** | 0.15–0.2/s | 0.05/s |
+
+4 A51 engines **cannot** reach 0.5/s — the phone channel caps at 0.26/s. The
+0.5/s gate is one x86 engine; 2.5/s is eight of them.
+
+### Task order
+
+1. **Rewrite `native_runner/training/v4/async_cluster_self_play.py`**:
+   continuous-batched inference instead of a cohort wave. Dispatch queue plus one
+   inference thread that batches *all pending* requests (bounded rows) with a
+   2–5 ms coalescing window; decode and apply each request as its result lands;
+   keep per-(engine, lane) LSTM state; preserve `CR_PPO_FAILURE_DUMP` and the
+   rejected-action accounting.
+2. **Measure in this order**, because the CPU model is ~93 % of local wall time
+   and would mask the gain:
+   - `profile_cluster_collection.py` (scripted responder) — the transport + loop
+     floor: 1× x86 **≥0.45/s**, 8× x86 **≥2.5/s**;
+   - `profile_real_collection.py` on GPU — 1× x86 **≥0.5/s**, 8× x86 **≥2.5/s**;
+   - compare against the 4-engine baseline: **311.5 s mean** for 4×8×40 decisions.
+3. **Gates on the rewrite:** 10 consecutive segments clean, 0 rejected,
+   packets/forward ≥8, wall time down. Record as `FINDINGS.md` §3.41.
+4. **Fallback if the rewrite stalls:** N independent collector processes
+   aggregated by the learner. Each is model-bound on one core, so 4–6 processes
+   is a near-linear 4–6× without touching the loop.
+5. **Only after ≥0.5/s:** rent the A6000 and run the 400+ paired-game gate
+   (Wilson intervals), then the PPO fine-tune.
+
+### Reference numbers
+
+- 1× x86 channel ceiling 0.61 matches/s at 5 ticks; 4× A51 0.26; 1× A51 0.065.
+- FirstLight-Zero: **1,024 episodes / ~104 s ≈ 9.85 matches/s**, 1.17M params,
+  async server, ~16 collectors × 8 resident.
+- daybreak-cr: ~10 matches/s, 50 collectors, 4 decision servers, 4×A100 learner,
+  25–45k decisions/s serving.
+- Our serving cost is higher: 17.5M params, 21-column schema, ~4–5× theirs.
+
+### Do not
+
+- Do not raise `CR_PPO_INFERENCE_BATCH_WAIT_MS` again (250 ms is a measured loss).
+- Do not build a CPU trainer (same ~30 lane-decisions/s, days of NCCL/CUDA work).
+- Do not use phones as a throughput farm (~150 A51s for 10/s); 16 x86 cores is
+  the equivalent and they stay the deployment/parity oracle.
+- Do not start the crforge adapter unless 16–20 x86 cores still miss 2.5/s.
+- Do not rent a GPU before the scripted 1× x86 gate passes.
+- Do not rebuild the x86 probe without re-pinning `probe_sha256`; do not edit
+  generated `logical_*.inc`.
+- Do not trust in-engine win rates as ladder evidence.
+
+### Watch for
+
+The one-off A51 `env 6` (16 consecutive clean segments since) and the one-off
+x86 `crx` host death at step 5 (unreproduced). Keep `CR_PPO_FAILURE_DUMP` set and
+`adb logcat -s CRNativeProbe` running on any real-engine gate; both remain
+diagnostic, not claimed fixed.
+
+### Start state
+
+Engines are **stopped**; the phone is attached and idle (`R58NA0QTHWV`).
+
+```bash
+# x86 engines, one process per core, ports 26789+N
+for i in 0 1 2 3; do
+  .venv/bin/python tools/native_analysis/crx_engine_host.py \
+      --engine-index "$i" --seconds 3600 &
+done
+# A51 (optional this session; use --base-port 26799 to avoid the x86 engine)
+./launch_cluster_a51.sh --engines 4 --base-port 26799
+```
+
+---
+
 ## Ecosystem audit — 2026-11-14 (`CRkonwledagebase`)
 
 `.resource/CRkonwledagebase` indexes **58 projects, 13 capabilities, 90
@@ -258,6 +350,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | 16.635 models | **`B-general-v275` and `A-hog26-v738` load and play on the A51** (17.5M, LSTM 768, schema 21; 0 rejected in the play smoke) |
 | Cloud GPU | **1× A6000 @ $0.35/h ran and was deleted** (~$0.23). Do not re-rent until a local segment completes in <10 min; the GPU sat at 4 % utilisation |
 | Decision-rate reality | A51 4×8 @ 5 ticks = **0.26 matches/s**; one x86_64 process = **0.61**; learner loop on the A51 = **0.04**. See the GPU-smoke section |
+| Loop-pipelining gates | **0.5/s on 1× x86** (80 % of its 0.61 ceiling) and **2.5/s on 8× x86** (~50 % of 4.9); 4× A51 caps at 0.26/s, so its gate is 0.15–0.2/s. Measure scripted first, then real-model on GPU |
 | cr-native proxy | working, 15.535.29 only |
 
 ### State at handoff (processes are ephemeral)
@@ -555,6 +648,10 @@ resource; the GPU is idle while it waits.
 ---
 
 ## Next session — start here
+
+> **Historical (2026-11-14).** Steps 1–5 in this section are done; the live
+> next-session plan is the "Session 8" section at the top of this file. Kept for
+> the runbooks and reference numbers.
 
 ### 0. Already done at this handoff (no compute spent)
 

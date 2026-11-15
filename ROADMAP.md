@@ -303,6 +303,11 @@ Order of work now:
 7. ~~Re-measure batching at gate 1.0~~ (done, **negative** — keep 2 ms, §3.40).
 8. Pipeline the learner loop (receive/decode/apply across engines): the measured
    critical path is the ~390 ms per-packet closed loop, not forward count.
+   Continuous-batched inference (dispatch queue + 2–5 ms coalescing window), then
+   the gates: scripted 1× x86 **≥0.45/s**, scripted 8× x86 **≥2.5/s**, real-model
+   GPU 1× x86 **≥0.5/s**, real-model GPU 8× x86 **≥2.5/s**. 0.5/s is a one-x86
+   number; 4× A51 caps at 0.26/s and is not the throughput rig. Fallback: N
+   independent collector processes aggregated by the learner.
 9. Rent a GPU and run 400+ paired eval games before any long fine-tune.
 
 Rent only when a local segment completes in <10 min; do not spend GPU hours on

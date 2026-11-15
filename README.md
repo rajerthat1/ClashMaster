@@ -26,7 +26,10 @@ connect to Null's ladder.
 **Next milestone:** pipeline the collector's per-packet closed loop (the batching
 window was measured and rejected — see `FINDINGS.md` §3.40), then rent a small
 GPU and run the PPO update from a 16.635-contract checkpoint with the deck pool +
-league.
+league. Measured today: **~0.04–0.05 matches/s**. The loop gates are **0.5/s on
+one x86 engine** (80 % of its 0.61/s channel ceiling) and **2.5/s on eight**
+(~50 % of 4.9/s); four A51 engines cap at 0.26/s and are the parity/deploy rig,
+not the throughput path.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
