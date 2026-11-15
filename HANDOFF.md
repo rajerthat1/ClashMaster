@@ -170,8 +170,9 @@ Pipelining cannot do that; it removes ~12 ms/packet of coordinator idle.
    (the CUDA path of the new inference thread is still unverified) and the 400+
    paired-game gate.
 5. If the worker cost resists: add engines. Linear on distinct real cores —
-   ~18 engines for 2.5/s — and the x86 farm is cheap, but this laptop has only
-   2 performance cores, so measure 4+ on the rented host.
+   **~30 engines for 2.5/s at the current packet cost, ~15 if it halves** — and
+   the x86 farm is cheap, but this laptop has only 2 performance cores, so
+   measure 4+ on the rented host.
 
 ### Do not
 

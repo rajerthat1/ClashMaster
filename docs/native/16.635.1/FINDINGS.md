@@ -2443,10 +2443,10 @@ and it is neutral (within model noise) wherever it is not a win.
 2. **Tensorize, ~14 ms/packet** for 16 rows. Parallelising rows across a
    worker's CPU group (`worker_cpus` currently only sets affinity; the worker
    still runs `torch.set_num_threads(1)`) is the obvious attempt.
-3. **More engines.** Linear on distinct real cores: 4 engines ≈ 0.55
-   ladder-matches/s, 8 ≈ 1.1, ~18 engines ≈ 2.5. This host has 2 P-cores and 8
-   E-cores, so it can demonstrate 1–2 engines honestly and for 4+ it must be
-   read as per-core-normalised.
+3. **More engines.** Linear on distinct real cores: 1 engine ≈ 0.082
+   ladder-matches/s, 4 ≈ 0.33, 8 ≈ 0.66, ~30 ≈ 2.5 (≈15 if the packet cost
+   halves). This host has 2 P-cores and 8 E-cores, so 4+ must be read as
+   per-core-normalised and measured on the rented host.
 
 **Unverified.** The CUDA path was not exercised in this session (no GPU): the
 inference thread is CPU-verified only. Before a paid run, confirm on the box
