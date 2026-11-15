@@ -417,12 +417,25 @@ TOUCH_WINDOW_DELAY_BINS = 5
 _TOUCH_AFFORDABLE_TOLERANCE_RAW = 0.5
 
 
-def _touch_window_elixir_raw(native_tick: int, effective_elixir_raw: int) -> tuple[float, ...]:
-    """Raw elixir available at each touch delay bin of the decision at ``native_tick``."""
+def _touch_window_elixir_raw(
+    native_tick: int,
+    effective_elixir_raw: int,
+    *,
+    bins: int = TOUCH_WINDOW_DELAY_BINS,
+) -> tuple[float, ...]:
+    """Raw elixir available at each touch delay bin of the decision at ``native_tick``.
 
+    ``bins`` is the number of delay bins the engine will honour.  The native
+    probe validates a touch when it arrives, up to four ticks after the
+    decision; crforge validates a play in ``PlayerCommands.covers`` at the tick
+    it is given, against ``wholeElixir() - promised``, so its window is one bin.
+    """
+
+    if bins < 1:
+        raise ValueError("a touch window has at least one bin")
     start = float(effective_elixir_raw)
     rate = _elixir_raw_per_tick(native_tick)
-    return tuple(max(start, min(100_000.0, start + rate * k)) for k in range(TOUCH_WINDOW_DELAY_BINS))
+    return tuple(max(start, min(100_000.0, start + rate * k)) for k in range(bins))
 
 
 def _earliest_affordable_bin(
@@ -517,6 +530,15 @@ class BattleEnvV1:
             include_native_digest=include_native_digest,
         )
         self.native = native or NativeClashEnv()
+        if engine is not None and engine not in ("crforge", "native"):
+            raise ValueError("engine must be 'crforge', 'native', or None")
+        # The command-validation timing decides how many touch delay bins are
+        # legal.  Detect the live engine only when this constructor will build
+        # the manifest itself; an injected manifest names its engine and an
+        # offline fixture can declare it explicitly.
+        self.runner_engine = engine
+        if self.runner_engine is None and ruleset_manifest is None:
+            self.runner_engine = _runner_engine(self.native)
         verified_timeline = load_game_mode_timeline(STANDARD_GAME_MODE)
         self.mode_timeline = mode_timeline or verified_timeline
         if self.mode_timeline.game_mode_id != STANDARD_GAME_MODE:
@@ -558,10 +580,11 @@ class BattleEnvV1:
         # Tests and remote workers can inject a previously verified ID to avoid
         # re-hashing the local asset pack for every environment instance.
         self.ruleset_manifest = ruleset_manifest
-        if engine is not None and engine not in ("crforge", "native"):
-            raise ValueError("engine must be 'crforge', 'native', or None")
+        if self.runner_engine is None and ruleset_manifest is not None:
+            declared = ruleset_manifest.config.get("engine")
+            self.runner_engine = str(declared) if declared else None
         if ruleset_manifest is None and ruleset_id is None:
-            selected_engine = engine or _runner_engine(self.native)
+            selected_engine = self.runner_engine
             if selected_engine == "crforge":
                 self.ruleset_manifest = build_crforge_ruleset_manifest(
                     catalog=self.card_catalog,
@@ -572,6 +595,9 @@ class BattleEnvV1:
                 self.ruleset_manifest = build_ruleset_manifest(
                     catalog=self.card_catalog, environment_config=environment_config
                 )
+        if self.runner_engine is None and self.ruleset_manifest is not None:
+            declared = self.ruleset_manifest.config.get("engine")
+            self.runner_engine = str(declared) if declared else None
         self.ruleset_id = self.ruleset_manifest.ruleset_id if self.ruleset_manifest is not None else str(ruleset_id)
         if self.ruleset_manifest is not None:
             manifest_environment = EnvironmentConfigV1.from_mapping(self.ruleset_manifest.config.get("environment"))
@@ -1709,7 +1735,12 @@ class BattleEnvV1:
         # Touch-time rule on the raw bar: affordable at some bin of the
         # decision window.  ``action_mask`` and ``_validate_compound_actions``
         # then apply the reserved-elixir and per-bin sequential checks.
-        raw_window = _touch_window_elixir_raw(int(source.get("tick", 0)), int(raw_player.get("elixirRaw", 0)))
+        ability_elixir_raw = int(raw_player.get("elixirRaw", 0))
+        if self.runner_engine == "crforge":
+            ability_elixir_raw = max(
+                0, ability_elixir_raw - int(raw_player.get("elixirReservedRaw", 0) or 0)
+            )
+        raw_window = self._touch_window_elixir_raw(int(source.get("tick", 0)), ability_elixir_raw)
         candidates: dict[int, tuple[AbilityRuntimeStateV1, EntityKey]] = {}
         reasons: dict[str, str] = {}
         for state in runtime.ability_runtime_states:
@@ -2182,6 +2213,30 @@ class BattleEnvV1:
         self._runtime_placement_cache[key] = (base, result)
         return result
 
+    def _touch_window_elixir_raw(self, native_tick: int, effective_elixir_raw: int) -> tuple[float, ...]:
+        """The delay bins this engine honours when it validates a command.
+
+        crforge's ``PlayerCommands.covers`` reads ``wholeElixir() - promised``
+        at the tick the command is given, with no future regeneration.  The
+        native probe validates a touch when it arrives, so it keeps the four
+        future bins of ``TOUCH_WINDOW_DELAY_BINS``.
+        """
+
+        bins = 1 if self.runner_engine == "crforge" else TOUCH_WINDOW_DELAY_BINS
+        return _touch_window_elixir_raw(native_tick, effective_elixir_raw, bins=bins)
+
+    def _action_touch_delay_bin(self, action: ActionV1) -> int:
+        """The bin a command's elixir check happens at, for this engine.
+
+        The bridge gives a play to ``LiveBattle`` at the current tick; the
+        policy's delay-bin metadata describes when a touch would have landed,
+        not when crforge validates it.
+        """
+
+        if self.runner_engine == "crforge":
+            return 0
+        return _action_touch_delay_bin(action)
+
     def action_mask(
         self, owner: int, raw: Mapping[str, Any] | None = None, *, lean: bool = False
     ) -> ActionMaskV1:
@@ -2213,6 +2268,11 @@ class BattleEnvV1:
         reserved_elixir_raw = sum(item.cost * 10_000 for item in pending_cards) + sum(
             item.cost_raw for item in pending_abilities
         )
+        if self.runner_engine == "crforge":
+            # crforge's header is the engine's own promise accounting.  Using
+            # only this process's ``_pending`` missed a promise the bridge had
+            # already given, so a second play overspent and was refused.
+            reserved_elixir_raw = max(reserved_elixir_raw, int(player.get("elixirReservedRaw", 0) or 0))
         effective_elixir_raw = max(0, elixir_raw - reserved_elixir_raw)
         if int(source.get("tick", 0)) < deadline:
             result = ActionMaskV1(
@@ -2256,7 +2316,7 @@ class BattleEnvV1:
         # affordable at some delay bin of this decision window; the earliest
         # such bin (0..4, native hand slot / source entity keys) is exported
         # in ``reasons["affordable_from_bin"]``.
-        window_elixir_raw = _touch_window_elixir_raw(int(source.get("tick", 0)), effective_elixir_raw)
+        window_elixir_raw = self._touch_window_elixir_raw(int(source.get("tick", 0)), effective_elixir_raw)
         slot_affordable_from_bin: dict[str, int | None] = {}
         slots: list[bool] = []
         masks: dict[str, Any] = {}
@@ -2533,7 +2593,7 @@ class BattleEnvV1:
                 if state.elixir_cost is None:
                     raise BattleEnvError("compound ability has no exact native elixir cost")
                 touches.append(
-                    (_action_touch_delay_bin(action), index, int(round(float(state.elixir_cost) * 10_000)))
+                    (self._action_touch_delay_bin(action), index, int(round(float(state.elixir_cost) * 10_000)))
                 )
                 continue
             if action.kind != ActionKind.PLAY_CARD:
@@ -2545,7 +2605,7 @@ class BattleEnvV1:
             selected = hand[action.hand_slot]
             if selected.get("cost") is None:
                 raise BattleEnvError("compound card has no exact native cost")
-            touches.append((_action_touch_delay_bin(action), index, int(selected["cost"]) * 10_000))
+            touches.append((self._action_touch_delay_bin(action), index, int(selected["cost"]) * 10_000))
             card_id = int(selected["cardId"])
             entry = mask.placement_masks[str(action.hand_slot)]
             effective_card_id = int(entry.get("effective_card_id", card_id))
@@ -2571,10 +2631,12 @@ class BattleEnvV1:
             for item in self._pending_abilities
             if item.status in _ABILITY_PENDING_STATUSES and item.action.owner == owner
         )
+        if self.runner_engine == "crforge":
+            reserved_cost_raw = max(reserved_cost_raw, int(player.get("elixirReservedRaw", 0) or 0))
         # Same accounting as ``action_mask``: e0 = max(0, raw - reserved), then
         # touch-time regeneration per bin; earlier touches of this decision
         # stay reserved, so every prefix in touch order must fit.
-        window = _touch_window_elixir_raw(
+        window = self._touch_window_elixir_raw(
             int(raw.get("tick", 0)), max(0, int(player.get("elixirRaw", 0)) - reserved_cost_raw)
         )
         spent_raw = 0

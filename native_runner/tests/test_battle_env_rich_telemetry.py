@@ -1616,6 +1616,27 @@ def _match_from_raw(
     )
 
 
+def test_lean_binding_preserves_the_validated_snapshot() -> None:
+    """The training fast path skips audits, never values or records."""
+
+    ordinary = _ordinary()
+    rich = _rich(ordinary)
+
+    validated = bind_rich_telemetry(ordinary, rich)
+    lean = bind_rich_telemetry(ordinary, rich, lean=True)
+
+    assert lean.tick == validated.tick
+    assert lean.generation == validated.generation
+    assert lean.state_epoch == validated.state_epoch
+    assert lean.objects == validated.objects
+    assert lean.objects_by_key == validated.objects_by_key
+    assert lean.objects_by_native_object_id == validated.objects_by_native_object_id
+    assert lean.players == validated.players
+    assert lean.combat_events == validated.combat_events
+    assert lean.phase_runtime == validated.phase_runtime
+    assert lean.tower_troop_runtime == validated.tower_troop_runtime
+
+
 def test_adapter_joins_negative_indices_by_tagged_native_object_id() -> None:
     ordinary = _ordinary()
     tower = ordinary["objects"][0]  # type: ignore[index]

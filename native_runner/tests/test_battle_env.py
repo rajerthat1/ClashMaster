@@ -298,12 +298,14 @@ def _make_env(
     fake: FakeNativeEnv | None = None,
     *,
     shaping_beta: float = 0.0,
+    engine: str | None = None,
 ) -> tuple[BattleEnvV1, FakeNativeEnv]:
     native = fake or FakeNativeEnv()
     env = BattleEnvV1(
         native=native,  # type: ignore[arg-type]
         card_catalog=_test_catalog(),
         ruleset_id="a" * 64,
+        engine=engine,
         warmup_ticks=0,
         shaping_beta=shaping_beta,
     )
@@ -966,6 +968,69 @@ def test_action_touch_bin_prefers_the_policy_delay_metadata() -> None:
     )
     # 4 - 1 = bin 3, then clamped into the five-bin window.
     assert _action_touch_delay_bin(inferred) == 3
+
+
+def test_crforge_validates_at_the_give_tick_not_a_future_touch_bin() -> None:
+    """``PlayerCommands.covers`` has no future-regeneration window."""
+
+    env, _native = _make_env(engine="crforge")
+    _reset(env)
+    raw = copy.deepcopy(env.raw_observation)
+    player = raw["players"][0]
+    # Slot 0 costs 7 elixir.  At 6.99 the native five-bin window opens it on
+    # bin 3, but crforge checks the give tick and must leave it closed.
+    player["hand"][0]["cost"] = 7
+    player["elixirRaw"] = 69_900
+    env._action_mask_cache.clear()
+    mask = env.action_mask(0, raw)
+    assert len(mask.reasons["touch_window_elixir"]) == 1
+    assert mask.reasons["slots"]["0"] == "insufficient_elixir"
+    assert mask.hand_slots[0] is False
+    assert mask.reasons["affordable_from_bin"]["slots"]["0"] is None
+    # Slot 2 costs 4 and stays open at the same tick.
+    assert mask.hand_slots[2] is True
+    assert mask.reasons["affordable_from_bin"]["slots"]["2"] == 0
+
+    native_env, _native = _make_env()
+    _reset(native_env)
+    native_raw = copy.deepcopy(native_env.raw_observation)
+    native_raw["players"][0]["hand"][0]["cost"] = 7
+    native_raw["players"][0]["elixirRaw"] = 69_900
+    native_env._action_mask_cache.clear()
+    native_mask = native_env.action_mask(0, native_raw)
+    assert len(native_mask.reasons["touch_window_elixir"]) == 5
+    assert native_mask.reasons["slots"]["0"] == "legal"
+    assert native_mask.reasons["affordable_from_bin"]["slots"]["0"] > 0
+
+    action = ActionV1(
+        owner=0,
+        kind=ActionKind.PLAY_CARD,
+        hand_slot=0,
+        target_kind=TargetKind.GRID,
+        target_grid=(0, 25),
+        execute_offset_ticks=4,
+        metadata={"policy_delay_offset_bin": 3, "base_latency_ticks": 1},
+    )
+    assert env._action_touch_delay_bin(action) == 0
+    assert native_env._action_touch_delay_bin(action) == 3
+
+
+def test_crforge_uses_the_engines_reserved_elixir_header() -> None:
+    """The bridge's promise projection is authoritative, not this process's queue."""
+
+    env, _native = _make_env(engine="crforge")
+    _reset(env)
+    raw = copy.deepcopy(env.raw_observation)
+    player = raw["players"][0]
+    player["hand"][0]["cost"] = 3
+    player["elixirRaw"] = 60_000
+    assert env.action_mask(0, raw).hand_slots[0] is True
+    player["elixirReservedRaw"] = 30_001
+    env._action_mask_cache.clear()
+    mask = env.action_mask(0, raw)
+    assert mask.reasons["reserved_elixir"] == pytest.approx(3.0001)
+    assert mask.reasons["slots"]["0"] == "insufficient_elixir"
+    assert mask.hand_slots[0] is False
 
 
 if __name__ == "__main__":

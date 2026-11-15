@@ -5,31 +5,31 @@ Clash Royale AI research workspace targeting **top ladder on Null's Royale
 matchup.
 
 **Model:** **FirstLight V4 General** (12.68M parameters, trained across decks) is
-the baseline and PPO initialization. IL, Active IL and the Hog 2.6 specialists
-are opponents/baselines. X-Bow remains a deck option, not the whole plan.
+the baseline, the PPO initialization and a frozen league opponent. IL, Active IL
+and the Hog 2.6 specialists are opponents/baselines. **The learner deck is fixed
+to X-Bow 3.0**; match variety comes from the opponent pool + deck pool.
 
-**Current phase:** **N0–N3 pass; the N4 training path now runs end-to-end on
-CPU.** The 16.635.1 offline APK/probe runs on the A51; the V4 stack evaluates
-against it. One A51 supplies ~12–14 matches/s of engine capacity across four
-visible engine windows. The same client build also runs headless on this Linux
-host as an x86_64 engine, and its PPO worker data plane now carries the
-checkpoint's catalog release and model config: `B-general-v275` (17.5M, 16.635)
-collects through it with no decode failures and no unresolved entities. The
-remaining N4 step is the GPU update itself: the collector is CUDA-graph-only and
-the local loop is still one packet per forward. The original x86_64
-`libg.so` 15.535.29 runtime
-([`cr-native-linux-bionic`](https://github.com/IMAX9D/cr-native-linux-bionic) +
-[`cr-native-sandbox`](https://github.com/IMAX9D/cr-native-sandbox)) remains a
-**proxy lab** for throughput, reward/league experiments and parity — it cannot
-connect to Null's ladder.
+**Current phase:** **N0–N3 pass; the bulk-training substrate decision is made
+(2026-11-15).** The 16.635.1 offline APK/probe runs on the A51, and the same
+client build runs headless on this Linux host as an x86_64 engine. That engine is
+now the **promotion gate, the parity oracle and the deploy rig** — not the bulk
+trainer. The native path's Python per-packet data path caps it at **0.082
+matches/s per process** and left the rented A6000 at **4 % utilisation**.
 
-**Next milestone:** pipeline the collector's per-packet closed loop (the batching
-window was measured and rejected — see `FINDINGS.md` §3.40), then rent a small
-GPU and run the PPO update from a 16.635-contract checkpoint with the deck pool +
-league. Measured today: **~0.04–0.05 matches/s**. The loop gates are **0.5/s on
-one x86 engine** (80 % of its 0.61/s channel ceiling) and **2.5/s on eight**
-(~50 % of 4.9/s); four A51 engines cap at 0.26/s and are the parity/deploy rig,
-not the throughput path.
+**Bulk trainer:** **crforge `VectorBattle`** (16.635.3/8 tables, 256 lanes,
+zero-copy NumPy), measured at **2.6 / 6.0 / 13.0 matches/s** at 1/4/8 threads on
+this laptop and **18.5–52.5** on an M4 Pro. The C1 spike (2026-11-16) measured
+the vectorized observation frame at **~0.03 ms/lane (35k decisions/s)** and
+`UniversalObservationTensorizerV4` at **~1.4 ms/lane**; the tensorizer is now
+the packet budget, not the observation build. See
+[`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md).
+
+**Next milestone:** finish the C0 legality soak (9/20 clean at the 2026-11-16
+handoff), then **C3**: the C1 spike measured the vectorized encoder at ~0.03
+ms/lane (35k decisions/s) but `UniversalObservationTensorizerV4` at ~1.4
+ms/lane, so the tensorizer — not observation facts — is the remaining packet.
+Promotion stays on the native engine: **never on crforge.** Official Supercell
+servers are out of scope.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
@@ -37,7 +37,8 @@ below. Project-specific additions:
 
 - **[ROADMAP.md](ROADMAP.md)** — the single plan: runtime bring-up, API/deck, throughput, training,
   parity/live, QA harness.
-- **[ROADMAP_CRFORGE.md](ROADMAP_CRFORGE.md)** — ultrafast simulator / CI oracle (reference only).
+- **[ROADMAP_CRFORGE.md](ROADMAP_CRFORGE.md)** — bulk-training plan of record: C0–C7
+  gates, fidelity contract, economics, CI/parity role.
 - **[docs/native/LINUX_BIONIC_RUNTIME.md](docs/native/LINUX_BIONIC_RUNTIME.md)** — runtime details,
   bundle hashes, install/smoke commands.
 - **[HANDOFF.md](HANDOFF.md)** — current state, measured facts, next actions.
@@ -155,7 +156,9 @@ To open the interface after installation, run `FirstLight_CR\launch_interface.cm
 
 ## Train and evaluate
 
-This fork trains the X-Bow specialist by **self-play on the native engine**, with live captures for behavior cloning and validation. Generate a small workflow example with `python tools/make_demo_data.py`. The [training guide](docs/training.md) covers cache generation, engine clusters, Linux AVD preparation, and distributed PPO; the upstream IL path remains for reference only.
+This fork trains by **self-play on the native engine for the promotion gate and
+on crforge for bulk throughput**, with live captures for behavior cloning and
+validation. Generate a small workflow example with `python tools/make_demo_data.py`. The [training guide](docs/training.md) covers cache generation, engine clusters, Linux AVD preparation, and distributed PPO; the upstream IL path remains for reference only.
 
 To compare two included checkpoints, stop any console task and run:
 

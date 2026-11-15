@@ -400,6 +400,7 @@ def player_facts(
         "pendingHandSlots": pending_hand_slots,
         "lastRefusal": int(observation[schema.H_LAST_REFUSAL]),
         "lastRunRefusal": int(observation[schema.H_LAST_RUN_REFUSAL]),
+        "illegal": int(observation[schema.H_ILLEGAL]),
     }
 
 

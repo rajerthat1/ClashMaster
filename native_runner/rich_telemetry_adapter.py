@@ -2962,6 +2962,42 @@ def bind_rich_telemetry(
     phase_event_floor: int | None = None,
     visibility_event_floor: int | None = None,
     remaining_event_floor: int | None = None,
+    lean: bool = False,
+) -> RichTelemetrySnapshot:
+    """Validate and bind two same-state native observation envelopes.
+
+    ``lean=True`` is the in-process training fast path: it skips contract
+    validation and freeze walks but binds exactly the same values and records.
+    """
+
+    if lean:
+        with lean_contracts():
+            return _bind_rich_telemetry(
+                ordinary,
+                rich,
+                combat_event_floor=combat_event_floor,
+                phase_event_floor=phase_event_floor,
+                visibility_event_floor=visibility_event_floor,
+                remaining_event_floor=remaining_event_floor,
+            )
+    return _bind_rich_telemetry(
+        ordinary,
+        rich,
+        combat_event_floor=combat_event_floor,
+        phase_event_floor=phase_event_floor,
+        visibility_event_floor=visibility_event_floor,
+        remaining_event_floor=remaining_event_floor,
+    )
+
+
+def _bind_rich_telemetry(
+    ordinary: Mapping[str, Any],
+    rich: Mapping[str, Any],
+    *,
+    combat_event_floor: int | None = None,
+    phase_event_floor: int | None = None,
+    visibility_event_floor: int | None = None,
+    remaining_event_floor: int | None = None,
 ) -> RichTelemetrySnapshot:
     """Validate and bind two same-state native observation envelopes."""
 

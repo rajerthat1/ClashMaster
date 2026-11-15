@@ -1,9 +1,118 @@
-# Session handoff — 2026-11-14 — Null's Royale 16.635.1
+# Session handoff — 2026-11-15 — Null's Royale 16.635.1
 
 > **Read [`ROADMAP.md`](ROADMAP.md) first.** It is the single plan.
+> [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Decision — what changed
+## Decisions — what changed
+
+### 2026-11-15 — crforge is the bulk trainer; the native engine is the gate
+
+The native path is not the throughput path, and the reason is the **Python
+per-packet data path**, not the engine: one lane is ~8–10 ms
+(`step` 8.7 = engine round 3.1 + observe 4.0 + masks 1.6, plus tensorize), which
+is **0.082 matches/s per process** and **4 % GPU utilisation** on the A6000. The
+engine, the loop and the model are done; the data path is the lever.
+
+crforge replaces the engine round with a share of one 256-lane JVM call and
+returns observations zero-copy as NumPy. Measured today on this laptop
+(`crforge_env.bench`, ladder, 16.635.8 tables, load ~11 — a floor):
+
+| threads (256 lanes) | decisions/s | matches/s |
+|---:|---:|---:|
+| 1 | 3,154 | 2.6 |
+| 4 | 7,304 | 6.0 |
+| 8 | 15,791 | 13.0 |
+
+That is **4–21× the native raw channel per process** (0.61 matches/s) and
+**32–159× the native training floor** (0.082) before the observation adapter is
+counted. The recorded M4 run is 18.5 at 1 thread and 52.5 at 4 (30–86× raw). So:
+**bulk-train on crforge, promote on native.**
+
+**But the simulator is not the whole win.** A straight per-lane port of the
+existing observation builder is ~1.4× (≈7 ms/lane). The 10–30× exists only if the
+`ObservationV1`/mask/tensorizer build is vectorized across the 256-lane batch:
+**≤0.5 ms/lane is ≤128 ms per batch** (≈2,000 decisions/s); at 1 ms/lane it is
+1,000 decisions/s. Today's bridge encoder is ~13 ms **per lane** → ~77
+decisions/s — slower than the native floor.
+
+So the plan of record is gated on one measurement (C1), and it does not delete or
+idle the engine:
+
+1. **C0 (1–2 d, $0):** close the last MiniPekka `26000018` reject; 20-game run,
+   `illegal: 0`, `truncated: 0`.
+2. **C1 (1 d, $0):** 256-lane encoder spike, per-lane vs vectorized. Gate:
+   **≥1,000 decisions/s per process** (≤1 ms/lane at 256 lanes); target
+   ≤0.5 ms/lane for the full 10–30×. If it misses twice, fix the encoder; do not
+   add lanes or GPUs.
+3. **C2–C4 (3–4 w, ~$2):** resident adapter → vectorized observation → batch/PPO;
+   gate ≥0.8 matches/s per process and a 10-segment run with 0 rejected.
+4. **C5 (continuous):** 50–150 native matches per N updates and after every
+   adapter change; a persistent win-rate gap freezes the checkpoint.
+5. **C6–C7:** ≥150 native paired games, then a 20-game live canary on Null's.
+
+Two hard rules: **never promote on crforge**, and **parity is continuous, not a
+final exam**. The extracted engine stays warm as the gate and the deploy rig; the
+A51 stays as the ARM64 oracle and deploy target. **Official servers are out of
+scope.**
+
+Full gates, stop conditions and fidelity pins:
+[`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4.
+
+### 2026-11-15 — learner deck: X-Bow 3.0; opponent pool varies
+
+The learner plays one deck; variety comes from the **opponent pool**, not from
+training a generalist. `B-general-v275` is the init and a frozen opponent.
+
+Locked deck (highest-use X-Bow in `runs/deck-pool.json`, 2,983 uses):
+
+```
+x-bow · tesla-ev1 · archers-ev1 · knight-hero · skeletons · electro-spirit · fireball · the-log
+tower: tower-princess (159000000)
+```
+
+**Support check: pass.** All eight are in the verified 16.635 release
+(`card_support.json`, 123 cards) and in `crforge_catalog.json`; the forms exist
+as `Archer_EV1`, `Tesla_EV1`, `Knight_hero`. The open item is the **tower troop**
+(`SideSetup` at C2).
+
+Opponent pool: frozen `B-general-v275` (deck-pool sampling), `A-hog26-v738`
+(71.9 % ±2.6 / 1,147), mirror X-Bow, 2–3 historical learner checkpoints
+(PFSP-weighted), and the hard decks (Mortar, Evo Witch, Minion Giant,
+Golem/beatdown, Log Bait, Graveyard). Fixed levels, both seats, paired seeds.
+
+**This does not change C0–C3** (deck-agnostic). Hog 2.6 is not the learner; it is
+the published bar and the fallback canary.
+
+**Data (see `ROADMAP.md` §6.1):** the 252k corpus already contains ~**5,700 X-Bow
+games** (2.25 % of deck uses). Expert replays are a tier-2 input, in this order:
+drills/reward mining (hours), then a BC warm-start (2–5k games) **only if** a
+100–200-game native eval of `B-general-v275` on the locked X-Bow deck is **<40 %**;
+always meta/opponent modelling. Mass scraping is not worth it.
+
+### 2026-11-15 — RoyaleFish upstream pulled (`da9c8cf`, README only)
+
+- **Hugging Face (announced):** the **November 2026 Hog 2.6 replay set**, ~5k–10k
+  top-player games, collected from RoyaleAPI and credited. **Hog only** — use it
+  for the Hog opponent's IL anchor / meta snapshot, not the X-Bow learner. For
+  X-Bow replays, run the same collector with an X-Bow filter.
+- **15.535 → 16.635 model converter is coming.** It remaps **card rows for the
+  same architecture**, so it helps older V4-family checkpoints — not
+  FirstLight-Zero's **X-Bow 3.0** (1.17M, mirror-only, 75-tensor custom
+  architecture), which stays a reference/opponent. Verify forms + a native parity
+  sample before trusting any conversion.
+- **The league is no longer frozen.** RoyaleFish now co-trains a learning
+  generalist B + older versions + 10 % mirror + focus decks + drills. A frozen
+  opponent can be memorized; adopt this shape for X-Bow.
+- **New models (not X-Bow):** A v1290 (Hog) uploading, **Frost** (Knight-EV1 /
+  Hero Ice Wizard / Tesla-EV1 / Bats / Minion Giant / Skeletons / Barbarian
+  Barrel / Fireball) in 1–2 days, anti-2.6 at ~81 %. A community X-Bow model
+  (Blade) is mentioned; add it to the pool if it becomes public.
+- **Throughput:** ~2,500–3,000 games/h on a 5060 Ti + V100, ~55k decisions from
+  ~64 games per update; **NVIDIA MPS** nearly doubled games/h. That is the
+  `ever_*` recipe working — include MPS in C4.
+
+### 2026-11-14 — why the target changed
 
 The previous plan optimized **engine throughput** by moving to the x86_64
 `cr-native` 15.535.29 runtime. That was the right call for throughput, but it
@@ -134,11 +243,107 @@ do not start another R0 run.
 
 ---
 
-## Next session (2026-11-16, session 12) — fuse the rich frame into tensor rows
+## Session 13 results (2026-11-16) — C0 fix landed; C1 says the tensorizer is the packet
 
-**Read first:** this section, `FINDINGS.md` §3.42–§3.43, `ROADMAP.md` §7 item 9.
-Suite is **1,296 passed / 18 skipped**. No GPU rented, none needed for the first
-task.
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4,
+`FINDINGS.md` §3.42–§3.43.
+
+### C0 — the MiniPekka reject was a delay-bin mismatch
+
+The soak reproduced the last reject class immediately: MiniPekka `26000018`
+(owner 1) with `policy_delay_offset_bin: 3` at native tick 840; crforge refused
+`NOT_ENOUGH_ELIXIR` (`givenTick 840`, `runTick 860`) with 3.952 elixir against a
+cost of 4.
+
+Root cause: `BattleEnvV1` applied the native five-bin touch window to crforge.
+The native probe validates a touch when it arrives, so bins 0–4 may spend the
+next four ticks of regeneration. crforge's `PlayerCommands.covers` reads
+`wholeElixir() - promised` at the tick the command is given, with no future
+regeneration. The mask opened the slot on bin 3; the bridge injected it at the
+give tick.
+
+Fix in `native_runner/battle_env.py`:
+
+- `BattleEnvV1.runner_engine` is resolved once (`engine=` or `status().engine`);
+  a crforge endpoint gets a **one-bin** window (`_touch_window_elixir_raw` now
+  takes `bins=`). The native engine keeps five bins.
+- `_action_touch_delay_bin` returns 0 on crforge, so compound decisions validate
+  each touch at the give tick.
+- The mask reserves `max(this process's pending, player.elixirReservedRaw)`,
+  i.e. crforge's own promise accounting.
+- Regression tests: `test_crforge_validates_at_the_give_tick_not_a_future_touch_bin`,
+  `test_crforge_uses_the_engines_reserved_elixir_header`.
+
+Evidence: `runs/crforge-c0-20261116/soak20/` — **9 of 20 games completed at
+wrap-up, all clean**: `illegal_total: 0`, `truncated: 0`, `rejected_total: 0`,
+`games_with_rejections: 0`, seeds 7–15. `summary.json` records the interruption
+honestly; **finish the remaining 11 games before a bulk run**. The required
+2-game `evaluate` is `runs/crforge-c0-20261116/evaluate2/`. `evaluate` now
+reports `illegal_total`, `rejected_total`, `games_with_rejections` and
+`rejected_reasons`; rejected commands are never folded into "illegal".
+
+### C1 — vectorized facts are cheap; the V4 tensorizer is the packet
+
+`tools/crforge/encoder_spike.py` runs one 256-lane `VectorBattle`, encodes the
+same seat rows with the bridge's per-lane path and with a NumPy frame built from
+`v.observations` + `v.masks`, and asserts field equality on a tick. Artifact:
+`runs/crforge-c1/encoder-spike.json`.
+
+| shape | vectorized ms/lane | decisions/s | per-lane ms/lane | speedup |
+|---|---:|---:|---:|---:|
+| 256 lanes, 1 thread | 0.028 | 35,780 | 0.542 | 19.4× |
+| 256 lanes, 8 threads | 0.031 | 32,258 | 0.573 | 18.5× |
+
+Existing bridge path on the same deck (cold `BattleEnvV1.observe` +
+`UniversalObservationTensorizerV4`): **observe 0.647, tensorize 1.413,
+observe+tensorize 2.060 ms/lane**. Projected end-to-end (vectorized frame +
+tensorizer): **1.44 ms/lane = 694 decisions/s** (1.4× today).
+
+**Verdict.** The observation builder is no longer the lever: vectorized facts
+are ~0.03 ms/lane (35k decisions/s), so C1's encoder gate passes by >30×. The
+end-to-end 1 ms/lane gate does **not** pass yet, because
+`UniversalObservationTensorizerV4` is ~1.0–1.4 ms/lane and now dominates. Do not
+add lanes, processes or GPUs; the next work is feeding the tensorizer from the
+frame (C3).
+
+Caveat: these are a 40-step × 1-repeat smoke under session load, not the
+200 × 3 quiet-host run; re-run the tool with its default shape before quoting
+them as the C1 record. The qualitative split is unambiguous.
+
+The old "~13 ms/lane bridge encoder" was a transport/JSON + full-assembly
+number, not the in-process observation build; measured `observe` is ~0.6 ms and
+the bridge's `observe_atomic` `_capture` ~0.8 ms.
+
+## Next session (2026-11-17, session 14) — C3 tensorizer, then C2 resident adapter
+
+1. **Finish C0**: run the remaining 11 games (the 2-game evaluate is already in
+   `evaluate2/`); the gate stays `illegal 0 / truncated 0 / rejected 0`.
+2. **C3 (blocking the C1 record)**: feed `UniversalObservationTensorizerV4` from
+   the vectorized frame (or vectorize its row build), then re-run
+   `tools/crforge/encoder_spike.py` at 256 lanes × 200 × 3. Target ≤1 ms/lane
+   end-to-end; ≤0.5 ms/lane is the 10–30× case.
+3. **C2 resident adapter**: `native_runner/crforge_resident.py` over
+   `LiveBattle`/`VectorBattle` with the `NativeClashEnv` surface; deck pool +
+   `SideSetup`; acceptance = 50+ identical observations/masks/rewards and 2×
+   env throughput.
+4. **Parity cadence**: 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
+### Stop conditions
+
+- C1's **end-to-end** gate misses after two iterations → fix the tensorizer, do
+  not scale.
+- Any crforge/native divergence that cannot be attributed to the adapter → stop
+  and use the native gate. Do not "train through it".
+- The engine is not deleted, not idled, and not the fallback for evidence. It is
+  the evidence.
+
+### Superseded — session 12 plan (fuse the rich frame into tensor rows)
+
+This remains useful **native-path** work (the gate and the fallback), but it is no
+longer the bulk path. Do it only if the native engine must become competitive
+again, or opportunistically while C1/C2 land, since the vectorized tensorizer is
+shared.
 
 ### What session 11 changed
 
@@ -277,7 +482,7 @@ Step 2 is done; see `FINDINGS.md` §3.43.
   parity seeds and evaluator take exactly the old path. New tests pin that a
   lean observation tensors bit-identically and that `cls(...)` still validates.
 
-### Task order (revised)
+### Task order — native fallback (superseded for bulk, kept for the gate)
 
 | # | Step | Effort | Gate |
 | --- | --- | --- | --- |
@@ -294,14 +499,14 @@ nothing and measures the one risk throughput cannot answer — how far official
 16.635 training transfers to Null's custom balance. Learn that this week, not
 after a month of training.
 
-### Do not
+### Do not (native-path notes; the crforge line is superseded)
 
 - Do not chase 2.5 matches/s as a target in itself. Decisions/day at a gateable
   quality is the metric; 2/s with the 17.5M model is already a serious budget.
-- Do not start crforge now. It is the only 10×+ option, but it reimplements a
-  *different* ruleset (16.635.3/8), needs a V4 observation adapter and is never
-  a valid gate — a 1–2 week detour with parity risk. Revisit after step 5 only
-  if the native farm is still uneconomical.
+- ~~Do not start crforge now.~~ **Superseded 2026-11-15:** crforge is the bulk
+  path after the C1 encoder gate. The original objection stands as a risk, not a
+  prohibition: it needs a vectorized V4 observation adapter and is never a valid
+  gate. See the top decision and `ROADMAP_CRFORGE.md`.
 - Do not farm phones. The A51 stays the ARM64 parity/deploy oracle.
 - Do not run a long GPU fine-tune before steps 1–3: at today's packet cost the
   GPU idles 96 % of the time waiting on Python.
@@ -445,8 +650,8 @@ where it is not. Effort: S < 1 day, M 2–5 days, L 1–2 weeks.
 | Native 16.635.1 engine at scale | RoyaleFish `probe_x86_64_16635.diff` (Apache-2.0) + `Clashback/game/engine/libg.so` (license unknown, **game asset — local use only**) | x86 call path, `x86_hook.h`, `logical_*.inc`, resident multimatch | M — our tree is already 16.635.1 ARM | 1.2–1.3 |
 | 37 AMBIGUOUS / 10 MISSING anchors | RoyaleFish `logical_{funcs,offsets,vtables}.inc` | **done** — `crosscheck_royalefish.py` + `royalefish-overrides.json`; 0 AMBIGUOUS left (§3.33) | S — free second opinion, `0x10a7230` agrees | 6 |
 | Modern baselines | `B-general-v275`, `A-hog26-v738` (Apache-2.0) | load + run as eval opponents and as the starting point | S — after 1.1 | 1.1 / 4 |
-| Training throughput | RoyaleFish `ever_server/collector/learner/packed/loader` (Apache-2.0) | fp16 with action-equality check, CUDA graphs at several batch sizes, central LSTM state table, sparse trajectories, row-packed updates, loader process | M — port piecemeal, measure each | 5 |
-| Bulk-training backend | crforge `python/` env (Apache-2.0) | `VectorBattle(256, 8)` + tick-exact 16.635.3/8 core | L — needs a V4→crforge observation adapter; never the final gate | deferred |
+| Training throughput | RoyaleFish `ever_server/collector/learner/packed/loader` (Apache-2.0) | fp16 with action-equality check, CUDA graphs at several batch sizes, central LSTM state table, sparse trajectories, row-packed updates, loader process | M — **C4 deliverable**; the GPU is the limiter now | C4 |
+| Bulk-training backend | crforge `python/` env (Apache-2.0) | `VectorBattle(256, 8)` + tick-exact 16.635.3/8 core | **plan of record** — needs the C1 vectorized adapter; never the final gate | C0–C4 |
 | Specialist / league recipe | daybreak-cr settings + `loop.py` (license unknown → **reimplement**) | PFSP, focus + hard-deck shares, `bc_index`/`bc_coef 0.2` anchor, 55% promotion gate, rollback loop | M | 4 / X-Bow |
 | X-Bow 3.0 policy | FirstLight-Zero (Apache-2.0) | self-play recipe, feature/model shape, eval protocol; **checkpoints are 15.535.13 — retrain on 16.635, do not load** | M | after 5 |
 | Evaluation discipline | ClashAI `RESULTS.md` (license unknown → method) | Wilson intervals, ≥150-game samples per gate, held-out decks, σ reported per comparison | S — pure protocol | 4 |
@@ -494,7 +699,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | General vs IL baseline | **General 2–0**, 0 rejected, 2/2 normal terminals |
 | General vs Hog 2.6 #1 | **General 0–2**, 0 rejected, 2/2 normal terminals (Hog converts by tick 3601 in game 2) |
 | General vs Hog 2.6 #2 | **General 0–2**, both in overtime (6120/6118), 0 rejected, 2/2 normal terminals (§3.29) |
-| N3 A51 throughput | **4×8: 12.3–14.4 matches/s**; 4×16: 14.0–14.5; stable, no crashes (§3.30) |
+| N3 A51 throughput | **4×8: 12.3–14.4 matches/s** at 600 ticks/RPC (a transport ceiling; **0.26** at the PPO 5-tick cadence); 4×16: 14.0–14.5; stable, no crashes (§3.30) |
 | A51 → PPO wiring | `a51_engine_node.py` + `launch_ppo_a51.sh` landed; manifest accepted by the topology builder |
 | A51 parity corpus | **re-captured on `b80f2bdb…`** — `runs/parity-a51/` + `manifest.json`; scripted seeds unchanged, evaluator now 3601/4794 like x86, capacity 1.918 matches/s, deterministic, 0 rejected (§3.36) |
 | A51 node manifest | re-attested on `b80f2bdb…`: `runs/a51-node0/engine-node-ready.json`, 4 engines, `parallel_matches: 32`, digest `ce9d4f85…`; topologies rebuilt |
@@ -511,12 +716,18 @@ Yes — but as a **parity oracle**, not the training engine.
 | x86_64 parity corpus | **scripted seeds 1–5 and the General-vs-IL evaluator both reproduce `runs/parity-a51`** — identical ticks/actions on both seats after the A51 vtable fix (§3.36) |
 | 16.635 catalogs | **adopted as a verified release** — `native_runner/data/competitive-16.635/` + `native_runner/releases/16.635.1.json`; all 5 catalog ids match `B-general-v275` |
 | 16.635 models | **`B-general-v275` and `A-hog26-v738` load and play on the A51** (17.5M, LSTM 768, schema 21; 0 rejected in the play smoke) |
-| Cloud GPU | **1× A6000 @ $0.35/h ran and was deleted** (~$0.23). Do not re-rent until a local segment completes in <10 min; the GPU sat at 4 % utilisation |
-| Decision-rate reality | A51 4×8 @ 5 ticks = **0.26 matches/s** (raw channel); one x86_64 process = **0.61** raw, **0.082** measured *training* floor; learner loop on the A51 = **0.04**. Raw ceilings exclude the observation build + tensorize (§3.41) |
+| Cloud GPU | **1× A6000 @ $0.35/h ran and was deleted** (~$0.23). Re-rent only for C4/C5 and promotion runs, after C1; the 2026-11-14 smoke sat at **4 %** utilisation |
+| Decision-rate reality | native: A51 4×8 @ 5 ticks = **0.26 matches/s** (raw channel); one x86_64 process = **0.61** raw, **0.082** measured *training* floor; learner loop = **0.04–0.05**. crforge: **2.6 / 6.0 / 13.0** matches/s at 1/4/8 threads, 256 lanes, this laptop (2026-11-15 bench); 18.5 / 52.5 on an M4 Pro. Raw ceilings exclude observe + tensorize |
+| **crforge bulk path** | **activated 2026-11-15** — `VectorBattle` is the bulk trainer after C0–C3; the native engine is the gate, the parity oracle and the deploy rig. The 10–30× is conditional on the C1 vectorized encoder (≤0.5 ms/lane); a per-lane port is ~1.4× |
+| **Learner deck** | **X-Bow 3.0, locked 2026-11-15** — `x-bow · tesla-ev1 · archers-ev1 · knight-hero · skeletons · electro-spirit · fireball · the-log`, Princess tower. All cards/forms pass the 16.635 + crforge catalog check; tower troop is the open C2 item |
+| **Substrate pins** | Clashback `002aa8c` / libg `c4721bd9…` (build `160635001`, local use only) = **the gate**; RoyaleFish `da9c8cf` = catalogs + `B-general-v275`/`A-hog26-v738` + `ever_*` (C4 recipe); crforge tables 16.635.8 + data lock. Record all four in every checkpoint artifact |
 | Training observation | **lean — done (§3.43)** — non-validating `construct_contract` + `lean_contracts()` scope under `policy_features_only`, no provenance/freeze/validation, cached hand contract and form aliases, `(identity, lean)`-keyed observation caches. Paired A/B: **11.75 → 7.81 CPU ms/packet**, **78 → 113 lane-packets/s** on one x86 engine; 8 lanes 10.6/12.5 → 8.2/9.4 ms. Validated path and parity unchanged |
 | Loop pipelining | **done, CPU-verified** — one `ppo-inference` thread, one batch in flight, receives staged during the forward (§3.41). Non-model wall −14 % with a cheap forward, neutral with the 17.5M model (forward = 98 % of wall). 10/10 segments clean. CUDA path unverified until a GPU run |
 | Training-floor gates | **superseded by §3.43** — the remaining packet is ~3 ms native round trip + rich binding + placement, not observation contracts. The 0.45/2.5 gates assumed raw-channel ceilings that skip ~90 % of a real packet (§3.41); the observation half of that gap is now closed |
 | cr-native proxy | working, 15.535.29 only |
+| crforge simulator | `.resource/crforge/` — 16.635.3/8 tables, `VectorBattle` 1–256 lanes, zero-copy NumPy; core 127k ticks/s/thread. Bench: `PYTHONPATH=.resource/crforge/python .venv/bin/python -m crforge_env.bench …` |
+| crforge bridge | `crforge_bridge/` — 152/152 cards, 118 forms, `unmapped: []`; evaluation only (20–30 decisions/s with full `BattleEnvV1` assembly) |
+| C1 encoder spike | **not built yet** — `tools/crforge/encoder_spike.py` is the next-session deliverable and the gate for everything after C0 |
 
 ### State at handoff (processes are ephemeral)
 
@@ -568,6 +779,11 @@ The 4-engine attestation digest is `ce9d4f85…`; the 2-GPU topology needs
 `--control-cpus 4,5` (one control CPU per rank).
 
 ### N3 — the windowing bug that capped throughput
+
+> **Unit caveat (2026-11-15):** the 12–14 matches/s below is a **600-tick
+> transport ceiling**, not a PPO training rate. At the 5-tick cadence the same
+> 4×8 A51 shape is **0.26 matches/s**, and its learner loop **0.04–0.05**. It is
+> kept as evidence for the cpuset fix, not as a throughput claim.
 
 Every engine except the resumed activity lands in Android's `background`
 cpuset, which is pinned to **CPUs 0–1** (little cores). The default
@@ -714,6 +930,10 @@ problem; the loop still resolves **one packet per forward**
 
 ### What to do next (CPU-only first — no GPU spend)
 
+> **Historical (2026-11-14).** Items 1–4 below are done; item 3's 250 ms window
+> was later measured as a net loss (§3.40) and the loop was pipelined instead.
+> The live next-session plan is the session-13 section at the top of this file.
+
 **Done 2026-11-14 (session 3):** the CPU profiling harness exists and the real
 loop runs without a GPU. See "Learner-loop profiling" below for numbers and for
 the three new blockers it exposed.
@@ -815,8 +1035,9 @@ resource; the GPU is idle while it waits.
 ## Next session — start here
 
 > **Historical (2026-11-14).** Steps 1–5 in this section are done; the live
-> next-session plan is the "Session 8" section at the top of this file. Kept for
-> the runbooks and reference numbers.
+> next-session plan is the **session-13** section at the top of this file
+> (C0 legality, then the C1 encoder spike). Kept for the runbooks and reference
+> numbers.
 
 ### 0. Already done at this handoff (no compute spent)
 
@@ -1295,6 +1516,16 @@ Scale options, in order of leverage:
 - **“16.635.1 is parity only”** — reversed; it is the primary target.
 - **Linux AVD/MuMu/phone clusters** — only a scale option if the A51 is
   insufficient.
+- **Native as the primary bulk trainer** — superseded 2026-11-15. The Python
+  per-packet data path caps it at 0.082 matches/s and 4 % GPU. It is retained as
+  the gate, the parity oracle, the deploy rig and the fallback; do not delete or
+  idle it.
+- **“crforge cannot be the trainer”** — reversed 2026-11-15: it is the bulk
+  backend after C1; never a gate.
+- **Official Supercell servers** — out of scope, not deferred. Different client,
+  version and protocol; a legal/ToS question, not an engineering milestone.
+- **“100 % GPU utilisation” as a goal** — retired as a target; the metric is
+  matches/s per dollar at a gateable quality. Saturation is a diagnostic.
 
 ---
 
@@ -1313,7 +1544,16 @@ Scale options, in order of leverage:
 | `native_runner/probe/build_16_635_1_layout_x86.h` | Generated x86_64 core anchors |
 | `native_runner/versions/native-16.635.1-x86_64.json` | x86_64 build pin (select with `CR_NATIVE_BUILD_ABI=x86_64`) |
 | `native_runner/probe/out/x86_64/libcrprobe.so` | x86_64 probe (build artifact, pinned by hash) |
-| `ROADMAP_CRFORGE.md` | 16.635.1 Java simulator: CI oracle + optional bulk backend |
+| `ROADMAP_CRFORGE.md` | **Bulk-training plan of record**: C0–C7 gates, fidelity contract, economics, CI/parity role |
+| `.resource/crforge/python/crforge_env/vector.py` | `VectorBattle(count, threads)` — 256-lane zero-copy NumPy vector; `LadderConfig`, `SideSetup` |
+| `.resource/crforge/python/crforge_env/bench.py` | `crforge_env.bench` — env-steps/s, ticks/s, obs MB by batch size; the C1 baseline |
+| `.resource/crforge/env/build/install/env` | Installed JVM env distribution for `VectorBattle` |
+| `~/.crforge/tables/16.635.8` | Pinned game tables (also 16.635.3); record the lock with every run |
+| `crforge_bridge/` | `BattleEnvV1` bridge for evaluation/parity (20–30 decisions/s); 152/152 cards, 118 forms |
+| `crforge_bridge/tests/test_encoder_spike.py` | Pins the C1 encoders to the bridge's own facts and card-parameter packing |
+| `runs/crforge-c0-20261116/` | C0 legality soak: 20 games, `illegal`, `truncated`, `rejected_total` counters |
+| `runs/crforge-c1/` | C1 encoder-spike JSON (`encoder-spike.json`) |
+| `tools/crforge/encoder_spike.py` | **C1 deliverable** — 256-lane `VectorBattle`, per-lane bridge facts vs vectorized NumPy frame, equivalence check, encode/tensorize split; writes `runs/crforge-c1/encoder-spike.json` |
 | `docs/native/16.635.1/*.json` | Relocation, field offsets, vtables, overrides |
 | `tools/native_analysis/` | A51 parity/probe tools |
 | `tools/native_analysis/a51_engine_node.py` | Attest the A51 cluster → `v4-ppo-engine-node.v1` manifest |
@@ -1340,8 +1580,8 @@ Scale options, in order of leverage:
 | `docs/native/PHASE0_BRINGUP.md` | cr-native runbook (proxy only) |
 | `docs/native/PHASE2_BOTTLENECK.md` | cr-native throughput evidence |
 | `.resource/CRkonwledagebase/` | Ecosystem index (58 projects, R0–R4 evidence) |
-| `.resource/RoyaleFish/` | 16.635 probe/framework patches, catalogs, 17.5M models |
-| `.resource/Clashback/game/engine/libg.so` | **x86_64 16.635.1 engine**, sha `c4721bd9…` |
+| `.resource/Clashback/` | **Gate substrate** (commit `002aa8c`): `game/engine/libg.so` (build `160635001`, sha `c4721bd9…`), `vendor/crx` ELF loader, `neo_replay` tick cache/snapshots. License unknown — **local use only, never commit or redistribute** |
+| `.resource/RoyaleFish/` | Apache-2.0 (commit `da9c8cf`): `data_16635/` (adopted), `B-general-v275` / `A-hog26-v738` (league seed + gate opponents), `royalefish/ever_*` (**C4 throughput recipe**), patches (reference only) |
 | `.resource/FirstLight-Zero/` | X-Bow 3.0 self-play checkpoints (15.535.13) |
 | `.resource/daybreak-cr/` | IL→PPO→live-Null's pipeline with league/bc recipe |
 | `runs/deck-pool.json` | 7,089 decks / 443,381 uses (111 X-Bow) |
@@ -1350,6 +1590,24 @@ Scale options, in order of leverage:
 
 ## Do not do
 
+- **Do not start a bulk run before C0.** One reject (MiniPekka `26000018`) was
+  still open at the 2026-11-15 handoff; a rollout with a reject is invalid.
+- **Do not full-send vectorization before the C1 number.** A straight per-lane
+  port is ~1.4×, not 10×. Measure `ms/lane` for per-lane and vectorized builds
+  first; if the gate misses twice, fix the encoder, not the lane count.
+- **Do not delete, retire or idle the native engine.** It is the promotion gate,
+  the differential-parity oracle and the deploy rig. Keep it runnable; exercise
+  it on a fixed cadence.
+- **Do not validate parity only at the end.** 50–150 native matches every N
+  updates and after every adapter change; a persistent win-rate gap freezes the
+  checkpoint.
+- **Do not chase 100 % GPU utilisation.** The metric is matches/s per dollar at a
+  gateable quality; saturation is a diagnostic, and the model is launch-bound.
+- **Do not plan for official Supercell servers.** Different client, version and
+  protocol; a legal/ToS question, not a later milestone.
+- **Do not treat the 2026-11-15 laptop bench as a cloud number.** It ran under
+  load ~11 on a `powersave` i5-1235U; quote it as a floor and re-measure on the
+  box before sizing a run.
 - Do not train R0 or start an R0 data/checkpoint/adapter run.
 - Do not use the x86 15.535.29 engine as the source of deployable Null's
   weights without an explicit adaptation step. (The **16.635.1 x86_64** engine
@@ -1394,8 +1652,8 @@ Scale options, in order of leverage:
   `env N ... resident batch step or atomic capture failed` appears again, set
   `CR_PPO_FAILURE_DUMP` and watch `adb logcat -s CRNativeProbe`; the current
   probe error string still conflates injection, step-bound and capture.
-- Do not rent a GPU until a local segment completes in <10 min; at 0.04
-  matches/s the A6000 idles at 4 %.
+- Do not rent a GPU until a local segment completes in <10 min and C1 has a
+  measured number; at 0.04 matches/s the A6000 idles at 4 %.
 - Do not assume one A51 matches the upstream 1,528-match training scale.
 - Do not mix 15.535.29 labels with 16.x labels.
 - Do not mix the ARM64 and x86_64 build pins: `CR_NATIVE_BUILD_ABI` selects

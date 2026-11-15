@@ -172,7 +172,9 @@ def evaluate(
                 for owner, session in enumerate(sessions):
                     session.start_episode(observations[owner], initial_elixir=initial_elixir)
                 actions = [0, 0]
-                rejected = set()
+                rejected: set[str] = set()
+                rejected_total = 0
+                rejected_reasons: dict[str, int] = {}
                 terminated = truncated = False
                 decisions = 0
                 while not terminated and not truncated:
@@ -198,9 +200,23 @@ def evaluate(
                     for observation in observations.values():
                         for event in observation.events:
                             if event.event_type == "action_rejected":
+                                rejected_total += 1
+                                reason = str(event.to_dict().get("data", {}).get("reason", "unknown"))
+                                rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
                                 rejected.add(json.dumps(event.to_dict(), sort_keys=True))
                 terminal = observations[0].terminal
                 winner = None if terminal.winner is None else ("a" if terminal.winner == a_owner else "b")
+                illegal_by_owner: dict[int, int] = {}
+                try:
+                    final_raw = environment.native.observe()
+                    for player in final_raw.get("players", ()):
+                        illegal_by_owner[int(player.get("owner", -1))] = int(
+                            player.get("illegal", 0) or 0
+                        )
+                except Exception:
+                    # The native probe does not expose the crforge header's
+                    # cumulative illegal counter; rejection events still do.
+                    illegal_by_owner = {}
                 row = {
                     "game": index + 1,
                     "seed": current.seed,
@@ -211,7 +227,11 @@ def evaluate(
                     "tick": observations[0].tick,
                     "terminal": terminal.to_dict(),
                     "actions_by_owner": actions,
+                    "illegal_by_owner": illegal_by_owner,
+                    "illegal_total": sum(illegal_by_owner.values()),
                     "rejected_actions": len(rejected),
+                    "rejected_total": rejected_total,
+                    "rejected_reasons": rejected_reasons,
                 }
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
@@ -226,6 +246,15 @@ def evaluate(
             "b_wins": sum(r["winner"] == "b" for r in rows),
             "draws": sum(r["terminated"] and r["winner"] is None for r in rows),
             "truncated": sum(r["truncated"] for r in rows),
+            "illegal_total": sum(r["illegal_total"] for r in rows),
+            # Rejected commands are their own gate: they are not "illegal"
+            # moves and must never be folded into a win/loss statistic.
+            "rejected_total": sum(r["rejected_total"] for r in rows),
+            "games_with_rejections": sum(bool(r["rejected_total"]) for r in rows),
+            "rejected_reasons": {
+                reason: sum(r["rejected_reasons"].get(reason, 0) for r in rows)
+                for reason in sorted({reason for r in rows for reason in r["rejected_reasons"]})
+            },
         }
         (output / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result
