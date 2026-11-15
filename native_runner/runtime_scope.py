@@ -74,16 +74,17 @@ def build_normal_mode_runtime_policy_scope(
     if normal_mode_scope_version != NORMAL_MODE_CARD_SCOPE_VERSION:
         raise RuntimeScopeError("normal-mode card scope version drifted")
     eligible = _sorted_unique_positive_ints(eligible_card_ids, "normal-mode eligible card IDs")
-    if len(eligible) != NORMAL_MODE_ELIGIBLE_CARD_COUNT:
-        raise RuntimeScopeError(f"normal-mode eligible card count must be {NORMAL_MODE_ELIGIBLE_CARD_COUNT}")
-    if case_scope_id != NORMAL_MODE_CASE_SCOPE_SHA256:
+    source_card_count, eligible_card_count, expected_case_scope_id, policy_card_ids = _scope_identity()
+    if len(eligible) != eligible_card_count:
+        raise RuntimeScopeError(f"normal-mode eligible card count must be {eligible_card_count}")
+    if case_scope_id != expected_case_scope_id:
         raise RuntimeScopeError("card support compatibility identity mismatch")
-    _validate_eligible_partition(eligible)
+    _validate_eligible_partition(eligible, policy_card_ids)
     payload: dict[str, Any] = {
         "version": NORMAL_MODE_RUNTIME_POLICY_SCOPE_VERSION,
         "publication_scope": NORMAL_MODE_PUBLICATION_SCOPE,
         "normal_mode_scope_version": normal_mode_scope_version,
-        "source_card_count": NORMAL_MODE_SOURCE_CARD_COUNT,
+        "source_card_count": source_card_count,
         "eligible_card_count": len(eligible),
         "eligible_card_ids": list(eligible),
         "eligible_card_ids_sha256": content_hash(list(eligible)),
@@ -113,25 +114,26 @@ def validate_normal_mode_runtime_policy_scope(value: Any) -> Mapping[str, Any]:
         },
         label="normal-mode runtime policy scope",
     )
+    source_card_count, eligible_card_count, expected_case_scope_id, policy_card_ids = _scope_identity()
     if (
         raw["version"] != NORMAL_MODE_RUNTIME_POLICY_SCOPE_VERSION
         or raw["publication_scope"] != NORMAL_MODE_PUBLICATION_SCOPE
         or raw["normal_mode_scope_version"] != NORMAL_MODE_CARD_SCOPE_VERSION
         or raw["inventory_role"] != NORMAL_MODE_INVENTORY_ROLE
-        or _int(raw["source_card_count"], "normal-mode source card count") != NORMAL_MODE_SOURCE_CARD_COUNT
-        or _int(raw["eligible_card_count"], "normal-mode eligible card count") != NORMAL_MODE_ELIGIBLE_CARD_COUNT
+        or _int(raw["source_card_count"], "normal-mode source card count") != source_card_count
+        or _int(raw["eligible_card_count"], "normal-mode eligible card count") != eligible_card_count
     ):
         raise RuntimeScopeError("normal-mode runtime policy constants drifted")
     eligible = _sorted_unique_positive_ints(raw["eligible_card_ids"], "normal-mode eligible card IDs")
-    if len(eligible) != NORMAL_MODE_ELIGIBLE_CARD_COUNT:
+    if len(eligible) != eligible_card_count:
         raise RuntimeScopeError("normal-mode eligible card IDs are incomplete")
     if _sha256(raw["eligible_card_ids_sha256"], "normal-mode eligible card IDs SHA-256") != content_hash(
         list(eligible)
     ):
         raise RuntimeScopeError("normal-mode eligible card ID hash drifted")
-    if raw["case_scope_id"] != NORMAL_MODE_CASE_SCOPE_SHA256:
+    if raw["case_scope_id"] != expected_case_scope_id:
         raise RuntimeScopeError("card support compatibility identity mismatch")
-    _validate_eligible_partition(eligible)
+    _validate_eligible_partition(eligible, policy_card_ids)
     if _sha256(raw["scope_id"], "normal-mode runtime policy scope ID") != (
         content_hash({key: item for key, item in raw.items() if key != "scope_id"})
     ):
@@ -139,8 +141,29 @@ def validate_normal_mode_runtime_policy_scope(value: Any) -> Mapping[str, Any]:
     return raw
 
 
-def _validate_eligible_partition(eligible_card_ids: Sequence[int]) -> None:
+def _validate_eligible_partition(
+    eligible_card_ids: Sequence[int], policy_card_ids: frozenset[int] | None = None
+) -> None:
     # Lazy import avoids a cycle while semantic contracts are initialized.
-    from .semantic_subset import NORMAL_MODE_POLICY_CARD_IDS
-    if frozenset(eligible_card_ids) != NORMAL_MODE_POLICY_CARD_IDS:
+    if policy_card_ids is None:
+        from .semantic_subset import NORMAL_MODE_POLICY_CARD_IDS
+
+        policy_card_ids = NORMAL_MODE_POLICY_CARD_IDS
+    if frozenset(eligible_card_ids) != policy_card_ids:
         raise RuntimeScopeError("card support does not match the eligible partition")
+
+
+def _scope_identity() -> tuple[int, int, str, frozenset[int]]:
+    """Scope constants for the active competitive release (legacy by default)."""
+
+    # Lazy import avoids a cycle: competitive_release reads this module's
+    # legacy constants when no release is active.
+    from .competitive_release import current_identity
+
+    identity = current_identity()
+    return (
+        identity.source_card_count,
+        identity.policy_card_count,
+        identity.case_scope_id or NORMAL_MODE_CASE_SCOPE_SHA256,
+        frozenset(identity.policy_card_ids),
+    )

@@ -1,6 +1,7 @@
 """Evaluate two checkpoints in complete, sequential offline native matches."""
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 import json
 from pathlib import Path
@@ -16,6 +17,7 @@ from ...battle_env import (
     BattleEnvV1,
 )
 from ...contracts import ActionKind, ActionV1, EnvironmentConfigV1
+from ...competitive_release import load_release, use_release
 from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, FIRST_PLAYABLE_TICK, NativeClashEnv
 from ...match_factory import MatchConfig
 from ...rich_telemetry_adapter import RuntimeEffectCatalog
@@ -76,23 +78,30 @@ def evaluate(
         # The A51 runs a build whose device identities differ from the local
         # catalog release. Bind that build explicitly so attestation stays
         # fail-closed instead of comparing against the 15.535 table.
-        ruleset_manifest = build_native_ruleset_manifest(
-            client_version=client_version,
-            catalog=bundle.native_card_catalog,
-            environment_config=environment_config,
+        # The manifest resolves card logic, runtime facts and the semantic
+        # subset through the *active* release, so a 16.635 checkpoint needs its
+        # release bound here or the catalog hash check fails closed.
+        with use_release(load_release(release_a)) if release_a else nullcontext():
+            ruleset_manifest = build_native_ruleset_manifest(
+                client_version=client_version,
+                catalog=bundle.native_card_catalog,
+                environment_config=environment_config,
+            )
+    # Verification resolves the *default* form evidence for whichever release
+    # is active, so a 16.635 subset only validates inside its own release scope.
+    with use_release(load_release(release_a)) if release_a else nullcontext():
+        environment = BattleEnvV1(
+            native=native,
+            card_catalog=bundle.native_card_catalog,
+            semantic_subset_contract=bundle.semantic_subset_contract,
+            effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
+            ruleset_manifest=ruleset_manifest,
+            warmup_ticks=FIRST_PLAYABLE_TICK,
+            max_battle_ticks=STANDARD_MATCH_TICKS,
+            entity_limit=ENTITY_LIMIT,
+            event_limit=EVENT_LIMIT,
+            event_window_ticks=EVENT_WINDOW_TICKS,
         )
-    environment = BattleEnvV1(
-        native=native,
-        card_catalog=bundle.native_card_catalog,
-        semantic_subset_contract=bundle.semantic_subset_contract,
-        effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
-        ruleset_manifest=ruleset_manifest,
-        warmup_ticks=FIRST_PLAYABLE_TICK,
-        max_battle_ticks=STANDARD_MATCH_TICKS,
-        entity_limit=ENTITY_LIMIT,
-        event_limit=EVENT_LIMIT,
-        event_window_ticks=EVENT_WINDOW_TICKS,
-    )
     # The combat-ring card-play feed is a native-probe hook. crforge records its
     # own plays; asking it for an attested native ring fails closed at reset.
     # Builds whose probe omits the rich hook rings (16.635.1 today) must not
