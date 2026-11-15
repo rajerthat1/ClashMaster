@@ -19,15 +19,28 @@ from typing import Any, Mapping
 from .contracts import ContractError, frozen_mapping
 from .paths import PACKAGE_ROOT, WORKSPACE_ROOT
 from .local_config import setting
+from .competitive_release import active_release
 
 DATA_ROOT = PACKAGE_ROOT / "data" / "competitive"
 GENERATED_DATA_ROOT = Path(setting("CR_COMPETITIVE_DATA_ROOT", str(DATA_ROOT)))
 MANIFEST_SHA256 = "699c0c77cc5d2ec9a475ec0d10875f9e38710af9fc5472cc3431276384c89b78"
 _verified_files: ContextVar[set[tuple[Path, str]] | None] = ContextVar("competitive_verified_files", default=None)
 
+# Runtime identity files always come from the active release root when one is
+# selected; the compiled facts follow GENERATED_DATA_ROOT otherwise.
+_FIXED_ROOT_NAMES = frozenset({"card_support", "form_evidence", "runtime"})
+
+
+def _roots() -> tuple[Path, Path]:
+    release = active_release()
+    if release is not None:
+        return release.data_root, release.data_root
+    return DATA_ROOT, GENERATED_DATA_ROOT
+
 
 def _data_path(name: str) -> Path:
-    root = DATA_ROOT if name in {"card_support", "form_evidence", "runtime"} else GENERATED_DATA_ROOT
+    fixed_root, generated_root = _roots()
+    root = fixed_root if name in _FIXED_ROOT_NAMES else generated_root
     path = root / f"{name}.json"
     return path if path.is_file() else path.with_suffix(".json.gz")
 
@@ -60,12 +73,19 @@ def _verify_file(path: Path, expected: str) -> None:
         verified.add(key)
 
 
-@lru_cache(maxsize=1)
-def _manifest() -> Mapping[str, Any]:
-    raw = (DATA_ROOT / "manifest.json").read_bytes()
-    if hashlib.sha256(raw).hexdigest() != MANIFEST_SHA256:
+@lru_cache(maxsize=8)
+def _manifest_for(root: Path, digest: str) -> Mapping[str, Any]:
+    raw = (root / "manifest.json").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != digest:
         raise ContractError("competitive data manifest SHA-256 mismatch")
     return frozen_mapping(json.loads(raw))
+
+
+def _manifest() -> Mapping[str, Any]:
+    release = active_release()
+    if release is not None:
+        return _manifest_for(release.data_root, release.manifest_sha256)
+    return _manifest_for(DATA_ROOT, MANIFEST_SHA256)
 
 
 def validate_competitive_sources(workspace_root: str | Path | None = None) -> Mapping[str, Any]:

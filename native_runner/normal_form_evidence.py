@@ -220,29 +220,29 @@ def build_normal_mode_policy_form_evidence(
     """Bind the compiled 62-form evidence to the exact active catalog."""
     # Lazy imports keep the shared native bindings safe during initialization.
     from .competitive_data import load_competitive_data
+    from .competitive_release import current_identity
     from .semantic_subset import (
-        NORMAL_MODE_POLICY_ABILITY_SPECS_HASH,
-        NORMAL_MODE_POLICY_CARD_SPECS_HASH,
-        NORMAL_MODE_POLICY_SOURCE_RELEASE,
         NormalModePolicyFormEvidenceV1,
         SemanticSubsetError,
         load_normal_mode_policy_readiness,
     )
 
-    if catalog.source_release != NORMAL_MODE_POLICY_SOURCE_RELEASE:
+    identity = current_identity()
+    if catalog.source_release != identity.source_release:
         raise SemanticSubsetError("normal-mode form evidence source-release identity mismatch")
     if (
-        catalog.specs_hash != NORMAL_MODE_POLICY_CARD_SPECS_HASH
-        or catalog.ability_specs_hash != NORMAL_MODE_POLICY_ABILITY_SPECS_HASH
+        catalog.specs_hash != identity.card_specs_hash
+        or catalog.ability_specs_hash != identity.ability_specs_hash
     ):
         raise SemanticSubsetError("normal-mode form evidence catalog identity mismatch")
     canonical_readiness = load_normal_mode_policy_readiness()
     if readiness is not None and readiness != canonical_readiness:
         raise SemanticSubsetError("normal-mode form evidence readiness partition mismatch")
     compiled = load_competitive_data("form_evidence")
-    if content_hash(dict(catalog.source_files)) != compiled["catalog_source_files_sha256"]:
+    expected_sources = identity.catalog_source_files_sha256 or compiled["catalog_source_files_sha256"]
+    if content_hash(dict(catalog.source_files)) != expected_sources:
         raise SemanticSubsetError("normal-mode form evidence source-file identity mismatch")
     evidence = NormalModePolicyFormEvidenceV1.from_mapping(compiled["evidence"])
-    if evidence.evidence_id != NORMAL_MODE_POLICY_FORM_EVIDENCE_SHA256:
+    if identity.form_evidence_sha256 is not None and evidence.evidence_id != identity.form_evidence_sha256:
         raise SemanticSubsetError("canonical normal-mode form evidence identity drifted")
     return evidence

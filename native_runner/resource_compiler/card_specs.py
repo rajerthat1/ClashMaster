@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 import re
 import tomllib
+from . import toml_assets
 from typing import Any
 
 try:  # Repository tooling dependency; plaintext captures remain a fallback.
@@ -386,7 +387,7 @@ def _load_definition_fragments(
             plain = _asset_bytes(path)
             if plain is None:
                 continue
-            document = tomllib.loads(plain.decode("utf-8-sig").rstrip("\x00\r\n\t "))
+            document = toml_assets.loads(plain.decode("utf-8-sig").rstrip("\x00\r\n\t "))
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
             raise ContractError(f"invalid decompressed definition TOML {path}: {error}") from error
         for group in definitions:

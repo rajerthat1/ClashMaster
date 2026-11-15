@@ -1,0 +1,16 @@
+{
+  "version": "firstlight-native-build.v1",
+  "client_version": "16.635.1",
+  "package": "nullsroyale.rel.free",
+  "abi": "arm64-v8a",
+  "libg_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
+  "libg_build_id": "179ac4bd38c205bc5041d372a79f1c2f929b1c30",
+  "probe_sha256": "b80f2bdb02fabc0562e89f9c74f68ec1abcdaed2f0b7dc452f698e6ccef8928a",
+  "content_version": "16.635.93",
+  "content_fingerprint_sha256": "553c8f15afda43629f6136ddbae14c0f16e701c58f1df11108af3ed5414004b4",
+  "content_assets_sha256": "1bac8864ece57cf17edd015fe07cc4debf14d0c6251025d833b493bb752d6d0b",
+  "content_manifest_sha1": "b54188c6d2744af7c28adcd436be73f120915c44",
+  "combat_ring_hooks": false,
+  "content_adaptation": "Card, effect and projectile catalogs stay on the pinned 15.535.86 release. Live 16.635.1 deck ids, forms and costs match at level 11 (docs/native/16.635.1/FINDINGS.md); Electro Spirit HP differs (215 vs 217). Rebuild the catalogs when 16.635.93 csv_logic assets are available locally.",
+  "evidence": "docs/native/16.635.1/FINDINGS.md sections 3.10, 3.13, 3.34 and 3.36; live attestation on SM-A515U, 2026-11-14. Probe b80f2bdb… carries the 16.635 rich-telemetry vtable anchors so entity/projectile classification matches the x86_64 engine."
+}

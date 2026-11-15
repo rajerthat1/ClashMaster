@@ -36,6 +36,7 @@ from pathlib import Path
 import re
 import sqlite3
 import tomllib
+from . import toml_assets
 from typing import Any, ClassVar
 
 from native_runner.resource_compiler.card_specs import (
@@ -767,7 +768,7 @@ def _load_logic_registry(
                         failures.append({"source": relative, "reason": "decoded_plaintext_unavailable"})
                 continue
             try:
-                document = tomllib.loads(plain.decode("utf-8-sig").rstrip("\x00\r\n\t "))
+                document = toml_assets.loads(plain.decode("utf-8-sig").rstrip("\x00\r\n\t "))
             except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
                 if default_namespace is not None:
                     failures.append(

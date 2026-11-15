@@ -16,6 +16,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -218,6 +219,11 @@ class RulesetManifestV1(ContractMixin):
         for group, values in self.files.items():
             for name, expected in values.items():
                 if group in {"engine", "data", "visual"} and pinned_sources.get(name) == expected:
+                    continue
+                # Native build pins describe bytes that stay on the Android
+                # device (libg.so, downloaded content); the live attestation
+                # verifies them. See build_native_ruleset_manifest.
+                if group in {"engine", "data", "visual"} and name.startswith(_DEVICE_RESIDENT_PREFIX):
                     continue
                 path = Path(name)
                 if not path.is_absolute():
@@ -451,6 +457,191 @@ def build_ruleset_manifest(
         contract_versions=contract_versions,
         files=file_groups,
         config=default_config,
+    )
+
+
+DEFAULT_NATIVE_BUILD_RELEASES = PACKAGE_ROOT / "versions"
+_NATIVE_BUILD_SCHEMA = "firstlight-native-build.v1"
+_DEVICE_RESIDENT_PREFIX = "device-resident/"
+DEFAULT_NATIVE_BUILD_ABI = "arm64-v8a"
+
+
+def native_build_release_path(client_version: str, abi: str = DEFAULT_NATIVE_BUILD_ABI) -> Path:
+    """Return the checked-in build pin for one ABI of a live client version.
+
+    The A51 (``arm64-v8a``) keeps the unsuffixed file; other ABIs have their own
+    pin, e.g. ``native-16.635.1-x86_64.json`` for the official x86_64 engine.
+    """
+
+    suffix = "" if abi == DEFAULT_NATIVE_BUILD_ABI else f"-{abi}"
+    return DEFAULT_NATIVE_BUILD_RELEASES / f"native-{client_version}{suffix}.json"
+
+
+def _selected_native_build_abi(abi: str | None = None) -> str:
+    return str(abi or os.environ.get("CR_NATIVE_BUILD_ABI") or DEFAULT_NATIVE_BUILD_ABI)
+
+
+def load_native_build_profile(
+    client_version: str,
+    *,
+    release_path: str | Path | None = None,
+    abi: str | None = None,
+) -> Mapping[str, Any] | None:
+    """Load a pinned native build identity, or ``None`` when no pin exists.
+
+    The pin contains the identity of bytes that live on the Android device
+    (``libg.so``, the probe, and the downloaded content pack), so a missing pin
+    means "this client has no reviewed native ruleset yet" rather than a
+    reason to invent one.
+    """
+
+    selected_abi = _selected_native_build_abi(abi)
+    path = (
+        Path(release_path)
+        if release_path is not None
+        else native_build_release_path(client_version, selected_abi)
+    )
+    if not path.is_absolute():
+        path = WORKSPACE_ROOT / path
+    if not path.is_file():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if value.get("version") != _NATIVE_BUILD_SCHEMA:
+        raise ContractError(f"unsupported native build pin: {path}")
+    if str(value.get("client_version")) != client_version:
+        raise ContractError(f"native build pin {path} does not match client {client_version!r}")
+    if not str(value.get("package", "")).strip() or not str(value.get("abi", "")).strip():
+        raise ContractError(f"native build pin {path} must name its package and abi")
+    if str(value.get("abi")) != selected_abi:
+        raise ContractError(
+            f"native build pin {path} describes abi {value.get('abi')!r}, not the selected {selected_abi!r}"
+        )
+    for name in (
+        "libg_sha256",
+        "probe_sha256",
+        "content_fingerprint_sha256",
+        "content_assets_sha256",
+    ):
+        if not _SHA256.fullmatch(str(value.get(name, ""))):
+            raise ContractError(f"native build pin {path} has an invalid {name}")
+    for name in ("libg_build_id", "content_manifest_sha1"):
+        if not _SHA1.fullmatch(str(value.get(name, ""))):
+            raise ContractError(f"native build pin {path} has an invalid {name}")
+    if not str(value.get("content_version", "")).strip():
+        raise ContractError(f"native build pin {path} is missing content_version")
+    return frozen_mapping(value)
+
+
+def build_native_ruleset_manifest(
+    workspace_root: str | Path | None = None,
+    *,
+    client_version: str = "16.635.1",
+    catalog: CardSpecCatalog | None = None,
+    ruleset_version: str | None = None,
+    release_path: str | Path | None = None,
+    abi: str | None = None,
+    config: Mapping[str, Any] | None = None,
+    environment_config: Mapping[str, Any] | EnvironmentConfigV1 | None = None,
+) -> RulesetManifestV1:
+    """Bind FirstLight contracts to a pinned live native build.
+
+    The local card/effect catalogs are release-pinned (15.535.86 today), while
+    the engine, probe and content identities belong to the device build. The
+    manifest therefore records both: ``config["native_build"]`` carries the
+    device identity and ``config["engine_source_release"]`` carries the catalog
+    release, and ``content_adaptation`` states how they differ. This keeps the
+    attestation gate fail-closed instead of silently accepting the 15.535
+    digest table on a 16.635 device.
+    """
+
+    workspace = Path(workspace_root or WORKSPACE_ROOT).resolve()
+    profile = load_native_build_profile(client_version, release_path=release_path, abi=abi)
+    if profile is None:
+        raise ContractError(f"no native build pin for client {client_version!r}")
+
+    base = build_ruleset_manifest(
+        workspace,
+        catalog=catalog,
+        environment_config=environment_config,
+    )
+
+    probe_digest = str(profile["probe_sha256"])
+    installed_probes = [
+        digest for name, digest in base.files.get("simulator", {}).items() if Path(name).name == "libcrprobe.so"
+    ]
+    if installed_probes != [probe_digest]:
+        raise ContractError(
+            "native build pin probe_sha256 does not match the local probe build: "
+            f"expected {probe_digest}, found {installed_probes}"
+        )
+
+    engine = {f"{_DEVICE_RESIDENT_PREFIX}{client_version}/libg.so": str(profile["libg_sha256"])}
+    simulator = dict(base.files["simulator"])
+    data = {
+        name: digest for name, digest in base.files["data"].items() if Path(name).name != "fingerprint.json"
+    }
+    data[f"{_DEVICE_RESIDENT_PREFIX}fingerprint.json"] = str(profile["content_fingerprint_sha256"])
+    visual = {
+        f"{_DEVICE_RESIDENT_PREFIX}assets.scdb": str(profile["content_assets_sha256"]),
+        f"{_DEVICE_RESIDENT_PREFIX}fingerprint.json": str(profile["content_fingerprint_sha256"]),
+    }
+
+    updated_config = dict(base.config)
+    updated_config.update(
+        {
+            "runtime_content_version": str(profile["content_version"]),
+            "runtime_content_manifest_sha1": str(profile["content_manifest_sha1"]),
+            "runtime_libg_build_id": str(profile["libg_build_id"]),
+            "native_build": {
+                "client_version": client_version,
+                "package": str(profile["package"]),
+                "abi": str(profile["abi"]),
+                "libg_sha256": str(profile["libg_sha256"]),
+                "libg_build_id": str(profile["libg_build_id"]),
+                "probe_sha256": probe_digest,
+                "content_version": str(profile["content_version"]),
+                "content_fingerprint_sha256": str(profile["content_fingerprint_sha256"]),
+                "content_assets_sha256": str(profile["content_assets_sha256"]),
+                "content_manifest_sha1": str(profile["content_manifest_sha1"]),
+                "catalog_release": base.config.get("engine_source_release"),
+                "combat_ring_hooks": bool(profile.get("combat_ring_hooks", False)),
+                "content_adaptation": str(profile.get("content_adaptation", "")),
+            },
+        }
+    )
+    if config:
+        updated_config["caller"] = dict(config)
+
+    mode_files = {
+        name: digest
+        for name, digest in data.items()
+        if Path(name).name in {"game_modes.csv", "battle_timelines.csv", "arenas.csv", "arenas_alt.csv"}
+    }
+    return RulesetManifestV1(
+        ruleset_version=ruleset_version or str(profile["content_version"]),
+        engine_build_hash=_component_hash(engine),
+        simulator_build_hash=_component_hash(simulator),
+        card_schema_hash=base.card_schema_hash,
+        observation_contract_hash=base.observation_contract_hash,
+        action_contract_hash=base.action_contract_hash,
+        tick_rng_latency_rules_hash=base.tick_rng_latency_rules_hash,
+        card_specs_hash=base.card_specs_hash,
+        ability_specs_hash=base.ability_specs_hash,
+        slot_rules_hash=base.slot_rules_hash,
+        legal_action_schema_hash=base.legal_action_schema_hash,
+        elixir_rules_hash=base.elixir_rules_hash,
+        mode_map_hash=_component_hash(mode_files, {"fallback": "mode id remains trajectory metadata"}),
+        visual_asset_pack_hash=_component_hash(visual),
+        card_spec_count=base.card_spec_count,
+        contract_versions=base.contract_versions,
+        files={
+            **{group: dict(values) for group, values in base.files.items()},
+            "engine": engine,
+            "simulator": simulator,
+            "data": data,
+            "visual": visual,
+        },
+        config=updated_config,
     )
 
 

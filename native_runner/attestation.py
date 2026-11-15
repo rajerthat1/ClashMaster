@@ -92,8 +92,14 @@ def verify_runner_attestation(
     actual = attestation if isinstance(attestation, RunnerAttestationV1) else attestation_from_response(attestation)
     if not actual.production_ready:
         raise RunnerAttestationError("native runner is not production-ready: content, hook, or hash gate failed")
-    if actual.package_name != "nullsroyale.rel.free" or actual.abi != "arm64-v8a":
-        raise RunnerAttestationError(f"native runner package/ABI mismatch: {actual.package_name!r}/{actual.abi!r}")
+    native_build = manifest.config.get("native_build") or {}
+    expected_package = str(native_build.get("package", "nullsroyale.rel.free"))
+    expected_abi = str(native_build.get("abi", "arm64-v8a"))
+    if actual.package_name != expected_package or actual.abi != expected_abi:
+        raise RunnerAttestationError(
+            f"native runner package/ABI mismatch: {actual.package_name!r}/{actual.abi!r} "
+            f"(manifest expects {expected_package!r}/{expected_abi!r})"
+        )
 
     expected = {
         "libg_sha256": _unique_hash(manifest.files.get("engine", {}), "libg.so", group="engine"),

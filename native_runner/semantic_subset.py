@@ -24,6 +24,7 @@ from typing import Any, ClassVar
 
 from .card_specs import CATALOG_VERSION, CardSpecCatalog
 from .competitive_data import competitive_data_initialization, load_competitive_data
+from .competitive_release import active_release, current_identity
 from .runtime_scope import NORMAL_MODE_CASE_SCOPE_SHA256
 from .contracts import CardKind, CardSpecV1, ContractError, ContractMixin, content_hash
 
@@ -326,11 +327,12 @@ class NormalModePolicyFormEvidenceV1(ContractMixin):
     def __post_init__(self) -> None:
         if not self.criteria_version:
             raise SemanticSubsetError("form evidence requires a criteria version")
-        if self.mechanics_readiness_report_id != NORMAL_MODE_POLICY_MECHANICS_READINESS_REPORT_ID:
+        identity = current_identity()
+        if self.mechanics_readiness_report_id != identity.mechanic_readiness_report_id:
             raise SemanticSubsetError("form evidence mechanics readiness identity mismatch")
-        if self.card_specs_hash != NORMAL_MODE_POLICY_CARD_SPECS_HASH:
+        if self.card_specs_hash != identity.card_specs_hash:
             raise SemanticSubsetError("form evidence card-spec identity mismatch")
-        if self.ability_specs_hash != NORMAL_MODE_POLICY_ABILITY_SPECS_HASH:
+        if self.ability_specs_hash != identity.ability_specs_hash:
             raise SemanticSubsetError("form evidence ability-spec identity mismatch")
         cards = tuple(
             sorted(
@@ -400,20 +402,19 @@ def _require_mapping(value: Any, label: str) -> Mapping[str, Any]:
     return value
 
 
-@lru_cache(maxsize=1)
-def load_normal_mode_policy_readiness() -> NormalModePolicyReadinessV1:
-    """Load the compact supported-card manifest, verified by competitive_data."""
+def _load_readiness(name: str) -> NormalModePolicyReadinessV1:
     manifest = load_competitive_data("card_support")
     compatibility = manifest["compatibility"]
+    identity = current_identity()
     names = {row["card_id"]: row["name"] for row in manifest["supported_cards"]}
     excluded_names = {row["card_id"]: row["name"] for row in manifest["excluded_cards"]}
     if (
         manifest["version"] != "competitive-card-support.v1"
-        or compatibility["mechanics_readiness_report_id"] != NORMAL_MODE_POLICY_MECHANICS_READINESS_REPORT_ID
-        or compatibility["static_catalog_id"] != NORMAL_MODE_POLICY_STATIC_CATALOG_ID
-        or compatibility["case_scope_id"] != NORMAL_MODE_POLICY_CASE_SCOPE_ID
-        or frozenset(names) != NORMAL_MODE_POLICY_CARD_IDS
-        or frozenset(excluded_names) != NORMAL_MODE_POLICY_EXCLUDED_CARD_IDS
+        or compatibility["mechanics_readiness_report_id"] != identity.mechanic_readiness_report_id
+        or compatibility["static_catalog_id"] != identity.static_catalog_id
+        or compatibility["case_scope_id"] != identity.case_scope_id
+        or frozenset(names) != identity.policy_card_ids
+        or frozenset(excluded_names) != identity.excluded_card_ids
     ):
         raise SemanticSubsetError("card support compatibility identity mismatch")
     return NormalModePolicyReadinessV1(
@@ -430,10 +431,34 @@ def load_normal_mode_policy_readiness() -> NormalModePolicyReadinessV1:
     )
 
 
+_READINESS_BY_RELEASE: dict[str, NormalModePolicyReadinessV1] = {}
+
+
+def load_normal_mode_policy_readiness() -> NormalModePolicyReadinessV1:
+    """Load the compact supported-card manifest, verified by competitive_data."""
+
+    release = active_release()
+    if release is None:
+        return _load_readiness("legacy")
+    cached = _READINESS_BY_RELEASE.get(release.name)
+    if cached is None:
+        cached = _load_readiness(release.name)
+        _READINESS_BY_RELEASE[release.name] = cached
+    return cached
+
+
+def _clear_readiness_cache() -> None:
+    _READINESS_BY_RELEASE.clear()
+
+
+# Keep the historical lru_cache-compatible surface used by tests/tools.
+load_normal_mode_policy_readiness.cache_clear = _clear_readiness_cache  # type: ignore[attr-defined]
+
+
 def policy_ready_form_mask(card_id: int, *, form_evidence: NormalModePolicyFormEvidenceV1 | None = None) -> int:
     """Return only the form bits backed by the versioned form evidence."""
 
-    evidence = form_evidence or DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE
+    evidence = form_evidence or default_form_evidence()
     return evidence.form_masks.get(int(card_id), 0)
 
 
@@ -713,12 +738,13 @@ class SemanticSupportedSubsetV1(ContractMixin):
             raise SemanticSubsetError("semantic subset catalog identity mismatch")
         evidence = form_evidence
         if evidence is None:
+            canonical = default_form_evidence()
             if (
-                self.form_evidence_version != DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.criteria_version
-                or self.form_evidence_sha256 != DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.evidence_id
+                self.form_evidence_version != canonical.criteria_version
+                or self.form_evidence_sha256 != canonical.evidence_id
             ):
                 raise SemanticSubsetError("non-default form evidence is required to verify this subset")
-            evidence = DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE
+            evidence = canonical
         if self.form_evidence_version != evidence.criteria_version or self.form_evidence_sha256 != evidence.evidence_id:
             raise SemanticSubsetError("semantic subset form evidence mismatch")
         expected = build_semantic_supported_subset(catalog, form_evidence=evidence)
@@ -798,15 +824,16 @@ class SemanticSupportedSubsetV1(ContractMixin):
 
 
 def _validate_policy_catalog(catalog: CardSpecCatalog, readiness: NormalModePolicyReadinessV1) -> None:
+    identity = current_identity()
     if (
         catalog.version != CATALOG_VERSION
-        or catalog.specs_hash != NORMAL_MODE_POLICY_CARD_SPECS_HASH
-        or catalog.ability_specs_hash != NORMAL_MODE_POLICY_ABILITY_SPECS_HASH
-        or catalog.source_release != NORMAL_MODE_POLICY_SOURCE_RELEASE
+        or catalog.specs_hash != identity.card_specs_hash
+        or catalog.ability_specs_hash != identity.ability_specs_hash
+        or catalog.source_release != identity.source_release
     ):
         raise SemanticSubsetError("card catalog is not the definition set bound to policy readiness")
     catalog_ids = frozenset(spec.card_id for spec in catalog.specs)
-    if catalog_ids != (NORMAL_MODE_POLICY_CARD_IDS | NORMAL_MODE_POLICY_EXCLUDED_CARD_IDS):
+    if catalog_ids != (identity.policy_card_ids | identity.excluded_card_ids):
         raise SemanticSubsetError("policy readiness catalog partition drifted")
     for spec in catalog.specs:
         unavailable = bool(spec.attributes.get("NotVisible") or spec.attributes.get("NotInUse"))
@@ -876,7 +903,7 @@ def build_semantic_supported_subset(
 
     readiness = load_normal_mode_policy_readiness()
     _validate_policy_catalog(catalog, readiness)
-    forms = form_evidence or DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE
+    forms = form_evidence or default_form_evidence()
     validate_normal_mode_policy_form_evidence(catalog, forms, readiness=readiness)
     allowed: list[SemanticSupportedCardV1] = []
     excluded: list[SemanticSupportedCardV1] = []
@@ -913,12 +940,35 @@ from .normal_form_evidence import build_normal_mode_policy_form_evidence, NORMAL
 
 # Build the canonical 62-card form contract only after all semantic contract
 # types and readiness validators exist, then pin the resulting content hash.
-with competitive_data_initialization():
-    DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE = build_normal_mode_policy_form_evidence(build_card_catalog())
-if DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.evidence_id != NORMAL_MODE_POLICY_FORM_EVIDENCE_SHA256:
-    raise SemanticSubsetError(
-        f"canonical normal-mode form evidence identity drifted: {DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.evidence_id}"
+# A named release builds its own evidence lazily via ``default_form_evidence``.
+if active_release() is None:
+    with competitive_data_initialization():
+        DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE = build_normal_mode_policy_form_evidence(build_card_catalog())
+    if DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.evidence_id != NORMAL_MODE_POLICY_FORM_EVIDENCE_SHA256:
+        raise SemanticSubsetError(
+            f"canonical normal-mode form evidence identity drifted: {DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.evidence_id}"
+        )
+    NORMAL_MODE_POLICY_FORM_MASKS: Mapping[int, int] = MappingProxyType(
+        dict(DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.form_masks)
     )
-NORMAL_MODE_POLICY_FORM_MASKS: Mapping[int, int] = MappingProxyType(
-    dict(DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE.form_masks)
-)
+else:  # pragma: no cover - only reachable if a process starts inside a release
+    DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE = None  # type: ignore[assignment]
+    NORMAL_MODE_POLICY_FORM_MASKS = MappingProxyType({})
+
+_RELEASE_FORM_EVIDENCE: dict[str, NormalModePolicyFormEvidenceV1] = {}
+
+
+def default_form_evidence() -> NormalModePolicyFormEvidenceV1:
+    """Form evidence for the active release (cached per release)."""
+
+    release = active_release()
+    if release is None:
+        if DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE is None:  # pragma: no cover
+            raise SemanticSubsetError("legacy form evidence was not initialised")
+        return DEFAULT_NORMAL_MODE_POLICY_FORM_EVIDENCE
+    cached = _RELEASE_FORM_EVIDENCE.get(release.name)
+    if cached is None:
+        with competitive_data_initialization():
+            cached = build_normal_mode_policy_form_evidence(build_card_catalog())
+        _RELEASE_FORM_EVIDENCE[release.name] = cached
+    return cached

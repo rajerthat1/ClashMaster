@@ -617,9 +617,12 @@ class AbilityCatalogV1:
         )
 
     @classmethod
-    def from_card_spec_catalog(cls, card_catalog: CardSpecCatalog) -> "AbilityCatalogV1":
+    def from_card_spec_catalog(
+        cls, card_catalog: CardSpecCatalog, *, require_frozen_baseline: bool = True
+    ) -> "AbilityCatalogV1":
         return cls.from_specs(
-            normal_mode_card_specs(card_catalog.by_id, require_frozen_baseline=True), card_catalog.abilities
+            normal_mode_card_specs(card_catalog.by_id, require_frozen_baseline=require_frozen_baseline),
+            card_catalog.abilities,
         )
 
     @classmethod
@@ -902,9 +905,10 @@ class EntityArchetypeCatalogV1:
         *,
         static_logic: "StaticCardLogicCatalogV1",
         projectile_catalog: "NativeProjectileCatalogV1",
+        require_frozen_baseline: bool = True,
     ) -> "EntityArchetypeCatalogV1":
         return cls.from_card_specs(
-            normal_mode_card_specs(card_catalog.by_id, require_frozen_baseline=True),
+            normal_mode_card_specs(card_catalog.by_id, require_frozen_baseline=require_frozen_baseline),
             static_logic=static_logic,
             projectile_catalog=projectile_catalog,
         )
@@ -1045,11 +1049,14 @@ class CardCatalogV1:
         *,
         static_logic: StaticCardLogicCatalogV1 | None = None,
         config: ModelConfigV4 | None = None,
+        require_frozen_baseline: bool = True,
     ) -> "CardCatalogV1":
         """Build every global row from exact static and Ability evidence."""
 
         exact_logic = static_logic or build_static_card_logic_catalog(card_catalog=card_catalog)
-        scoped_specs = normal_mode_card_specs(card_catalog.by_id, require_frozen_baseline=True)
+        scoped_specs = normal_mode_card_specs(
+            card_catalog.by_id, require_frozen_baseline=require_frozen_baseline
+        )
         feature_rows = build_card_feature_rows(
             scoped_specs, static_logic=exact_logic, ability_specs=card_catalog.abilities
         )
