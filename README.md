@@ -23,9 +23,10 @@ the local loop is still one packet per forward. The original x86_64
 **proxy lab** for throughput, reward/league experiments and parity — it cannot
 connect to Null's ladder.
 
-**Next milestone:** widen the collector's batching window (`CR_PPO_INFERENCE_BATCH_WAIT_MS`),
-then rent a small GPU and run the PPO update from a 16.635-contract checkpoint
-with the deck pool + league.
+**Next milestone:** pipeline the collector's per-packet closed loop (the batching
+window was measured and rejected — see `FINDINGS.md` §3.40), then rent a small
+GPU and run the PPO update from a 16.635-contract checkpoint with the deck pool +
+league.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows

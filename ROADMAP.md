@@ -70,12 +70,12 @@ GPU: the production collector is CUDA-graph-only. Compute decision (2026-11-14):
 batched forward is enough, and 6 vCPU covers 4 engines because tensorization
 runs on the engine-node host. L40/A100 buy nothing here.
 
-**Correctness update (2026-11-14 session 6).** Delay-aware candidate legality is
-ported (`FINDINGS.md` §3.39): `B-general-v275` collects at gate temperature 1.0
-with 0 rejected actions — 5/5 single-engine seed segments, and the 4-engine
-shape at 28.5 lane-decisions/s with 3,979 native command parses and 0 failures.
-The collection loop is no longer blocked on legality; the remaining open item is
-the unexplained one-off `env 6` failure (§3.39 diagnostics).
+**Correctness update (2026-11-14 session 7).** Delay-aware candidate legality is
+ported (`FINDINGS.md` §3.39) and the chosen config — gate 1.0, 2 ms window — now
+has **16 consecutive clean 4-engine segments** (5 single-engine + 4-engine + a
+10/10 stress gate with 4,097 native parses / 0 failures, §3.40). Batching at
+250 ms was measured and rejected: it halves forwards but is net slower. The one
+`env 6` and one x86 engine drop did not recur; both stay diagnostic.
 
 **Revised sequencing (2026-11-14 ecosystem audit).** The community already ported
 *this exact client build* (`160635001`) to x86_64, and the artifacts are in
@@ -93,8 +93,9 @@ Updated order (each step unlocks the next):
 | 1 | **DONE** — 16.635 catalogs adopted as a verified release; `B-general-v275` loads and plays | free | 17.5M model loads; native play smoke 0 rejected (`COMPETITIVE_RELEASES.md`) |
 | 2 | **DONE** — 16.635.1 native engine on this Linux host (x86_64 via crx, no bionic bundle); scripted parity seeds 1–5 reproduce the corpus | free | rules/placement **and evaluator** parity pass: the A51 rich-vtable fix makes both General-vs-IL games terminate tick-for-tick with x86 (§3.36) |
 | 2b | **DONE** — x86_64 PPO **worker** path + 16.635 tensorization; `B-general-v275` collects on CPU with 0 UNKNOWN effects | free | engine spec carries `competitive_release`/`model_config`; zero decode/fallback counters (§3.37) |
-| 2c | **DONE** — learner batching measured; four A51 engines coalesce 3.88 packets/forward at a 250 ms window | free | forwards 64 → 33; 20–40 ms does nothing (§3.38) |
-| 2d | **DONE** — delay-aware candidate legality ported; gate temperature 1.0 collects cleanly | free | 5/5 single-engine seed segments; 4-engine shape at 28.5 lane-decisions/s, 3,979 native parses / 0 failures (§3.39) |
+| 2c | **DONE — negative** — the 250 ms window halves forwards (321 → 160, 3.98–4.00 packets/forward) but is **net slower** than the 2 ms default | free | 271 s (2 ms) vs 288–331 s (250 ms); the loop is the lever, not forward count (§3.40) |
+| 2d | **DONE** — delay-aware candidate legality ported; gate temperature 1.0 collects cleanly | free | 5/5 single-engine seeds, 4-engine shape, and a 10/10 stress gate: 4,097 native parses / 0 failures (§3.39, §3.40) |
+| 2e | **DONE** — the 16.635 evaluator path works; `runtime_scope` counts follow the active release | free | `B-general-v275` vs `A-hog26-v738` native terminals at ticks 4703/6112, 0 rejected (§3.40) |
 | 3 | Re-baseline: 400+ paired games on GPU vs General / IL / Hog26 | ~$2 | 0 rejected actions; Wilson intervals reported |
 | 4 | PPO fine-tune from the strongest generalist, league + deck pool | ~$8 | beats frozen baselines over ≥400 paired games |
 | 5 | X-Bow 3.0 specialist lane (self-play + IL anchor, focus decks) | ~$5 | ≥55% vs champion gate, both decks |
@@ -299,7 +300,10 @@ Order of work now:
 4. ~~Adopt 16.635 catalogs + load `B-general-v275` on CPU~~ (done: `docs/native/COMPETITIVE_RELEASES.md`).
 5. ~~Port the x86_64 16.635.1 engine and reproduce the parity corpus~~ (done, §3.35–§3.36).
 6. ~~Port delay-aware candidate legality and validate gate 1.0 collection~~ (done, §3.39).
-7. Rent a GPU and run 400+ paired eval games before any long fine-tune.
+7. ~~Re-measure batching at gate 1.0~~ (done, **negative** — keep 2 ms, §3.40).
+8. Pipeline the learner loop (receive/decode/apply across engines): the measured
+   critical path is the ~390 ms per-packet closed loop, not forward count.
+9. Rent a GPU and run 400+ paired eval games before any long fine-tune.
 
 Rent only when a local segment completes in <10 min; do not spend GPU hours on
 CPU-bound prep. Training throughput notes and the portable `ever_*` techniques

@@ -86,6 +86,20 @@ do not start another R0 run.
 > `CR_PPO_FAILURE_DUMP` now captures the failing actions if it returns. See
 > `FINDINGS.md` §3.39.
 
+> **2026-11-14 (session 7): the batching window is a dead end; the closed loop is
+> the critical path.** The combined config the GPU job would use — gate 1.0 +
+> delay-aware + 250 ms — halves forwards (321 → 160) and reaches 3.98–4.00
+> packets/forward, but is **net slower** than the 2 ms default (271 s vs
+> 288–331 s): the added wait exceeds the saved per-forward cost because the CPU
+> model is row-bound, not forward-bound. **Keep 2 ms.** On a GPU the forward is
+> ~2 ms, so a fixed 250 ms window can only lose; the paid run's 416 ms/packet was
+> ~390 ms of loop bookkeeping, not forward count. The 16.635 evaluator was also
+> fixed (release scope for the ruleset manifest and `BattleEnvV1`, release-aware
+> `runtime_scope` counts); seeds 7 and 21 ran `B-general-v275` vs
+> `A-hog26-v738` to native terminals with 0 rejected. A **10-segment stress gate**
+> at the chosen config is 10/10 clean (4,097 native parses, 0 failures, no
+> `env 6`), so the GPU gate is unblocked. See `FINDINGS.md` §3.40.
+
 ---
 
 ## Ecosystem audit — 2026-11-14 (`CRkonwledagebase`)
@@ -234,8 +248,8 @@ Yes — but as a **parity oracle**, not the training engine.
 | PPO trainer on this host | **CPU-blocked** (collector is CUDA/NCCL-only), but a **full update ran on a rented A6000** with 0 rejected actions (`runs/gpu-smoke-20261114/`); throughput is the open problem, not correctness |
 | x86 PPO worker path | **working** — zlib is preloaded `RTLD_GLOBAL` in `crx_engine_host.py` (a `RTLD_LOCAL` preload made crx's stub return `Z_OK` with a zero-byte payload); the host now fails closed if the probe's zlib imports are unresolved (§3.37) |
 | 16.635 remote training | **working on CPU** — engine specs carry `competitive_release` + `model_config`; `B-general-v275` collects through the worker with 0 UNKNOWN effects, 29 lane-decisions/s, 1 engine × 8 lanes (§3.37) |
-| Learner-loop batching | **measured** — 4 A51 engines + `CR_PPO_INFERENCE_BATCH_WAIT_MS=250`: **3.88 packets/forward, 33 forwards instead of 64**; 20–40 ms does nothing (§3.38) |
-| Full-rate ACT collection | **working** — `delay_aware_legality` ported (decoder + env + expert, §3.39); gate 1.0 is clean on 5/5 single-engine seeds and the 4-engine shape (28.5 lane-decisions/s, 3,979 native parses / 0 failures). One post-port `env 6` failure did not reproduce; `CR_PPO_FAILURE_DUMP` captures it next time |
+| Learner-loop batching | **measured; not a win** — 250 ms + gate 1.0 coalesces **3.98–4.00 packets/forward, 321 → 160 forwards**, but the added wait makes it **slower than 2 ms** (271 s vs 288–331 s, §3.40). Keep 2 ms; the lever is loop pipelining, not forward coalescing |
+| Full-rate ACT collection | **working** — `delay_aware_legality` ported (decoder + env + expert, §3.39); gate 1.0 is clean on 5/5 single-engine seeds, the 4-engine shape, and a **10/10 stress gate** (4,097 native parses / 0 failures, 16 consecutive clean segments). The one post-port `env 6` did not recur; `CR_PPO_FAILURE_DUMP` stays armed |
 | 16.635.1 x86_64 engine | **running on this host** — `.resource/Clashback/game/engine/libg.so` (sha `c4721bd9…`) booted headless by the crx ELF loader in 0.3 s; no Android/bionic bundle needed |
 | 16.635.1 x86_64 probe | **built** — `native_runner/probe/out/x86_64/libcrprobe.so` (`cd303311…`), `--abi x86_64`; all runner hooks install, `attest` reports `production_ready: true` |
 | x86_64 multi-engine host | **working** — `crx_engine_host.py --engine-index N` binds engine N to port `26789+N` and CPU N; two concurrent engines verified with one worker run (§3.38) |
@@ -1094,9 +1108,10 @@ Scale options, in order of leverage:
 - Do not read §3.30's 12–14 matches/s as a training decision rate: it was
   measured at 600 ticks per RPC. At the PPO 5-tick cadence four A51 engines are
   worth **0.26 matches/s** and one x86_64 process **0.61**.
-- Do not expect a 20–40 ms inference window to coalesce four engines. It stays
-  at 2.0 packets/forward; 250 ms is the measured knee for four 8-lane A51
-  engines (§3.38). Re-measure, do not assume, when engine count changes.
+- Do not raise `CR_PPO_INFERENCE_BATCH_WAIT_MS` to coalesce engines. 250 ms does
+  hit 4.0 packets/forward, but the wait costs more than the saved forward: it is
+  net slower than 2 ms on both row-bound CPU and a ~2 ms GPU forward (§3.40).
+  Keep the default and pipeline the loop instead.
 - Do not collect `B-general-v275` at gate temperature 1.0 without the
   delay-aware legality port — it is now in place (§3.39). If an
   `env N ... resident batch step or atomic capture failed` appears again, set

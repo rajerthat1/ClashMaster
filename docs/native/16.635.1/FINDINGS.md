@@ -2251,3 +2251,74 @@ occurrence cheap to identify:
   parse/injection rejection from a step-bound or capture failure; the current
   batch error string still collapses those three stages and should be split in
   the probe if the failure recurs.
+
+### 3.40 The batching window is not a win; the closed loop is the critical path (2026-11-14)
+
+Session 5 measured the window at gate temperature 0.2, before delay-aware
+legality landed; session 6 measured gate 1.0 at the 2 ms default. This run is
+the combination the GPU job would actually use: **gate 1.0 + delay-aware +
+`CR_PPO_INFERENCE_BATCH_WAIT_MS`**, 4 A51 engines × 8 lanes × 40 decisions,
+`B-general-v275`, seed 1–3, plus a 2 ms control on the same cluster. Evidence:
+`runs/delay-aware-20261114/combined/`.
+
+| Config | Wall s | Lane-dec/s | Packets/fwd | Forwards | Model s | Ready-wait s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 250 ms, seed 1 | 287.8 | 35.6 | **4.00** | 160 | 223.0 | 60.9 |
+| 250 ms, seed 2 | 309.8 | 33.1 | 3.98 | 161 | 233.2 | 72.5 |
+| 250 ms, seed 3 | 331.2 | 30.9 | 3.98 | 161 | 251.6 | 74.4 |
+| **2 ms control, seed 1** | **271.0** | **37.8** | 1.99 | 321 | 250.7 | **14.8** |
+| §3.39 2 ms baseline | 359.5 | 28.5 | 1.99 | 321 | 337.2 | 16.1 |
+
+**The window does exactly what it was designed to do and still loses.** Forwards
+fall 321 → 160 and packets/forward reach 3.98–4.00, but the added wait (up to
+0.25 s per forward, ~40 s, against an observed `ready_wait` increase of 46–60 s)
+is larger than the saved per-forward cost: the model time only falls from 251 s
+to 223–252 s. The reason is structural: the row count is fixed (10,240 frames)
+and the CPU model is row-bound, so halving forwards cannot halve model time. The
+per-forward fixed cost is ~0.17 s here, below the 0.25 s window. **Keep the 2 ms
+default.**
+
+The same logic rules the window out on a GPU: a batched forward there is ~2 ms,
+so paying 250 ms to coalesce it can only add latency. The GPU smoke's 416 ms per
+packet was **model 27 ms + closed-loop bookkeeping ~390 ms**, not forward count.
+The next lever is therefore pipelining receive/decode/apply across engines, not
+coalescing forwards.
+
+Seed-to-seed variance is real (287.8–331.2 s for one config), so treat the ~6 %
+delta as directional, not precise; the structural argument above is what decides
+it. All three 250 ms gate-1.0 segments completed with no `resident batch`
+failures.
+
+**Also fixed in this session.** The 16.635 evaluator path had never been
+exercised (the only prior model gate was 15.535 General-vs-IL). It failed
+closed in three places, now fixed: `build_native_ruleset_manifest` reads
+`card_logic`/runtime data outside the release scope, `BattleEnvV1` verifies its
+subset against the active release's form evidence, and `runtime_scope` hard-pins
+152/122 cards. The release scope now wraps both the manifest and the environment,
+and `runtime_scope` takes its counts/partition/case scope from
+`current_identity()` (153/123 on 16.635, 152/122 legacy). With that, seed 7
+completed `B-general-v275` vs `A-hog26-v738` at tick 4703 with 0 rejected, and
+seed 21 at tick 6112 (overtime) with 0 rejected.
+
+One x86 engine death remains unexplained: the first pre-flight attempt lost the
+`crx` host at `step 5` with no traceback; the identical rerun completed. Treat it
+like the §3.39 `env 6` one-off — diagnostic, not claimed fixed.
+
+**Stress gate (2 ms + gate 1.0 + delay-aware).** Ten consecutive 4-engine ×
+8-lane × 40-decision segments (seeds 1–10) all completed: mean **311.5 s**
+(270.7–344.2), **29.7–37.8 lane-decisions/s**, 1.99 packets/forward.
+`adb logcat -s CRNativeProbe` recorded **4,097 `parse=success` and 0
+`parse=failure`**, with no `resident batch` errors and no
+`CR_PPO_FAILURE_DUMP` file written. The §3.39 `env 6` did not recur in these ten
+segments (16 consecutive clean segments across both sessions), so the config is
+accepted for the GPU gate — still not claimed fixed.
+
+**Pre-flight baseline (x86_64, CPU).** Four games of `B-general-v275` vs
+`A-hog26-v738`, seeds 31–34, both seats: **2–2**, ticks 4059/3601/6103/4514,
+**0 rejected**, all `native_final_result`. Per-game wall is ~5.4 min on CPU, so
+this is not the volume path; it verifies the evaluator, the release binding and
+the pairing before a GPU run. Evidence:
+`runs/baseline-16635/preflight-4games/`.
+
+
+
