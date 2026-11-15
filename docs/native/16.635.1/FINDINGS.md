@@ -2435,8 +2435,9 @@ and it is neutral (within model noise) wherever it is not a win.
   performance cores).
 - Scripted 1×8 floor is **0.138 matches/s**, 4×8 is **0.278** (profiler units).
   The plan's gates (1× x86 ≥0.45/s, 8× ≥2.5/s) are **not reachable** on this
-  worker path: they are 3–9× above the measured floor, and 2.5/s at 8 engines
-  would need the per-packet worker cost to fall from ~80 ms mean to ~21 ms.
+  worker path: 0.45/s is 5.5× the single-engine floor, and 2.5/s at 8 engines is
+  ~3.8× the 8-engine floor (assuming linear scaling on distinct cores), i.e. the
+  per-packet worker cost must fall from ~80 ms mean to ~21 ms.
   Pipelining is necessary for scale but not sufficient.
 
 **Where the field's 10 matches/s comes from (checked in `.resource`, 2026-11-15).**
