@@ -2857,3 +2857,43 @@ def test_opaque_causal_handle_never_changes_model_tensors() -> None:
             getattr(first_batch.groups, item.name),
             getattr(second_batch.groups, item.name),
         )
+
+
+def test_lean_contract_construction_tensorizes_identically() -> None:
+    """The non-validating training path must not change a single model input."""
+
+    from native_runner.contracts import construct_contract
+
+    def rebuild(item):
+        return construct_contract(
+            type(item),
+            **{contract_field.name: getattr(item, contract_field.name) for contract_field in fields(item)},
+        )
+
+    validated = _observation()
+    lean = rebuild(validated)
+    lean = replace(
+        lean,
+        players=tuple(rebuild(player) for player in validated.players),
+        towers=tuple(rebuild(tower) for tower in validated.towers),
+        entities=tuple(rebuild(entity) for entity in validated.entities),
+    )
+    lean = replace(
+        lean,
+        action_mask=rebuild(validated.action_mask),
+    )
+
+    specs, catalog, abilities, archetypes = _semantic_bundle()[:4]
+    first = _tensorizer(specs, catalog, abilities, archetypes).tensorize(validated)
+    second = _tensorizer(specs, catalog, abilities, archetypes).tensorize(lean)
+
+    for contract_field in fields(first):
+        left = getattr(first, contract_field.name)
+        right = getattr(second, contract_field.name)
+        if isinstance(left, torch.Tensor):
+            assert torch.equal(left, right), contract_field.name
+        else:
+            for nested_field in fields(left):
+                assert torch.equal(
+                    getattr(left, nested_field.name), getattr(right, nested_field.name)
+                ), f"{contract_field.name}.{nested_field.name}"

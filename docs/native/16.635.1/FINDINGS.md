@@ -2642,3 +2642,104 @@ come first.
 Evidence: `runs/step-breakdown/` (`final-lane1-profiled.json`,
 `ab-freeze-*.json`, `gil-lanes-*.json`, `towers-cached-*.json`,
 `verify-towers.json`).
+
+### 3.43 Lean training observations — contract machinery is gone from the policy path (2026-11-15)
+
+§3.42 measured where a packet's CPU goes and named step 2: the observation build
+is dominated by validated, deeply frozen contract objects, and none of that
+machinery is information a policy forward pass consumes. This section removes it
+from the in-process training path only.
+
+#### What changed
+
+- **`contracts.construct_contract`** — a non-validating constructor: it assigns
+  dataclass fields directly and skips `__post_init__`, the `FrozenMapping` freeze
+  walk, domain checks and the provenance coverage audit. Wire/persistence
+  constructors (`cls(...)`, `from_mapping`, `to_dict`) are untouched and still
+  fail closed. A `lean_contracts()` `ContextVar` scope marks construction as
+  non-validating so nested helpers do not have to thread a flag.
+- **`unknown_provenance`** — one shared all-unknown `SemanticProvenanceV1` per
+  field universe (cached). It is immutable, and the training tensorizer never
+  reads provenance.
+- **`project_runtime` / `project_player_runtime`** — take `lean=True`; every
+  typed runtime state and the phase/attack state built inside the scope goes
+  through `construct_contract`, and `_field_provenance` returns the shared
+  unknown record instead of building evidence/source tuples and a cache key.
+- **`BattleEnvV1.observe(policy_features_only=True)`** now builds
+  `EntityStateV1`, `TowerStateV1`, `PlayerStateV1` and `ObservationV1` through
+  `construct_contract`, skips the entity/tower/player provenance trees, the
+  projectile-velocity `replace()` (the tensorizer reads the entity velocity, not
+  the projectile's) and the non-feature public metadata. `action_mask`,
+  `_validate_action` and `_validate_compound_actions` take the same `lean` flag.
+- **Cache hygiene.** Tower projections, the fair scene and the per-owner player
+  runtime are keyed by `(native identity, lean)`, so a lean call can never serve
+  a validated caller. `_native_form_aliases` is cached per snapshot identity and
+  `_hand_runtime_contract` per validated hand selection (16 projections per
+  packet before; both caches are dropped with the rich cache on every advance).
+
+#### Measured
+
+Paired A/B, eight **alternating** stock/lean runs on one x86 engine, one lane,
+`--play-every 4`, warmup dropped, checkpoint `B-general-v275`. CPU ms/packet is
+the stable quantity, but this host swung ~2x between runs during the session
+(browser/background load), so only the adjacent pairs are comparable:
+
+| measurement | stock | lean | delta |
+| --- | ---: | ---: | ---: |
+| CPU ms/packet (median of 8 pairs) | 11.75 | **7.81** | **−33.5 %** |
+| per-pair ratio (median) | — | — | **0.72 (−28 %)** |
+| lane-packets/s | 77.9 | **112.9** | **+45 %** |
+| `step` | 12.66 | 8.70 | −31 % |
+| `observe` | 6.73 | 3.96 | −41 % |
+| `_entities` | 3.43 | 1.37 | −60 % |
+| `_extract_towers` | 1.84 | 1.02 | −44 % |
+| `_players` | 0.60 | 0.27 | −55 % |
+| `_hand_runtime_contract` | 0.39 | 0.25 | −36 % |
+| `_native_form_aliases` | 0.028 | 0.010 | −64 % |
+| `action_mask` | 1.87 | 1.74 | −7 % |
+| `_events_for` | 0.51 | 0.48 | flat |
+| `_advance_headless` (engine round + atomic rich capture) | 3.33 | 3.15 | flat |
+
+At the worker shape (8 lanes, two pairs): **10.55 → 8.23** and
+**12.49 → 9.41** CPU ms/packet, i.e. 75–89 → 97–112 lane-packets/s.
+
+**Gate.** The 8 ms target is met at the median of the quiet window on one lane
+(7.8–7.9) and missed at 8 lanes (8.2–9.4), but it was a single absolute number
+on a host whose load moves the number ~2x; the portable result is the pair ratio
+(−28 %, four pairs −31…−37 %, best-and-worst −5 %). The shape is what matters:
+the observation build is no longer the majority of a packet. One lane is now
+`step` 8.7 = `_advance_headless` 3.1 (engine round + atomic rich parse) +
+`observe` 4.0 + masks/bookkeeping ~1.6.
+
+cProfile confirms the removal: in the training path there is no `_freeze`,
+`validate_fields`, `SemanticProvenanceV1` or contract `__post_init__` row left in
+the top 20. The remaining cost is `_rich_object`/`_phase_object` JSON binding,
+the socket `recv`, `resolve_attack_runtime` and placement geometry — not
+contracts.
+
+#### Parity and tests
+
+The validated path is unchanged: `observe()` still defaults to `lean=False`, so
+the scripted parity seeds and the evaluator construct exactly what they did
+before. `tests/test_training_v4_tensorizer.py` additionally rebuilds a full
+observation (entities, towers, players, action mask) through
+`construct_contract` and asserts the tensorizer emits bit-identical tensors;
+`tests/test_contracts.py` pins that `construct_contract` skips validation while
+`cls(...)` still rejects. Suite: **1,296 passed / 18 skipped** (+3 new tests).
+
+A real-checkpoint segment also ran through the new path end to end:
+`profile_real_collection.py --checkpoint B-general-v275 --lanes 8 --steps 20`
+collected **1,280 owner frames over 80 inference batches**, with 16/16 boundary
+bootstraps and no tensorizer/storage fallback. Evidence:
+`runs/step-breakdown/lean-real-segment.json`.
+
+#### Next
+
+Step 3's per-lane pooling was already shown to be a small fraction (§3.42);
+the measured remaining target is the rich telemetry binding (`_rich_object` +
+`_phase_object`, ~1.5–2.5 ms/packet) and the native round trip (~3 ms). That is
+the fused path — build tensor rows straight from the rich frame instead of
+creating intermediate Python contracts.
+
+Evidence: `runs/step-breakdown/ab-{stock,lean}-{1..8}.json`,
+`ab8-{stock,lean}-{1,2}.json`.

@@ -323,14 +323,24 @@ Order of work now:
       `contracts._freeze` (**+19 % median pkt/s**) and one tower projection per
       tick. **Lanes are GIL-bound** (0.90–0.94 of one core at 1–8 lanes, ≤1.5×),
       so throughput is processes, not lanes.
-   2. thin the observation for training — skip `runtime_provenance` and unused
-      runtime states under `policy_features_only`, non-validating internal
-      constructor, cache the hand runtime contract (3–5 days; gate
-      **CPU ≤8 ms/packet**, parity corpus unchanged); fuse to tensor / C only
-      after that;
-   3. drop per-lane Python thread pooling; parallelise tensorization only where
-      torch releases the GIL, otherwise use processes (1 day; ≤7 ms/16 rows
-      *measured*);
+   2. ~~thin the observation for training~~ (**done 2026-11-15, §3.43**):
+      `policy_features_only` now builds `EntityStateV1`/`TowerStateV1`/
+      `PlayerStateV1`/`ObservationV1` and every runtime state through a
+      non-validating `construct_contract`, skips provenance trees and unused
+      runtime fields, caches the hand runtime contract and form aliases, and
+      keys every observation cache by `(identity, lean)` so validated callers
+      never see a lean object. Paired A/B: **CPU 11.75 → 7.81 ms/packet
+      (median −28…−34 %), 78 → 113 lane-packets/s**; 8 lanes 10.6/12.5 →
+      8.2/9.4 ms. The validated parity path is untouched (`lean=False` default)
+      and the tensorizer is bit-identical. The observation build is still ~4 ms
+      of an ~8.7 ms step; the remainder is native round trip (~3 ms) and rich
+      telemetry binding;
+   3. ~~drop per-lane Python thread pooling~~ — deprioritised: lanes are
+      GIL-bound and the per-packet cost is no longer dominated by pooling.
+      Next measured target is the fused data path: build tensor rows straight
+      from the rich frame and skip the intermediate Python contract objects
+      (daybreak's `native_features.c` shape); parallelise tensorization only
+      where torch releases the GIL, otherwise use processes.
    4. one short GPU session to validate the pipelined CUDA path;
    5. move 8 engines to a real 8-core host (this laptop has 2 P-cores;
       gate ~2/s aggregate);

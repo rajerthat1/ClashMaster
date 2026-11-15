@@ -192,3 +192,44 @@ def test_opponent_belief_round_trip_covers_evolution_and_ability_hypotheses() ->
     )
 
     assert OpponentBeliefV1.from_mapping(belief.to_dict()) == belief
+
+
+def test_construct_contract_skips_validation_but_keeps_defaults() -> None:
+    from native_runner.contracts import EntityStateV1, construct_contract
+
+    lean = construct_contract(
+        EntityStateV1,
+        entity_id=7,
+        owner=0,
+        card_id=26000000,
+        entity_kind="troop",
+        position=(1, 2),
+    )
+    assert lean.entity_id == 7
+    assert lean.internal == {}
+    assert lean.effect_states == ()
+
+    with pytest.raises(ContractError):
+        EntityStateV1(
+            entity_id=-1,
+            owner=0,
+            card_id=26000000,
+            entity_kind="troop",
+            position=(1, 2),
+        )
+
+    with pytest.raises(TypeError):
+        construct_contract(EntityStateV1, entity_id=1)
+
+
+def test_unknown_provenance_is_shared_per_field_universe() -> None:
+    from native_runner.contracts import (
+        ENTITY_RUNTIME_SEMANTIC_FIELDS,
+        SemanticProvenanceV1,
+        unknown_provenance,
+    )
+
+    first = unknown_provenance(ENTITY_RUNTIME_SEMANTIC_FIELDS)
+    assert first is unknown_provenance(ENTITY_RUNTIME_SEMANTIC_FIELDS)
+    assert first is SemanticProvenanceV1.unknown_all(ENTITY_RUNTIME_SEMANTIC_FIELDS)
+    assert first.unknown_fields == tuple(sorted(ENTITY_RUNTIME_SEMANTIC_FIELDS))

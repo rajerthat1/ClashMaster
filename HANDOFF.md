@@ -115,15 +115,54 @@ do not start another R0 run.
 > path; the next lever is the worker's per-packet cost, not the loop. See
 > `FINDINGS.md` §3.41.
 
+> **2026-11-15 (session 11): the training observation is lean, and contract
+> machinery is gone from the policy path.** `policy_features_only` now builds
+> every contract through a non-validating `construct_contract` inside a
+> `lean_contracts()` scope: no validation, no `FrozenMapping` freeze walk, no
+> provenance trees, no projectile-velocity rewrite. The hand runtime contract
+> and native form aliases are cached per tick, and every observation cache is
+> keyed by `(native identity, lean)` so validated callers never see a lean
+> object. Paired A/B (8 alternating runs): **CPU 11.75 → 7.81 ms/packet
+> (median −28…−34 %), 78 → 113 lane-packets/s**; `_entities` −60 %,
+> `_extract_towers` −44 %, `_players` −55 %. At 8 lanes: 10.6/12.5 →
+> 8.2/9.4 ms. The validated path is unchanged (parity seeds and
+> evaluator default to `lean=False`), and a new tensorizer test asserts the lean
+> observation produces bit-identical tensors. Next: fuse the rich frame straight
+> into tensor rows — the remaining cost is the native round trip (~3 ms) and
+> `_rich_object`/`_phase_object` binding, not contracts. See `FINDINGS.md`
+> §3.43.
+
 ---
 
-## Next session (2026-11-16, session 9) — attack the per-packet worker cost
+## Next session (2026-11-16, session 12) — fuse the rich frame into tensor rows
 
-**Read first:** this section, `FINDINGS.md` §3.41, `ROADMAP.md` §7 item 8.
-Suite is **1,293 passed / 18 skipped**. No GPU rented, none needed for the
-first task.
+**Read first:** this section, `FINDINGS.md` §3.42–§3.43, `ROADMAP.md` §7 item 9.
+Suite is **1,296 passed / 18 skipped**. No GPU rented, none needed for the first
+task.
 
-### What session 8 changed
+### What session 11 changed
+
+Step 2 of the data-path plan is done. `policy_features_only` builds every
+contract through `construct_contract` inside a `lean_contracts()` scope, so the
+training path no longer validates, freezes or records provenance; the hand
+runtime contract and form aliases are cached, and observation caches are keyed
+by `(identity, lean)`. Paired A/B: **11.75 → 7.81 CPU ms/packet** (median
+−28…−34 %), **78 → 113 lane-packets/s**; `_entities` −60 %, `_extract_towers`
+−44 %, `_players` −55 %. The full suite and the tensorizer-parity test pass; the
+validated evaluator/parity path is unchanged. See `FINDINGS.md` §3.43 for the
+per-section table and the gate caveat (this host's absolute numbers move ~2x
+with load, so use paired runs).
+
+### The shape of the remaining packet
+
+One lane, quiet host: `step` 8.7 = `_advance_headless` 3.1 (engine round +
+atomic rich capture), `observe` 4.0 (`_entities` 1.4, `_extract_towers` 1.0,
+`_players` 0.3, events 0.5, mask ~1.7), and ~1.6 masks/bookkeeping. cProfile has
+no contract machinery left in the top 20: the hot rows are `_rich_object` /
+`_phase_object` JSON binding, socket `recv`, `resolve_attack_runtime` and
+placement geometry. That is the fused-path target.
+
+### What session 8 changed (historical)
 
 `async_cluster_self_play.py` is now pipelined: one `ppo-inference` thread with
 at most one batch in flight, the coordinator stages every completed receive
@@ -152,6 +191,12 @@ Per packet on one x86 engine: **32 ms native step + observation build, 14 ms
 tensorize, 6 ms channel** — 51 ms median / 82 ms mean. The 2.5/s goal at 8
 engines needs ~21 ms/packet, i.e. the worker cost must roughly halve.
 Pipelining cannot do that; it removes ~12 ms/packet of coordinator idle.
+
+**After §3.43 (lean training observation), paired on this host:** one lane
+**78 → 113 lane-packets/s** (stock → lean), i.e. ~0.11 → ~0.16 ladder-matches/s
+per process at 720 decisions/match; the 8-lane engine shape is 97–112
+lane-packets/s. This is the observation half of the packet; the native round
+trip (~3 ms) and rich telemetry binding are the remaining thin-path target.
 
 ### Judgment — fix the data path, then scale
 
@@ -210,13 +255,35 @@ the engine wait. Throughput is **processes (engines)**, not lanes — the earlie
 "8 lanes ≈ 70 lane-decisions/s ≈ 0.082 matches/s" is one Python core, not the
 engine.
 
+### Session 11 — lean training observations shipped (2026-11-15)
+
+Step 2 is done; see `FINDINGS.md` §3.43.
+
+- `policy_features_only` constructs every contract with `construct_contract`
+  inside a `lean_contracts()` scope: no `__post_init__` validation, no
+  `FrozenMapping` freeze walk, no provenance trees, no projectile-velocity
+  rewrite.
+- `project_runtime` / `project_player_runtime` take `lean=True` and route every
+  typed runtime state (and the phase/attack state) through the same constructor;
+  `unknown_provenance` is one cached shared record per field universe.
+- `_native_form_aliases` is cached per snapshot identity and
+  `_hand_runtime_contract` per validated hand selection (16 → 1 projections per
+  packet); all observation caches are keyed by `(identity, lean)`.
+- Paired A/B, 8 alternating runs: CPU **11.75 → 7.81 ms/packet** (per-pair
+  median −28 %, up to −37 %), **78 → 113 lane-packets/s**. `_entities` 3.43 →
+  1.37, `_extract_towers` 1.84 → 1.02, `_players` 0.60 → 0.27.
+  `_advance_headless` is flat — it is engine + rich capture, not observation.
+- Validated path unchanged: `observe()` defaults to `lean=False`; the scripted
+  parity seeds and evaluator take exactly the old path. New tests pin that a
+  lean observation tensors bit-identically and that `cls(...)` still validates.
+
 ### Task order (revised)
 
 | # | Step | Effort | Gate |
 | --- | --- | --- | --- |
 | 1 | ~~Micro-profile `BattleEnvV1.step`~~ (**done, §3.42**) | — | top-5 functions = the whole observation build |
-| 2 | **Thin the observation for training** — skip `runtime_provenance` and unused runtime states under `policy_features_only`, add a non-validating internal constructor, cache the hand runtime contract, then re-measure. Fuse step→tensor and/or C/numpy only after those numbers. | 3–5 days | **CPU ≤ 8 ms/packet** and parity corpus unchanged |
-| 3 | **Skip per-lane thread pooling for the Python path**; tensorization parallelism only where torch releases the GIL, otherwise use processes. | 1 day | tensorize ≤7 ms/16 rows *measured*, not assumed |
+| 2 | ~~Thin the observation for training~~ (**done, §3.43**) — non-validating constructor, no provenance/unused states under `policy_features_only`, cached hand contract, lean-keyed caches. | done | paired **11.75 → 7.81 CPU ms/packet (−28…−34 %)**; validated parity path untouched; the absolute 8 ms number depends on host load |
+| 3 | **Fuse the rich frame into tensor rows** — the remaining packet is native round trip (~3 ms) plus `_rich_object`/`_phase_object` binding; skip the intermediate Python contracts (daybreak's `native_features.c` shape). Per-lane pooling is deprioritised: lanes are GIL-bound and now a small fraction. | 3–5 days | **CPU ≤ 5 ms/packet** and tensorizer parity |
 | 4 | **One short GPU session** (~1 h, ~$1): validate the pipelined inference thread on CUDA and record the real end-to-end number | 1 h | no graph/stream errors, ≥0.5/s on 1× x86 |
 | 5 | **Move to a real 8-core host** for 8 engines (the engine is a plain x86_64 ELF; this laptop has 2 P-cores). Eight engines = eight processes, which is the parallelism that actually scales. | 1 day | 8 processes ≈ 2/s aggregate |
 | 6 | **400+ paired games on the native engine**, then a **bounded specialist fine-tune** (X-Bow 3.0 or Hog 2.6) before the generalist league | days of GPU | Wilson intervals, 0 rejected |
@@ -247,7 +314,13 @@ after a month of training.
 - Do not add lanes expecting throughput: the worker is GIL-bound (0.90–0.94 of
   one core at 1–8 lanes, best run 1.5×). Add processes (engines) instead.
 - Do not measure the data path with wall time on this laptop while a browser is
-  running; use CPU ms/packet and the section shares. Absolute rates move ±30 %.
+  running; use CPU ms/packet and the section shares, and compare **paired
+  runs** — absolute CPU ms/packet moved ~2x during 2026-11-15 (§3.43), so a
+  stock number taken an hour earlier is not a baseline.
+- Do not build a validated/evaluator observation through `construct_contract`
+  or inside `lean_contracts()`: the training shortcut is only valid for
+  in-process policy rows, and the observation caches are keyed by
+  `(native identity, lean)` precisely so the two cannot mix.
 - Do not run the new inference thread on CUDA until graph capture/replay,
   autocast and the `model_streams` waits are confirmed there.
 - Everything else in "Do not do" below still applies.
@@ -274,6 +347,10 @@ taskset -c 4 .venv/bin/python tools/native_analysis/profile_step_breakdown.py \
     --play-every 4 --profile-dump /tmp/opencode/step.prof \
     --output runs/step-breakdown/lane1.json
 # scaling proof: repeat with --lanes 1/2/4/8 and read cpu_ms_per_packet
+# §3.43 pairing: this host's absolute CPU ms moves ~2x with background load, so
+# alternate stock/lean (`git checkout` the four source files vs this tree) and
+# compare each pair.  runs/step-breakdown/ab-{stock,lean}-*.json is the 8-pair
+# one-lane set, ab8-*.json the 8-lane worker shape.
 
 A51, if needed for a parity comparison only:
 `./launch_cluster_a51.sh --engines 1 --base-port 26799`.
@@ -436,8 +513,9 @@ Yes — but as a **parity oracle**, not the training engine.
 | 16.635 models | **`B-general-v275` and `A-hog26-v738` load and play on the A51** (17.5M, LSTM 768, schema 21; 0 rejected in the play smoke) |
 | Cloud GPU | **1× A6000 @ $0.35/h ran and was deleted** (~$0.23). Do not re-rent until a local segment completes in <10 min; the GPU sat at 4 % utilisation |
 | Decision-rate reality | A51 4×8 @ 5 ticks = **0.26 matches/s** (raw channel); one x86_64 process = **0.61** raw, **0.082** measured *training* floor; learner loop on the A51 = **0.04**. Raw ceilings exclude the observation build + tensorize (§3.41) |
+| Training observation | **lean — done (§3.43)** — non-validating `construct_contract` + `lean_contracts()` scope under `policy_features_only`, no provenance/freeze/validation, cached hand contract and form aliases, `(identity, lean)`-keyed observation caches. Paired A/B: **11.75 → 7.81 CPU ms/packet**, **78 → 113 lane-packets/s** on one x86 engine; 8 lanes 10.6/12.5 → 8.2/9.4 ms. Validated path and parity unchanged |
 | Loop pipelining | **done, CPU-verified** — one `ppo-inference` thread, one batch in flight, receives staged during the forward (§3.41). Non-model wall −14 % with a cheap forward, neutral with the 17.5M model (forward = 98 % of wall). 10/10 segments clean. CUDA path unverified until a GPU run |
-| Training-floor gates | **not reachable as written** — 1× x86 measures 0.138 profiler-matches/s (0.082 in 6,068-tick units) and 4× x86 measures 0.278; the 0.45/2.5 gates assume raw-channel ceilings that skip ~90 % of a real packet (§3.41). Next gates: observation build and tensorize cost |
+| Training-floor gates | **superseded by §3.43** — the remaining packet is ~3 ms native round trip + rich binding + placement, not observation contracts. The 0.45/2.5 gates assumed raw-channel ceilings that skip ~90 % of a real packet (§3.41); the observation half of that gap is now closed |
 | cr-native proxy | working, 15.535.29 only |
 
 ### State at handoff (processes are ephemeral)
@@ -1230,6 +1308,8 @@ Scale options, in order of leverage:
 | `tools/native_analysis/profile_real_collection.py` | Real V4 collector on CPU. `--synthetic-model` runs the checkpoint's contract at narrow widths (isolates loop from forward); `--segments N` exercises boundary bootstrap + resume |
 | `tools/native_analysis/profile_cluster_collection.py` | Scripted transport floor. `--diagnostic-timing` splits each worker round into decode / native step / tensorize / channel |
 | `runs/loop-pipeline-20261115/` | Session-8 evidence: scripted decomposition, old-vs-new loop A/B, 10-segment stress |
+| `runs/step-breakdown/` | §3.42 step attribution and §3.43 paired stock/lean observation evidence (`ab-*`, `ab8-*`) |
+| `tools/native_analysis/profile_step_breakdown.py` | Per-method `BattleEnvV1.step` sections + sequential cProfile; use it for paired A/B on this host |
 | `native_runner/probe/build_16_635_1_layout_x86.h` | Generated x86_64 core anchors |
 | `native_runner/versions/native-16.635.1-x86_64.json` | x86_64 build pin (select with `CR_NATIVE_BUILD_ABI=x86_64`) |
 | `native_runner/probe/out/x86_64/libcrprobe.so` | x86_64 probe (build artifact, pinned by hash) |

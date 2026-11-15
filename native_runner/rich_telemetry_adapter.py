@@ -68,6 +68,10 @@ from .contracts import (
     ThresholdRelocationStateV1,
     VisibilityPhase,
     VisibilityStateV1,
+    construct_contract,
+    lean_contract_state,
+    lean_contracts,
+    unknown_provenance,
 )
 from .effect_catalog import NativeEffectCatalogV1
 from .normal_form_evidence import NORMAL_MODE_HERO_FORM_BINDINGS_BY_FORM_ID
@@ -3181,6 +3185,14 @@ def bind_rich_telemetry(
     )
 
 
+def _state(contract: Any, /, **values: Any) -> Any:
+    """Construct a typed runtime state, non-validating inside a lean scope."""
+
+    if lean_contract_state():
+        return construct_contract(contract, **values)
+    return contract(**values)
+
+
 def _field_provenance(
     fields: Sequence[str] | frozenset[str],
     evidence: Mapping[str, SemanticEvidenceLevel],
@@ -3189,6 +3201,9 @@ def _field_provenance(
     observed_tick: int,
     notes: tuple[str, ...] = (),
 ) -> SemanticProvenanceV1:
+    if lean_contract_state():
+        # Training observations never serialize or audit provenance.
+        return unknown_provenance(fields if isinstance(fields, frozenset) else frozenset(fields))
     field_names = tuple(sorted(fields))
     return _cached_field_provenance(
         tuple((name, evidence.get(name, SemanticEvidenceLevel.UNKNOWN)) for name in field_names),
@@ -3332,6 +3347,33 @@ def project_player_runtime(
     rich_objects: Mapping[EntityKey, RichObjectTelemetry],
     visible_keys: frozenset[EntityKey],
     observed_tick: int,
+    lean: bool = False,
+) -> PlayerRuntimeProjection:
+    """Join private player runtime to frozen specs without guessing identities."""
+
+    with lean_contracts(lean):
+        return _project_player_runtime(
+            player,
+            ordinary_deck=ordinary_deck,
+            card_specs=card_specs,
+            ability_specs=ability_specs,
+            canonical_ids=canonical_ids,
+            rich_objects=rich_objects,
+            visible_keys=visible_keys,
+            observed_tick=observed_tick,
+        )
+
+
+def _project_player_runtime(
+    player: RichPlayerRuntimeTelemetry,
+    *,
+    ordinary_deck: Sequence[int],
+    card_specs: Mapping[int, CardSpecV1],
+    ability_specs: Mapping[str, AbilitySpecV1],
+    canonical_ids: Mapping[EntityKey, int],
+    rich_objects: Mapping[EntityKey, RichObjectTelemetry],
+    visible_keys: frozenset[EntityKey],
+    observed_tick: int,
 ) -> PlayerRuntimeProjection:
     """Join private player runtime to frozen specs without guessing identities."""
 
@@ -3408,7 +3450,7 @@ def project_player_runtime(
             SemanticEvidenceLevel.NATIVE_DERIVED if phase != AbilityPhase.UNKNOWN else SemanticEvidenceLevel.UNKNOWN
         )
         abilities.append(
-            AbilityRuntimeStateV1(
+            _state(AbilityRuntimeStateV1,
                 ability_id=ability_id,
                 source_entity=source_entity,
                 phase=phase,
@@ -3509,7 +3551,7 @@ def project_player_runtime(
         else:
             phase = EvolutionPhase.UNKNOWN
         evolutions.append(
-            EvolutionRuntimeStateV1(
+            _state(EvolutionRuntimeStateV1,
                 card_id=raw.card_id,
                 deck_slot=raw.deck_slot,
                 phase=phase,
@@ -3783,7 +3825,7 @@ def _project_projectile(
             notes.append("projectile active homing state suppressed by FAIR visibility")
 
     in_flight = not projectile.terminal
-    return ProjectileStateV1(
+    return _state(ProjectileStateV1,
         projectile_id=(
             "projectile:"
             f"{item.entity_key[0]}:{item.entity_key[1]}:{item.entity_key[2]}:"
@@ -3890,6 +3932,37 @@ def project_runtime(
     phase_events: Sequence[PhaseHookEvent] | None = None,
     card_spec: CardSpecV1 | None = None,
     evolution_active: bool = False,
+    lean: bool = False,
+) -> RuntimeProjection:
+    """Project one bound native object without exposing hidden entity links."""
+
+    with lean_contracts(lean):
+        return _project_runtime(
+            item,
+            canonical_ids=canonical_ids,
+            rich_objects=rich_objects,
+            visible_keys=visible_keys,
+            observed_tick=observed_tick,
+            effect_catalog=effect_catalog,
+            phase_runtime=phase_runtime,
+            phase_events=phase_events,
+            card_spec=card_spec,
+            evolution_active=evolution_active,
+        )
+
+
+def _project_runtime(
+    item: RichObjectTelemetry,
+    *,
+    canonical_ids: Mapping[EntityKey, int],
+    rich_objects: Mapping[EntityKey, RichObjectTelemetry],
+    visible_keys: frozenset[EntityKey],
+    observed_tick: int,
+    effect_catalog: RuntimeEffectCatalog | None = None,
+    phase_runtime: RichPhaseRuntimeEnvelope | None = None,
+    phase_events: Sequence[PhaseHookEvent] | None = None,
+    card_spec: CardSpecV1 | None = None,
+    evolution_active: bool = False,
 ) -> RuntimeProjection:
     """Project one bound native object without exposing hidden entity links."""
 
@@ -3905,7 +3978,7 @@ def project_runtime(
     if item.entity_resource_runtime is not None:
         resource = item.entity_resource_runtime
         resource_states = (
-            EntityResourceStateV1(
+            _state(EntityResourceStateV1,
                 kind=resource.kind,
                 current_raw=resource.current_raw,
                 capacity_raw=resource.capacity_raw,
@@ -3935,7 +4008,7 @@ def project_runtime(
             if raw_modifier.source_entity_key in visible_keys
             else None
         )
-        periodic_attack_modifier = PeriodicAttackModifierStateV1(
+        periodic_attack_modifier = _state(PeriodicAttackModifierStateV1,
             phase=PeriodicAttackModifierPhase(raw_modifier.phase),
             period_attacks=raw_modifier.period_attacks,
             completed_attacks=raw_modifier.completed_attacks,
@@ -3972,7 +4045,7 @@ def project_runtime(
     if item.capture_runtime is not None:
         raw_capture = item.capture_runtime
         capture_targets = tuple(
-            CaptureTargetStateV1(
+            _state(CaptureTargetStateV1,
                 phase=CaptureTargetPhase(target.phase),
                 elapsed_ms=target.elapsed_ms,
                 phase_budget_remaining_ms=target.phase_budget_remaining_ms,
@@ -3982,7 +4055,7 @@ def project_runtime(
             )
             for target in raw_capture.targets
         )
-        capture_runtime = CaptureRuntimeStateV1(
+        capture_runtime = _state(CaptureRuntimeStateV1,
             phase=CaptureActionPhase(raw_capture.phase),
             configured_cooldown_ms=raw_capture.configured_cooldown_ms,
             cooldown_remaining_ms=raw_capture.cooldown_remaining_ms,
@@ -4010,7 +4083,7 @@ def project_runtime(
     threshold_relocation_runtime: ThresholdRelocationStateV1 | None = None
     if item.threshold_relocation_runtime is not None:
         raw_relocation = item.threshold_relocation_runtime
-        threshold_relocation_runtime = ThresholdRelocationStateV1(
+        threshold_relocation_runtime = _state(ThresholdRelocationStateV1,
             phase=ThresholdRelocationPhase(raw_relocation.phase),
             stage=raw_relocation.stage,
             relocation_index=raw_relocation.relocation_index,
@@ -4046,7 +4119,7 @@ def project_runtime(
     shield_value: float | None = None
     if item.shield_current is not None and item.shield_maximum is not None:
         shield_value = float(item.shield_current)
-        shield_state = ShieldStateV1(
+        shield_state = _state(ShieldStateV1,
             hitpoints=float(item.shield_current),
             max_hitpoints=float(item.shield_maximum),
             provenance=_field_provenance(
@@ -4100,7 +4173,7 @@ def project_runtime(
         )
         non_expiring = effect.remaining_ms == -1
         typed_effects.append(
-            EffectStateV1(
+            _state(EffectStateV1,
                 effect_id=f"buff:{effect.buff_global_id}",
                 kind=kind,
                 source_entity=source_entity,
@@ -4270,7 +4343,7 @@ def project_runtime(
             if item.attack_sequence_stage is not None
             else SemanticEvidenceLevel.UNKNOWN
         )
-        attack_state = AttackStateV1(
+        attack_state = _state(AttackStateV1,
             target_entity=target_entity,
             sequence_index=item.attack_sequence_stage,
             charge_stage=None,
@@ -4291,7 +4364,7 @@ def project_runtime(
 
     visibility_state: VisibilityStateV1 | None = None
     if item.invisible_count is not None:
-        visibility_state = VisibilityStateV1(
+        visibility_state = _state(VisibilityStateV1,
             phase=(VisibilityPhase.HIDDEN if item.invisible else VisibilityPhase.VISIBLE),
             provenance=_field_provenance(
                 VISIBILITY_STATE_FIELDS,

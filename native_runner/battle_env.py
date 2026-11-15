@@ -48,6 +48,7 @@ from .contracts import (
     DaggerDuchessRuntimeStateV1,
     EntityStateV1,
     EVOLUTION_RUNTIME_STATE_FIELDS,
+    ENTITY_RUNTIME_SEMANTIC_FIELDS,
     EnvironmentConfigV1,
     EpisodeConfigV1,
     EventV1,
@@ -56,6 +57,7 @@ from .contracts import (
     ObservationTier,
     ObservationV1,
     OpponentBeliefV1,
+    PLAYER_RUNTIME_SEMANTIC_FIELDS,
     PendingActionV1,
     PlayerStateV1,
     ROYAL_CHEF_TOWER_TROOP_ID,
@@ -69,7 +71,9 @@ from .contracts import (
     TOWER_RUNTIME_SEMANTIC_FIELDS,
     TowerStateV1,
     content_hash,
+    construct_contract,
     frozen_mapping,
+    unknown_provenance,
 )
 from .cr_native_env import (
     FIRST_PLAYABLE_TICK,
@@ -605,7 +609,7 @@ class BattleEnvV1:
         self._rich_cache: RichTelemetrySnapshot | None = None
         self._fair_context_cache_identity: tuple[int, int, int | None] | None = None
         self._fair_context_cache: _RichObservationContext | None = None
-        self._fair_scene_cache_identity: tuple[int, int, int | None] | None = None
+        self._fair_scene_cache_identity: tuple[int, int, int | None, bool] | None = None
         self._fair_scene_cache: (
             tuple[_RichObservationContext | None, tuple[TowerStateV1, ...], tuple[EntityStateV1, ...], int] | None
         ) = None
@@ -655,13 +659,18 @@ class BattleEnvV1:
         self._last_native_run_refusals: tuple[Mapping[str, Any], ...] = ()
         self._placement_mask_cache: dict[tuple[Any, ...], Mapping[str, Any]] = {}
         self._runtime_placement_cache: dict[tuple[Any, ...], tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
-        self._ordinary_tower_cache: dict[tuple[int, int, int | None], tuple[TowerStateV1, ...]] = {}
+        self._ordinary_tower_cache: dict[tuple[tuple[int, int, int | None], bool], tuple[TowerStateV1, ...]] = {}
         # Towers projected with rich runtime telemetry.  That result is a
         # superset of the ordinary one, so one computation per tick can serve
         # ``step``, ``action_mask``, ``_derive_events`` and ``observe``.
-        self._rich_tower_cache: dict[tuple[int, int, int | None], tuple[TowerStateV1, ...]] = {}
+        self._rich_tower_cache: dict[tuple[tuple[int, int, int | None], bool], tuple[TowerStateV1, ...]] = {}
         self._action_mask_cache: dict[tuple[Any, ...], ActionMaskV1] = {}
-        self._action_player_runtime_cache: dict[tuple[int, int, int | None, int], Any] = {}
+        self._action_player_runtime_cache: dict[tuple[int, int, int | None, int, bool], Any] = {}
+        self._native_form_aliases_cache: dict[tuple[int, int, int], Mapping[int, int]] = {}
+        # ``_players`` and ``action_mask`` project the same native hand selection
+        # up to four times per decision.  Keys are the raw selection fields plus
+        # the tick-stable alias map, and the cache is dropped with the rich cache.
+        self._hand_runtime_cache: dict[tuple[Any, ...], Mapping[str, int | float]] = {}
         self._public_metadata_static: Mapping[str, Any] | None = None
 
     @property
@@ -1109,6 +1118,8 @@ class BattleEnvV1:
         self._fair_context_cache = None
         self._fair_scene_cache_identity = None
         self._fair_scene_cache = None
+        self._hand_runtime_cache.clear()
+        self._native_form_aliases_cache.clear()
 
     @staticmethod
     def _rich_identity(raw: Mapping[str, Any]) -> tuple[int, int, int | None]:
@@ -1380,7 +1391,11 @@ class BattleEnvV1:
         return carried[3]
 
     def _extract_towers(
-        self, raw: Mapping[str, Any], *, rich_context: _RichObservationContext | None = None
+        self,
+        raw: Mapping[str, Any],
+        *,
+        rich_context: _RichObservationContext | None = None,
+        lean: bool = False,
     ) -> tuple[TowerStateV1, ...]:
         # One tick has one tower answer.  A rich result is a superset of the
         # ordinary one, so either kind can satisfy a non-rich caller, but a
@@ -1388,14 +1403,15 @@ class BattleEnvV1:
         # projected the after-state without runtime telemetry and ``observe``
         # projected the same state again with it on every packet.
         cache_identity = self._rich_identity(raw)
+        cache_key = (cache_identity, lean)
         if rich_context is None:
-            cached = self._ordinary_tower_cache.get(cache_identity)
+            cached = self._ordinary_tower_cache.get(cache_key)
             if cached is None:
-                cached = self._rich_tower_cache.get(cache_identity)
+                cached = self._rich_tower_cache.get(cache_key)
             if cached is not None:
                 return cached
         else:
-            cached = self._rich_tower_cache.get(cache_identity)
+            cached = self._rich_tower_cache.get(cache_key)
             if cached is not None:
                 return cached
         tower_items = self._bound_tower_items(raw)
@@ -1451,6 +1467,7 @@ class BattleEnvV1:
                     phase_runtime=rich_context.snapshot.phase_runtime,
                     phase_events=self._phase_events_by_entity.get(rich_item.entity_key, ()),
                     card_spec=self.card_specs.get(rich_item.card_id),
+                    lean=lean,
                 )
                 tower_runtime = self._carried_tower_troop_runtime(
                     entity_id, rich_item, rich_context.snapshot, relevant=tower_runtime_relevant
@@ -1494,27 +1511,30 @@ class BattleEnvV1:
                     )
                 elif tower_runtime_relevant:
                     raise BattleEnvError("active special Tower Troop lacks its native runtime snapshot")
-                tower_provenance = runtime.tower_provenance(self._canonical_tick(int(raw["tick"])))
-                tower_runtime_evidence = (
-                    SemanticEvidenceLevel.NATIVE_DERIVED
-                    if tower_runtime_state is not None
-                    else SemanticEvidenceLevel.NOT_APPLICABLE
-                    if not tower_runtime_relevant
-                    else SemanticEvidenceLevel.UNKNOWN
-                )
-                tower_provenance = SemanticProvenanceV1(
-                    field_evidence={**tower_provenance.field_evidence, "tower_troop_runtime": tower_runtime_evidence},
-                    source_fields={
-                        **tower_provenance.source_fields,
-                        **(
-                            {"tower_troop_runtime": ("objects[].towerTroopRuntime", "towerTroopRuntime")}
-                            if tower_runtime_state is not None
-                            else {}
-                        ),
-                    },
-                    observed_tick=tower_provenance.observed_tick,
-                    notes=tower_provenance.notes,
-                )
+                if lean:
+                    tower_provenance = unknown_provenance(TOWER_RUNTIME_SEMANTIC_FIELDS)
+                else:
+                    tower_provenance = runtime.tower_provenance(self._canonical_tick(int(raw["tick"])))
+                    tower_runtime_evidence = (
+                        SemanticEvidenceLevel.NATIVE_DERIVED
+                        if tower_runtime_state is not None
+                        else SemanticEvidenceLevel.NOT_APPLICABLE
+                        if not tower_runtime_relevant
+                        else SemanticEvidenceLevel.UNKNOWN
+                    )
+                    tower_provenance = SemanticProvenanceV1(
+                        field_evidence={**tower_provenance.field_evidence, "tower_troop_runtime": tower_runtime_evidence},
+                        source_fields={
+                            **tower_provenance.source_fields,
+                            **(
+                                {"tower_troop_runtime": ("objects[].towerTroopRuntime", "towerTroopRuntime")}
+                                if tower_runtime_state is not None
+                                else {}
+                            ),
+                        },
+                        observed_tick=tower_provenance.observed_tick,
+                        notes=tower_provenance.notes,
+                    )
                 runtime_fields = {
                     "shield": runtime.shield or 0.0,
                     "visible_target": runtime.target_entity,
@@ -1526,39 +1546,44 @@ class BattleEnvV1:
                     "runtime_provenance": tower_provenance,
                 }
             elif not tower_runtime_relevant:
-                runtime_fields["runtime_provenance"] = SemanticProvenanceV1(
-                    field_evidence={
-                        name: (
-                            SemanticEvidenceLevel.NOT_APPLICABLE
-                            if name == "tower_troop_runtime"
-                            else SemanticEvidenceLevel.UNKNOWN
-                        )
-                        for name in TOWER_RUNTIME_SEMANTIC_FIELDS
-                    },
-                    observed_tick=self._canonical_tick(int(raw["tick"])),
+                runtime_fields["runtime_provenance"] = (
+                    unknown_provenance(TOWER_RUNTIME_SEMANTIC_FIELDS)
+                    if lean
+                    else SemanticProvenanceV1(
+                        field_evidence={
+                            name: (
+                                SemanticEvidenceLevel.NOT_APPLICABLE
+                                if name == "tower_troop_runtime"
+                                else SemanticEvidenceLevel.UNKNOWN
+                            )
+                            for name in TOWER_RUNTIME_SEMANTIC_FIELDS
+                        },
+                        observed_tick=self._canonical_tick(int(raw["tick"])),
+                    )
                 )
+            tower_payload = {
+                "entity_id": entity_id,
+                "owner": owner,
+                "tower_kind": kind,
+                "position": (float(x), float(y)),
+                "hitpoints": min(hp, max_hp),
+                "max_hitpoints": max_hp,
+                "tower_troop_id": tower_troop_id,
+                "active": tower_active,
+                "status": (("activated",) if entity_id in self._activated_king_tower_ids else ()),
+                **runtime_fields,
+            }
             result.append(
-                TowerStateV1(
-                    entity_id=entity_id,
-                    owner=owner,
-                    tower_kind=kind,
-                    position=(float(x), float(y)),
-                    hitpoints=min(hp, max_hp),
-                    max_hitpoints=max_hp,
-                    tower_troop_id=tower_troop_id,
-                    active=tower_active,
-                    status=(("activated",) if entity_id in self._activated_king_tower_ids else ()),
-                    **runtime_fields,
-                )
+                construct_contract(TowerStateV1, **tower_payload) if lean else TowerStateV1(**tower_payload)
             )
         towers = tuple(result)
         if rich_context is not None:
             if len(self._rich_tower_cache) >= 4:
                 self._rich_tower_cache.clear()
-            self._rich_tower_cache[cache_identity] = towers
+            self._rich_tower_cache[cache_key] = towers
         if len(self._ordinary_tower_cache) >= 4:
             self._ordinary_tower_cache.clear()
-        self._ordinary_tower_cache[cache_identity] = towers
+        self._ordinary_tower_cache[cache_key] = towers
         return towers
 
     @staticmethod
@@ -1725,7 +1750,7 @@ class BattleEnvV1:
         }
 
     def _action_player_runtime(
-        self, owner: int, source: Mapping[str, Any], context: _RichObservationContext
+        self, owner: int, source: Mapping[str, Any], context: _RichObservationContext, *, lean: bool = False
     ) -> Any | None:
         """Project one owner's runtime once per atomic observation identity.
 
@@ -1734,7 +1759,7 @@ class BattleEnvV1:
         repeating the Python-heavy join while preserving per-owner privacy.
         """
 
-        key = (*self._rich_identity(source), int(owner))
+        key = (*self._rich_identity(source), int(owner), lean)
         cached = self._action_player_runtime_cache.get(key)
         if cached is not None:
             return cached
@@ -1751,6 +1776,7 @@ class BattleEnvV1:
             rich_objects=context.snapshot.objects_by_key,
             visible_keys=context.visible_keys,
             observed_tick=self._canonical_tick(int(source["tick"])),
+            lean=lean,
         )
         for ability_state in runtime.ability_runtime_states:
             self._assert_policy_ability_enabled(owner, ability_state)
@@ -1851,6 +1877,19 @@ class BattleEnvV1:
             value = card.get(field)
             if value is not None and type(value) is not int:
                 raise BattleEnvError(f"native hand selection has non-integer {field}")
+        cache_key = (
+            owner,
+            visible_card_id,
+            hand_slot,
+            effective_cost,
+            card.get("commandCardId"),
+            card.get("formCode"),
+            card.get("cardParameter"),
+            id(form_aliases) if form_aliases is not None else None,
+        )
+        cached = self._hand_runtime_cache.get(cache_key)
+        if cached is not None:
+            return cached
         raw_form = card.get("formCode")
         if raw_form is None and card.get("cardParameter") is not None:
             raw_form = int(card["cardParameter"]) & 0xF
@@ -1881,7 +1920,7 @@ class BattleEnvV1:
                 raise BattleEnvError("ordinary hand selection changed effective card identity")
         if not 0.0 <= effective_cost <= 15.0:
             raise BattleEnvError("native hand selection has invalid effective cost/form")
-        return frozen_mapping(
+        result = frozen_mapping(
             {
                 "hand_slot": hand_slot,
                 "visible_card_id": visible_card_id,
@@ -1892,10 +1931,19 @@ class BattleEnvV1:
                 "native_form_code": native_form_code,
             }
         )
+        if len(self._hand_runtime_cache) >= 64:
+            self._hand_runtime_cache.clear()
+        self._hand_runtime_cache[cache_key] = result
+        return result
 
     def _native_form_aliases(self, rich_context: _RichObservationContext) -> Mapping[int, int]:
         """Join exact runtime form globals to normal-mode base card IDs."""
 
+        snapshot = rich_context.snapshot
+        cache_key = (snapshot.tick, snapshot.generation, snapshot.state_epoch)
+        cached = self._native_form_aliases_cache.get(cache_key)
+        if cached is not None:
+            return cached
         aliases: dict[int, int] = dict(NORMAL_MODE_HERO_FORM_TO_BASE_CARD)
         for player in rich_context.snapshot.players.values():
             for evolution in player.evolution_runtime or ():
@@ -1911,6 +1959,7 @@ class BattleEnvV1:
                 if previous is not None and previous != base_card_id:
                     raise BattleEnvError("native form card maps to multiple base card identities")
                 aliases[form_card_id] = base_card_id
+        self._native_form_aliases_cache[cache_key] = aliases
         return aliases
 
     @staticmethod
@@ -2133,7 +2182,9 @@ class BattleEnvV1:
         self._runtime_placement_cache[key] = (base, result)
         return result
 
-    def action_mask(self, owner: int, raw: Mapping[str, Any] | None = None) -> ActionMaskV1:
+    def action_mask(
+        self, owner: int, raw: Mapping[str, Any] | None = None, *, lean: bool = False
+    ) -> ActionMaskV1:
         source = raw or self.raw_observation
         deadline = self._decision_deadline_native.get(owner, int(source.get("tick", 0)))
         identity = self._rich_identity(source)
@@ -2186,7 +2237,7 @@ class BattleEnvV1:
             return result
         rich_context = self._rich_context(source)
         form_aliases = self._native_form_aliases(rich_context)
-        towers = self._extract_towers(source)
+        towers = self._extract_towers(source, lean=lean)
         lanes = self._destroyed_enemy_lanes(owner, towers)
         active_tower_footprints = self._active_tower_footprints(towers)
         (occupied_building_footprints, unknown_occupied_building_ids) = self._occupied_building_footprints(
@@ -2342,8 +2393,15 @@ class BattleEnvV1:
         self._action_mask_cache[cache_key] = result
         return result
 
-    def _validate_action(self, action: ActionV1, raw: Mapping[str, Any], *, mask: ActionMaskV1 | None = None) -> None:
-        mask = mask or self.action_mask(action.owner, raw)
+    def _validate_action(
+        self,
+        action: ActionV1,
+        raw: Mapping[str, Any],
+        *,
+        mask: ActionMaskV1 | None = None,
+        lean: bool = False,
+    ) -> None:
+        mask = mask or self.action_mask(action.owner, raw, lean=lean)
         if action.kind in {ActionKind.PLAY_CARD, ActionKind.ACTIVATE_ABILITY} and action.execute_offset_ticks > 0xFFFF:
             raise BattleEnvError("native action execute offset exceeds 65535 ticks")
         if not bool(mask.kinds.get(action.kind.value, False)):
@@ -2443,7 +2501,9 @@ class BattleEnvV1:
         ):
             raise BattleEnvError(f"final world target {world_target} is illegal after subcell offset")
 
-    def _validate_compound_actions(self, owner: int, actions: Sequence[ActionV1], raw: Mapping[str, Any]) -> None:
+    def _validate_compound_actions(
+        self, owner: int, actions: Sequence[ActionV1], raw: Mapping[str, Any], *, lean: bool = False
+    ) -> None:
         if not 1 <= len(actions) <= 3:
             raise BattleEnvError("one decision must contain one to three actions")
         if any(action.owner != owner for action in actions):
@@ -2451,9 +2511,9 @@ class BattleEnvV1:
         waits = [action for action in actions if action.kind in {ActionKind.WAIT, ActionKind.WAIT_UNTIL_AFFORDABLE}]
         if waits and len(actions) != 1:
             raise BattleEnvError("WAIT cannot be mixed with compound commands")
-        mask = self.action_mask(owner, raw)
+        mask = self.action_mask(owner, raw, lean=lean)
         for action in actions:
-            self._validate_action(action, raw, mask=mask)
+            self._validate_action(action, raw, mask=mask, lean=lean)
         if waits:
             return
 
@@ -2634,16 +2694,16 @@ class BattleEnvV1:
                 )
                 acting_owners.add(owner)
             if ready:
-                self._validate_compound_actions(owner, group, self._raw)
+                self._validate_compound_actions(owner, group, self._raw, lean=policy_features_only)
             normalized[owner] = group
 
         before = self._raw
         diagnostic_action_masks = {
-            owner: self.action_mask(owner, before)
+            owner: self.action_mask(owner, before, lean=policy_features_only)
             for owner in acting_owners
             if any(action.kind == ActionKind.PLAY_CARD for action in normalized[owner])
         }
-        before_towers = self._extract_towers(before)
+        before_towers = self._extract_towers(before, lean=policy_features_only)
         now_ms = int(time.time() * 1000)
         for owner in self.possible_agents:
             if owner not in acting_owners:
@@ -3028,7 +3088,7 @@ class BattleEnvV1:
         # Project the after-state once, with the rich telemetry that ``observe``
         # needs, so the observation build reuses it instead of recomputing the
         # same tick without runtime fields.
-        after_towers = self._extract_towers(after, rich_context=after_rich_context)
+        after_towers = self._extract_towers(after, rich_context=after_rich_context, lean=policy_features_only)
         terminal = self._terminal(after, after_towers)
         self._terminated = terminal.ended
         self._truncated = not self._terminated and self._canonical_tick(after_native_tick) >= self.max_battle_ticks
@@ -4565,7 +4625,9 @@ class BattleEnvV1:
             ),
         )
 
-    def _entities(self, raw: Mapping[str, Any], *, rich_context: _RichObservationContext) -> tuple[EntityStateV1, ...]:
+    def _entities(
+        self, raw: Mapping[str, Any], *, rich_context: _RichObservationContext, lean: bool = False
+    ) -> tuple[EntityStateV1, ...]:
         native_tick = int(raw["tick"])
         observed_tick = self._canonical_tick(native_tick)
         items: list[EntityStateV1] = []
@@ -4585,6 +4647,7 @@ class BattleEnvV1:
                 phase_events=self._phase_events_by_entity.get(rich_item.entity_key, ()),
                 card_spec=self.card_specs.get(rich_item.card_id),
                 evolution_active=evolution_state is not None,
+                lean=lean,
             )
             card_id_raw = int(item.get("cardId", -1))
             spec = self.card_specs.get(card_id_raw)
@@ -4594,7 +4657,7 @@ class BattleEnvV1:
                 else (spec.kind.value if spec is not None else ("effect" if card_id_raw <= 0 else "unknown"))
             )
             velocity = self._entity_velocity.get(entity_id)
-            if runtime.projectile_state is not None and velocity is not None:
+            if not lean and runtime.projectile_state is not None and velocity is not None:
                 projectile = runtime.projectile_state
                 projectile_provenance = projectile.provenance
                 runtime = replace(
@@ -4625,23 +4688,29 @@ class BattleEnvV1:
                 )
             birth = self._entity_birth.get(entity_id, native_tick)
             runtime_fields: dict[str, Any] = {}
-            runtime_provenance = runtime.entity_provenance(observed_tick)
-            if evolution_state is not None:
-                runtime_provenance = SemanticProvenanceV1(
-                    field_evidence={
-                        **dict(runtime_provenance.field_evidence),
-                        "evolution_state": (SemanticEvidenceLevel.NATIVE_DERIVED),
-                    },
-                    source_fields={
-                        **dict(runtime_provenance.source_fields),
-                        "evolution_state": (
-                            "combatEvents.events[].deploymentContext",
-                            "combatEvents.events[].target.nativeObjectId",
+            if lean:
+                runtime_provenance = unknown_provenance(ENTITY_RUNTIME_SEMANTIC_FIELDS)
+            else:
+                runtime_provenance = runtime.entity_provenance(observed_tick)
+                if evolution_state is not None:
+                    runtime_provenance = SemanticProvenanceV1(
+                        field_evidence={
+                            **dict(runtime_provenance.field_evidence),
+                            "evolution_state": (SemanticEvidenceLevel.NATIVE_DERIVED),
+                        },
+                        source_fields={
+                            **dict(runtime_provenance.source_fields),
+                            "evolution_state": (
+                                "combatEvents.events[].deploymentContext",
+                                "combatEvents.events[].target.nativeObjectId",
+                            ),
+                        },
+                        observed_tick=observed_tick,
+                        notes=(
+                            *runtime_provenance.notes,
+                            "evolution state comes from exact dynamic deployment provenance",
                         ),
-                    },
-                    observed_tick=observed_tick,
-                    notes=(*runtime_provenance.notes, "evolution state comes from exact dynamic deployment provenance"),
-                )
+                    )
             runtime_fields = {
                 "shield": runtime.shield,
                 "visible_target": runtime.target_entity,
@@ -4663,21 +4732,22 @@ class BattleEnvV1:
                 "evolution_state": evolution_state,
                 "runtime_provenance": runtime_provenance,
             }
+            entity_payload = {
+                "entity_id": entity_id,
+                "owner": item.get("owner") if item.get("owner") in (0, 1) else None,
+                "card_id": card_id_raw if card_id_raw > 0 else None,
+                "entity_kind": kind,
+                "position": (float(item.get("x", 0)), float(item.get("y", 0))),
+                "native_data_global_id": rich_item.data_global_id,
+                "velocity": velocity,
+                "hitpoints": float(item["hp"]) if item.get("hp") is not None else None,
+                "max_hitpoints": float(item["maxHp"]) if item.get("maxHp") is not None else None,
+                "age_ms": max(0, native_tick - birth) * TICK_MS,
+                "causal_group": self._causal_group_by_entity.get(entity_id),
+                **runtime_fields,
+            }
             items.append(
-                EntityStateV1(
-                    entity_id=entity_id,
-                    owner=item.get("owner") if item.get("owner") in (0, 1) else None,
-                    card_id=card_id_raw if card_id_raw > 0 else None,
-                    entity_kind=kind,
-                    position=(float(item.get("x", 0)), float(item.get("y", 0))),
-                    native_data_global_id=rich_item.data_global_id,
-                    velocity=velocity,
-                    hitpoints=float(item["hp"]) if item.get("hp") is not None else None,
-                    max_hitpoints=float(item["maxHp"]) if item.get("maxHp") is not None else None,
-                    age_ms=max(0, native_tick - birth) * TICK_MS,
-                    causal_group=self._causal_group_by_entity.get(entity_id),
-                    **runtime_fields,
-                )
+                construct_contract(EntityStateV1, **entity_payload) if lean else EntityStateV1(**entity_payload)
             )
         return tuple(items[: self.entity_limit])
 
@@ -4688,6 +4758,7 @@ class BattleEnvV1:
         *,
         actor_owner: int | None,
         rich_context: _RichObservationContext,
+        lean: bool = False,
     ) -> tuple[PlayerStateV1, ...]:
         crowns = self._crowns(towers, raw)
         result: list[PlayerStateV1] = []
@@ -4725,41 +4796,48 @@ class BattleEnvV1:
                 player_metadata["near_elixir_overflow"] = raw_elixir >= 90_000
             runtime_fields: dict[str, Any] = {}
             if private:
-                runtime = self._action_player_runtime(owner, raw, rich_context)
+                runtime = self._action_player_runtime(owner, raw, rich_context, lean=lean)
                 if runtime is None:
                     raise BattleEnvError("FAIR player observation lacks native runtime")
                 runtime_fields = {
                     "ability_runtime_states": runtime.ability_runtime_states,
                     "evolution_runtime_states": runtime.evolution_runtime_states,
-                    "runtime_provenance": runtime.provenance(self._canonical_tick(int(raw["tick"]))),
+                    "runtime_provenance": (
+                        unknown_provenance(PLAYER_RUNTIME_SEMANTIC_FIELDS)
+                        if lean
+                        else runtime.provenance(self._canonical_tick(int(raw["tick"])))
+                    ),
                 }
-            result.append(
-                PlayerStateV1(
-                    owner=owner,
-                    crowns=crowns[owner],
-                    tower_ids=tuple(item.entity_id for item in towers if item.owner == owner),
-                    elixir_exact=exact,
-                    elixir_visible=exact,
-                    hand=tuple(
+            player_payload = {
+                "owner": owner,
+                "crowns": crowns[owner],
+                "tower_ids": tuple(item.entity_id for item in towers if item.owner == owner),
+                "elixir_exact": exact,
+                "elixir_visible": exact,
+                "hand": (
+                    tuple(
                         int(card["cardId"])
                         for card in sorted(native_player.get("hand", ()), key=lambda item: int(item["handIndex"]))
                     )
                     if private
-                    else (),
-                    next_card=(
-                        int(native_player["nextCard"]["cardId"])
-                        if private and native_player.get("nextCard") is not None
-                        else None
-                    ),
-                    deck=tuple(int(card["cardId"]) for card in native_player.get("deck", ())) if private else (),
-                    cycle=tuple(int(card["cardId"]) for card in native_player.get("cycle", ())) if private else (),
-                    revealed_cards=tuple(sorted(self._revealed[owner])),
-                    evolution_state=native_player.get("evolutionState", {}) if private else {},
-                    ability_state=native_player.get("abilityState", {}) if private else {},
-                    private_state_visible=private,
-                    metadata=player_metadata,
-                    **runtime_fields,
-                )
+                    else ()
+                ),
+                "next_card": (
+                    int(native_player["nextCard"]["cardId"])
+                    if private and native_player.get("nextCard") is not None
+                    else None
+                ),
+                "deck": tuple(int(card["cardId"]) for card in native_player.get("deck", ())) if private else (),
+                "cycle": tuple(int(card["cardId"]) for card in native_player.get("cycle", ())) if private else (),
+                "revealed_cards": tuple(sorted(self._revealed[owner])),
+                "evolution_state": native_player.get("evolutionState", {}) if private else {},
+                "ability_state": native_player.get("abilityState", {}) if private else {},
+                "private_state_visible": private,
+                "metadata": player_metadata,
+                **runtime_fields,
+            }
+            result.append(
+                construct_contract(PlayerStateV1, **player_payload) if lean else PlayerStateV1(**player_payload)
             )
         return tuple(result)
 
@@ -4904,19 +4982,21 @@ class BattleEnvV1:
         native_tick = int(raw["tick"])
         tick = self._canonical_tick(native_tick)
         phase, multiplier = self.mode_timeline.timeline.phase(native_tick)
-        scene_identity = self._rich_identity(raw)
+        scene_identity = (*self._rich_identity(raw), policy_features_only)
         if self._fair_scene_cache_identity == scene_identity and self._fair_scene_cache is not None:
             rich_context, towers, entities, raw_entity_count = self._fair_scene_cache
         else:
             rich_context = self._rich_context(raw)
-            towers = self._extract_towers(raw, rich_context=rich_context)
-            entities = self._entities(raw, rich_context=rich_context)
+            towers = self._extract_towers(raw, rich_context=rich_context, lean=policy_features_only)
+            entities = self._entities(raw, rich_context=rich_context, lean=policy_features_only)
             raw_entity_count = self._visible_entity_count(raw, rich_context)
             self._fair_scene_cache_identity = scene_identity
             self._fair_scene_cache = (rich_context, towers, entities, raw_entity_count)
         visible_events = self._events_for(owner, tick)
         terminal = self._terminal(raw, towers)
-        action_mask = self.action_mask(owner, raw) if owner is not None else ActionMaskV1()
+        action_mask = (
+            self.action_mask(owner, raw, lean=policy_features_only) if owner is not None else ActionMaskV1()
+        )
         # The model-facing clock ends with the five-minute gameplay timeline.
         # ``max_battle_ticks`` is only the later native-finalization watchdog.
         remaining = max(0, NATIVE_GAMEPLAY_END_TICK - tick) * TICK_MS
@@ -4932,12 +5012,12 @@ class BattleEnvV1:
             public_metadata["event_history"] = frozen_mapping(
                 {**self._event_summary_for(owner, tick), "returned": len(visible_events), "limit": self.event_limit}
             )
-        frozen_public_metadata = frozen_mapping(public_metadata)
-        return ObservationV1(
-            tier=actual_tier,
-            owner=owner,
-            tick=tick,
-            time=TimeStateV1(
+        frozen_public_metadata = public_metadata if policy_features_only else frozen_mapping(public_metadata)
+        observation_payload = {
+            "tier": actual_tier,
+            "owner": owner,
+            "tick": tick,
+            "time": TimeStateV1(
                 elapsed_ms=tick * TICK_MS,
                 remaining_ms=remaining,
                 server_time_ms=native_tick * TICK_MS,
@@ -4946,22 +5026,27 @@ class BattleEnvV1:
                 elixir_multiplier=multiplier,
                 tick_ms=TICK_MS,
             ),
-            phase=phase,
-            players=self._players(raw, towers, actor_owner=owner, rich_context=rich_context),
-            towers=towers,
-            entities=entities,
-            events=visible_events,
-            opponent_belief=(None if policy_features_only or owner is None else self._belief(owner, tick)),
-            action_mask=action_mask,
-            pending_actions=(() if policy_features_only else self._pending_for(owner)),
-            terminal=terminal,
-            native_digest=None,
-            ruleset_id=None if policy_features_only else self.ruleset_id,
-            episode_id=self.episode_id,
-            raster=None,
-            truncated=(self._truncated or bool(raw.get("truncated")) or raw_entity_count > self.entity_limit),
-            metadata=frozen_public_metadata,
-        )
+            "phase": phase,
+            "players": self._players(
+                raw, towers, actor_owner=owner, rich_context=rich_context, lean=policy_features_only
+            ),
+            "towers": towers,
+            "entities": entities,
+            "events": visible_events,
+            "opponent_belief": (None if policy_features_only or owner is None else self._belief(owner, tick)),
+            "action_mask": action_mask,
+            "pending_actions": (() if policy_features_only else self._pending_for(owner)),
+            "terminal": terminal,
+            "native_digest": None,
+            "ruleset_id": None if policy_features_only else self.ruleset_id,
+            "episode_id": self.episode_id,
+            "raster": None,
+            "truncated": (self._truncated or bool(raw.get("truncated")) or raw_entity_count > self.entity_limit),
+            "metadata": frozen_public_metadata,
+        }
+        if policy_features_only:
+            return construct_contract(ObservationV1, **observation_payload)
+        return ObservationV1(**observation_payload)
 
     def observe_all(self, tier: ObservationTier | str = ObservationTier.FAIR) -> dict[int, ObservationV1]:
         actual = tier if isinstance(tier, ObservationTier) else ObservationTier(str(tier))

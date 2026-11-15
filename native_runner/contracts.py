@@ -14,7 +14,8 @@ uninterpreted public configuration in ``attributes`` for later schema upgrades.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from contextvars import ContextVar
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import Enum
 from functools import cache
 import hashlib
@@ -163,6 +164,70 @@ def _freeze(value: Any) -> Any:
 
 def frozen_mapping(value: Mapping[str, Any] | None = None) -> FrozenMapping:
     return value if isinstance(value, FrozenMapping) else FrozenMapping(value)
+
+
+_CONTRACT_FIELDS_CACHE: dict[type, tuple[Any, ...]] = {}
+_LEAN_CONTRACTS: ContextVar[bool] = ContextVar("clashmaster_lean_contracts", default=False)
+
+
+class _LeanContractScope:
+    """Mark in-process training observation construction as non-validating."""
+
+    __slots__ = ("_enabled", "_token")
+
+    def __init__(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self._token: Any = None
+
+    def __enter__(self) -> "_LeanContractScope":
+        if self._enabled:
+            self._token = _LEAN_CONTRACTS.set(True)
+        return self
+
+    def __exit__(self, *exc_info: Any) -> bool:
+        if self._token is not None:
+            _LEAN_CONTRACTS.reset(self._token)
+            self._token = None
+        return False
+
+
+def lean_contracts(enabled: bool = True) -> _LeanContractScope:
+    return _LeanContractScope(enabled)
+
+
+def lean_contract_state() -> bool:
+    return _LEAN_CONTRACTS.get()
+
+
+def construct_contract(contract: Any, /, **values: Any) -> Any:
+    """Build a contract instance without running ``__post_init__``.
+
+    This is the training-data fast path.  Every value still comes from the
+    validated native parse above it, but the per-field domain checks, the
+    ``FrozenMapping`` freeze walk and the provenance coverage audit are skipped:
+    a policy observation is built ~20 times per decision and is never
+    serialized, hashed or compared.  Wire/persistence constructors
+    (``cls(...)``/``from_mapping``) are unchanged and stay fail-closed.
+    """
+
+    contract_fields = _CONTRACT_FIELDS_CACHE.get(contract)
+    if contract_fields is None:
+        contract_fields = fields(contract)
+        _CONTRACT_FIELDS_CACHE[contract] = contract_fields
+    instance = contract.__new__(contract)
+    for contract_field in contract_fields:
+        name = contract_field.name
+        if name in values:
+            object.__setattr__(instance, name, values.pop(name))
+        elif contract_field.default is not MISSING:
+            object.__setattr__(instance, name, contract_field.default)
+        elif contract_field.default_factory is not MISSING:  # type: ignore[misc]
+            object.__setattr__(instance, name, contract_field.default_factory())
+        else:
+            raise TypeError(f"{contract.__name__} requires field {name!r}")
+    if values:
+        raise TypeError(f"{contract.__name__} got unknown fields {sorted(values)}")
+    return instance
 
 
 def _jsonable(value: Any) -> Any:
@@ -1162,9 +1227,20 @@ class SemanticProvenanceV1(StrictContractMixin):
 
     @classmethod
     def unknown_all(cls, fields_required: Iterable[str]) -> "SemanticProvenanceV1":
-        return cls({str(name): SemanticEvidenceLevel.UNKNOWN for name in sorted(fields_required)})
+        if not isinstance(fields_required, frozenset):
+            fields_required = frozenset(str(name) for name in fields_required)
+        return unknown_provenance(fields_required)
 
     STRICT_LABEL: ClassVar[str] = "semantic provenance"
+
+
+@cache
+def unknown_provenance(fields_required: frozenset[str]) -> SemanticProvenanceV1:
+    """Share one all-unknown provenance record per contract field universe."""
+
+    return SemanticProvenanceV1(
+        {name: SemanticEvidenceLevel.UNKNOWN for name in sorted(fields_required)}
+    )
 
 
 def _semantic_provenance(

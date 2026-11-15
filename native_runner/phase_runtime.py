@@ -14,7 +14,16 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Sequence
 
-from .contracts import ATTACK_STATE_FIELDS, AttackPhase, AttackStateV1, SemanticEvidenceLevel, SemanticProvenanceV1
+from .contracts import (
+    ATTACK_STATE_FIELDS,
+    AttackPhase,
+    AttackStateV1,
+    SemanticEvidenceLevel,
+    SemanticProvenanceV1,
+    construct_contract,
+    lean_contract_state,
+    unknown_provenance,
+)
 
 
 PHASE_RUNTIME_SCHEMA = "native-phase-runtime.v1"
@@ -726,12 +735,17 @@ def resolve_attack_runtime(raw: AttackRuntimeRaw) -> AttackRuntimeProjection:
     ):
         publish(name, getattr(ramp, attribute) if ramp is not None else None, derived, *origin, known=ramp is not None)
 
-    state = AttackStateV1(
-        **values,
-        provenance=SemanticProvenanceV1(
-            field_evidence=evidence, source_fields=sources, observed_tick=raw.tick, notes=tuple(phase_notes)
-        ),
-    )
+    if lean_contract_state():
+        state = construct_contract(
+            AttackStateV1, **values, provenance=unknown_provenance(ATTACK_STATE_FIELDS)
+        )
+    else:
+        state = AttackStateV1(
+            **values,
+            provenance=SemanticProvenanceV1(
+                field_evidence=evidence, source_fields=sources, observed_tick=raw.tick, notes=tuple(phase_notes)
+            ),
+        )
     return AttackRuntimeProjection(
         state=state,
         timing=AttackTimingRuntime(
