@@ -132,7 +132,14 @@ def validate_decision(
                 )
         cost = float(played["cost"])
         delta = float(after_player["elixir"]) - float(before_player["elixir"])
-        if delta > -cost + MAX_REGEN_PER_TICK * ticks:
+        # When the card costs less than the maximum regen over the advance, a
+        # silent payment and a refused/no payment are numerically
+        # indistinguishable (notably 1-cost cards at 2x elixir). The hand-slot
+        # identity decides whether a play happened; skip the ambiguous
+        # underpayment check in that regime instead of emitting false rows.
+        regen_ceiling = MAX_REGEN_PER_TICK * ticks
+        capped = float(before_player["elixir"]) + regen_ceiling >= 10.0
+        if not capped and cost > regen_ceiling and delta > -cost + regen_ceiling:
             problems.append(
                 f"owner {action.owner} elixir {before_player['elixir']} -> {after_player['elixir']} "
                 f"did not pay {cost} within regen tolerance"

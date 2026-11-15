@@ -179,25 +179,29 @@ def relocate(old: Binary, new: Binary, anchor: OldAnchor) -> dict:
     return entry
 
 
-def load_overrides(path: Path | None) -> dict[str, dict]:
+def load_overrides(paths: list[Path] | None) -> dict[str, dict]:
     """Manual corrections for anchors the byte diff cannot separate on its own.
 
-    The file is a JSON object with an ``overrides`` list.  Each entry names a
-    probe anchor and its verified new offset, plus free-form evidence.  This
-    keeps reproducible corrections (e.g. a near-duplicate function pair) in
-    version control instead of editing the generated report by hand.
+    Each file is a JSON object with an ``overrides`` list.  Each entry names a
+    probe anchor and either its verified new offset or ``"unresolved": true``
+    when the anchor is known to be gone from the target build.  Later files win,
+    so a generated table can be layered under a short human-reviewed file.
     """
-    if path is None:
+    if not paths:
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    entries = payload.get("overrides", payload) if isinstance(payload, dict) else payload
     result: dict[str, dict] = {}
-    for entry in entries:
-        hook = entry.get("hook")
-        new_offset = entry.get("new_offset")
-        if not hook or not new_offset:
-            raise SystemExit(f"{path}: override needs hook and new_offset: {entry!r}")
-        result[hook] = entry
+    for path in paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        entries = payload.get("overrides", payload) if isinstance(payload, dict) else payload
+        for entry in entries:
+            hook = entry.get("hook")
+            if not hook:
+                raise SystemExit(f"{path}: override needs a hook: {entry!r}")
+            if not entry.get("new_offset") and entry.get("unresolved") is not True:
+                raise SystemExit(
+                    f"{path}: override for {hook} needs new_offset or \"unresolved\": true"
+                )
+            result[hook] = entry
     return result
 
 
@@ -275,8 +279,12 @@ def main() -> int:
     parser.add_argument("--out", default="")
     parser.add_argument(
         "--overrides",
-        default="",
-        help="JSON file with verified manual corrections (hook + new_offset + evidence)",
+        action="append",
+        default=[],
+        help=(
+            "JSON file with verified corrections (hook + new_offset/unresolved + "
+            "evidence); repeat to layer files, later ones win"
+        ),
     )
     args = parser.parse_args()
 
@@ -314,7 +322,7 @@ def main() -> int:
             row["suspect"] = True
 
     counts: dict[str, int] = {}
-    overrides = load_overrides(Path(args.overrides) if args.overrides else None)
+    overrides = load_overrides([Path(path) for path in args.overrides])
 
     # A tiny (two-instruction) getter has no deep body to match on, so a
     # delta-consistent base recovered from neighbouring windows can still point
@@ -335,12 +343,19 @@ def main() -> int:
     for row in rows:
         override = overrides.get(row["hook"])
         if override is not None:
-            new_offset = int(override["new_offset"], 16)
-            row["new_offset"] = f"0x{new_offset:08x}"
-            row["delta"] = f"{new_offset - int(row['old_offset'], 16):+#x}"
-            row["confidence"] = "MANUAL"
-            row.pop("suspect", None)
-            row.pop("tiny_shape_mismatch", None)
+            if override.get("unresolved") is True:
+                for key in ("new_offset", "delta", "window", "expected_delta"):
+                    row.pop(key, None)
+                row["confidence"] = "MISSING"
+                row.pop("suspect", None)
+                row.pop("tiny_shape_mismatch", None)
+            else:
+                new_offset = int(override["new_offset"], 16)
+                row["new_offset"] = f"0x{new_offset:08x}"
+                row["delta"] = f"{new_offset - int(row['old_offset'], 16):+#x}"
+                row["confidence"] = "MANUAL"
+                row.pop("suspect", None)
+                row.pop("tiny_shape_mismatch", None)
             row["manual_evidence"] = override.get("evidence", "")
             if override.get("note"):
                 row["manual_note"] = override["note"]

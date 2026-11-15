@@ -68,7 +68,6 @@ HERO_TO_BASE = dict(NORMAL_MODE_HERO_FORM_TO_BASE_CARD)
 KNIGHT_HERO_ID = next(
     runtime for runtime, base in HERO_TO_BASE.items() if base == KNIGHT
 )
-READY_ABILITY_STATES = {2, 4}
 
 CARD_NAMES = {
     XBOW: "X-Bow",
@@ -477,74 +476,86 @@ def evaluate_action(
 
 
 def placement_refused(before: dict[str, Any], after: dict[str, Any], decision: Decision) -> bool:
-    """Return True when the engine kept the card in hand (placement refused)."""
+    """Return True when the engine kept the card in hand (placement refused).
+
+    The played card must leave its hand slot and be replaced by the cycle
+    queue. The X-Bow deck has eight distinct cards, so an unchanged card id in
+    the same slot after the advance proves the engine refused the placement.
+    Elixir is *not* a safe signal here: a 1-cost card can be fully masked by
+    regen, especially at 2x elixir.
+    """
 
     if decision.action is None or decision.card_id is None:
         return False
-    cheap_ok = False
-    for player in after.get("players", []):
-        if int(player["owner"]) != decision.action.owner:
-            continue
-        before_player = next(
-            item for item in before.get("players", []) if int(item["owner"]) == decision.action.owner
-        )
-        cost = next(
-            (
-                float(card["cost"])
-                for card in before_player.get("hand", [])
-                if int(card["handIndex"]) == decision.action.hand_index
-            ),
-            None,
-        )
-        if cost is None:
-            continue
-        cheap_ok = float(player["elixir"]) > float(before_player["elixir"]) - cost + 0.1
-    return cheap_ok
+    before_player = next(
+        (item for item in before.get("players", []) if int(item["owner"]) == decision.action.owner), None
+    )
+    after_player = next(
+        (item for item in after.get("players", []) if int(item["owner"]) == decision.action.owner), None
+    )
+    if before_player is None or after_player is None:
+        return False
+    played = next(
+        (card for card in before_player.get("hand", []) if int(card["handIndex"]) == decision.action.hand_index),
+        None,
+    )
+    replacement = next(
+        (card for card in after_player.get("hand", []) if int(card["handIndex"]) == decision.action.hand_index),
+        None,
+    )
+    if played is None or replacement is None:
+        return False
+    return int(replacement["cardId"]) == int(played["cardId"])
 
 
 def ready_knight_ability(
-    diagnostics: dict[str, Any],
-    observation: dict[str, Any],
+    rich: dict[str, Any],
     owner: int,
 ) -> tuple[AbilityAction, dict[str, Any]] | None:
-    """Return the queued-ready Hero Knight ability for one owner, if any."""
+    """Return the queued-ready Hero Knight ability for one owner, if any.
 
-    hero = next(
-        (
-            item
-            for item in observation.get("objects", [])
-            if int(item.get("owner", -1)) == owner
-            and int(item.get("cardId", 0)) == KNIGHT_HERO_ID
-            and int(item.get("objectIndex", -1)) >= 0
-        ),
-        None,
-    )
-    if hero is None:
-        return None
+    The source is the controller's own ``championEntityKeys`` entry from the
+    attested rich observation, not an object-list scan: a Hero Knight can be
+    replaced while an older entity is still alive, and a stale raw object index
+    makes the probe refuse the activation. The key is the same tagged native
+    identity the probe resolves and validates.
+    """
+
     player = next(
-        (item for item in diagnostics.get("players", []) if int(item.get("owner", -1)) == owner), None
+        (item for item in rich.get("players", []) if int(item.get("owner", -1)) == owner), None
     )
     if player is None:
         return None
-    for controller in player.get("controllerSlots", []):
-        if int(controller.get("championCount") or 0) <= 0:
-            continue
-        member_ids = {int(member.get("cardId", 0)) for member in controller.get("champions", [])}
-        if KNIGHT_HERO_ID not in member_ids and controller.get("abilityName") != "Knight_hero_Ability":
-            continue
-        if (
-            int(controller.get("buttonState") or 0) in READY_ABILITY_STATES
-            and int(controller.get("charges") or 0) > 0
+    for runtime in player.get("abilityRuntime") or []:
+        if int(runtime.get("selectedCharacterDataGlobalId") or 0) != KNIGHT_HERO_ID and "Knight_hero_Ability" not in str(
+            runtime.get("actionDataName") or ""
         ):
-            return (
-                AbilityAction(owner, int(hero["objectIndex"]), int(hero["secondaryIndex"])),
-                {
-                    "abilityName": controller.get("abilityName"),
-                    "buttonState": controller.get("buttonState"),
-                    "charges": controller.get("charges"),
-                    "maxCharges": controller.get("maxCharges"),
-                },
-            )
+            continue
+        if not bool(runtime.get("available")):
+            continue
+        if int(runtime.get("remainingChargesRaw") or 0) <= 0:
+            continue
+        if int(runtime.get("remainingCooldownMs") or 0) != 0:
+            continue
+        key = next(
+            (
+                candidate
+                for candidate in runtime.get("championEntityKeys") or []
+                if isinstance(candidate, (list, tuple)) and len(candidate) == 3
+            ),
+            None,
+        )
+        if key is None:
+            continue
+        return (
+            AbilityAction(owner, int(key[1]), int(key[2])),
+            {
+                "abilityName": runtime.get("actionDataName"),
+                "buttonState": runtime.get("buttonState"),
+                "charges": runtime.get("remainingChargesRaw"),
+                "maxCharges": runtime.get("maxCharges"),
+            },
+        )
     return None
 
 
@@ -624,11 +635,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         # throttled: it costs one extra control round trip when it runs.
         if args.abilities and decision_index % max(1, args.ability_poll) == 0:
             busy = {action.owner for action in actions}
-            diagnostics = env.champion_diagnostics()
+            rich = env.observe_rich()
             for owner in (0, 1):
                 if owner in busy:
                     continue
-                ready = ready_knight_ability(diagnostics, before, owner)
+                ready = ready_knight_ability(rich, owner)
                 if ready is None:
                     continue
                 ability, receipt = ready
@@ -695,13 +706,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     {"owner": decision.action.owner, "module": decision.module, "cardId": decision.card_id}
                 )
                 continue
-            problems = evaluate_action(before, after, decision)
-            if placement_refused(before, after, decision) and decision.card_id is not None:
+            # A refused placement leaves the card in hand, so the post-tick
+            # hand/elixir still describe the *pre-play* state. Validating it as
+            # a paid play produces false "wrong next card / did not pay" rows
+            # (seen on seed 7). Record the block and move on.
+            if decision.card_id is not None and placement_refused(before, after, decision):
                 report["blockedPlacements"].append(
                     {"owner": decision.action.owner, "cardId": decision.card_id,
                      "x": decision.action.x, "y": decision.action.y}
                 )
                 policy.note_blocked(decision.action.owner, decision.action, decision.card_id)
+                continue
+            problems = evaluate_action(before, after, decision)
             entry.setdefault("problems", []).extend(
                 f"owner {decision.action.owner}: {problem}" for problem in problems
             )
