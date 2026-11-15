@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import asdict, replace
 import gc
 import json
 import math
@@ -24,8 +24,9 @@ from ...match_factory import NATIVE_GAMEPLAY_END_TICK
 from .async_cluster_self_play import AsyncResidentEngineSpecV4, collect_async_cluster_wave_v4
 from .checkpoint import CHECKPOINT_SCHEMA_V4, load_actor_critic_checkpoint, save_actor_critic_checkpoint
 from .cluster_self_play import ClusterCollectionV4, ClusterMatchAssignmentV4
+from .config import ModelConfigV4
 from .deck_pool import DeckIdentityV4, DeckPoolManifestV4
-from .decoding import ShadowCandidateLegality
+from .decoding import ShadowCandidateLegality, elixir_multiplier_from_match_scalars
 from .distributed_ppo import distributed_ppo_update_v4
 from .ppo_expert_bc import HogExpertSamplerV4, distributed_expert_bc_update_v4, expert_bc_contract_v4
 from .factory import build_production_model_v4
@@ -42,6 +43,7 @@ from .matchmaking import (
     MatchmakerConfigV4,
 )
 from .model import UniversalCardPolicyV4
+from .policy_session import config_from_contract, resolve_checkpoint_release
 from .ppo import PPOConfigV4, StoredRolloutV4
 from .ppo_runtime import ppo_environment_config_v4, ppo_ruleset_id_v4, validate_reward_parameters_v4
 from .tensors import GATE_ACT, GATE_WAIT
@@ -90,7 +92,18 @@ def _rollout_behavior_counts(rollout: StoredRolloutV4, model: UniversalCardPolic
     for step, (observation, action) in enumerate(zip(rollout.observations, rollout.actions, strict=True)):
         valid = rollout.valid_mask[step].cpu()
         forced_gate = torch.zeros_like(valid) if forced_gate_mask is None else forced_gate_mask[step].cpu()
-        shadow = ShadowCandidateLegality(observation.candidates, model.config)
+        match_scalars = getattr(observation, "match_scalars", None)
+        if isinstance(match_scalars, torch.Tensor):
+            multiplier = float(elixir_multiplier_from_match_scalars(match_scalars)[0])
+        else:
+            time_record = getattr(observation, "time", None)
+            raw_multiplier = getattr(time_record, "elixir_multiplier", None) if time_record is not None else None
+            multiplier = (
+                float(raw_multiplier)
+                if raw_multiplier is not None and math.isfinite(float(raw_multiplier))
+                else 1.0
+            )
+        shadow = ShadowCandidateLegality(observation.candidates, model.config, elixir_multiplier=multiplier)
         legal_act = shadow.candidate_mask().any(dim=-1).cpu()
         eligible = valid & legal_act
         actual_act = valid & (action.gate.cpu() == GATE_ACT)
@@ -177,10 +190,22 @@ def _rollout_behavior_metrics(counts: torch.Tensor, *, delay_offset_ms: Sequence
     return result
 
 
+def _checkpoint_policy_identity(path: str | Path) -> tuple[str | None, ModelConfigV4]:
+    """Read the catalog release and model config a checkpoint was trained under."""
+
+    payload = torch.load(Path(path), map_location="cpu", weights_only=False, mmap=True)
+    contract = payload.get("contract") if isinstance(payload, dict) else None
+    if not isinstance(contract, Mapping):
+        raise ValueError("V4 checkpoint has no contract")
+    release, _bundle = resolve_checkpoint_release(contract)
+    return release, config_from_contract(contract)
+
+
 def _load_frozen_model(
     path: str | Path, *, device: torch.device, gate_temperature: float = DEFAULT_GATE_TEMPERATURE_START
 ) -> tuple[UniversalCardPolicyV4, dict[str, Any]]:
-    model = build_production_model_v4(device=device)
+    release, config = _checkpoint_policy_identity(path)
+    model = build_production_model_v4(device=device, config=config, release=release)
     payload = load_actor_critic_checkpoint(path, model, map_location=device)
     _set_temperatures(model, gate_temperature=gate_temperature)
     model.set_ppo_rollout_sampling(False)
@@ -871,6 +896,14 @@ def _validate_topology(ready: Mapping[str, object], *, world_size: int) -> tuple
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck-pool", type=Path, required=True)
+    parser.add_argument(
+        "--allow-unverified-deck-pool",
+        action="store_true",
+        help=(
+            "accept a locally verified deck pool instead of the upstream 7,695/20 "
+            "pool; the pool still must hold >=5,000 decks and 20 focus decks"
+        ),
+    )
     parser.add_argument("--checkpoint", type=Path, required=True, help="fresh learner initialization checkpoint")
     parser.add_argument(
         "--il-anchor-checkpoint", type=Path, help="frozen IL opponent checkpoint; defaults to --checkpoint"
@@ -1168,8 +1201,15 @@ def main() -> int:
     league_path = args.output_dir / "league.json"
 
     manifest = DeckPoolManifestV4.load(args.deck_pool)
+    # Upstream trained on a 7,695-deck / 20-focus pool.  The local 252k-replay
+    # corpus cannot reproduce that exact identity count (7,089 at --minimum-uses 5,
+    # 8,530 at 4), so an explicitly allowed local pool may bypass the equality
+    # gate while still being a usage-filtered pool with a real focus list.
     if len(manifest.decks) != 7_695 or len(manifest.focus_decks) != 20:
-        raise ValueError("formal cluster PPO requires the verified 7,695/20 pool")
+        if not args.allow_unverified_deck_pool:
+            raise ValueError("formal cluster PPO requires the verified 7,695/20 pool")
+        if len(manifest.decks) < 5_000 or len(manifest.focus_decks) != 20:
+            raise ValueError("unverified deck pool requires >=5000 decks and exactly 20 focus decks")
     deck_average_elixir_by_id = {deck.deck_id: deck.average_elixir for deck in manifest.decks}
     decks_by_id = {deck.deck_id: deck for deck in manifest.decks}
     try:
@@ -1179,7 +1219,14 @@ def main() -> int:
     environment_config = ppo_environment_config_v4(gamma_per_decision=args.gamma, shaping_beta=args.shaping_beta)
     max_decision_steps = math.ceil(environment_config.max_battle_ticks / 5) + 4
 
-    current_model = build_production_model_v4(device=device)
+    # The checkpoint contract is authoritative: a 16.635 checkpoint needs the
+    # 16.635 catalogs and its own observation schema, not the pinned default.
+    checkpoint_release, checkpoint_model_config = _checkpoint_policy_identity(
+        args.resume_checkpoint or args.checkpoint
+    )
+    current_model = build_production_model_v4(
+        device=device, config=checkpoint_model_config, release=checkpoint_release
+    )
     # Actor batches and learner ACT batches have different row groupings.
     # BF16 location logits are unusually sensitive to those GEMM/conv shapes,
     # so keep this small head in FP32 while the rest of PPO remains autocast.
@@ -1228,6 +1275,13 @@ def main() -> int:
         il_anchor_checkpoint, device=actor_device, gate_temperature=args.gate_temperature_start
     )
     anchor_state_id = str(anchor_payload["checkpoint_id"])
+    if asdict(anchor_model.config) != asdict(checkpoint_model_config) or (
+        getattr(anchor_model, "competitive_release", checkpoint_release) != checkpoint_release
+    ):
+        raise ValueError(
+            "IL anchor checkpoint uses a different catalog release or model config than the learner; "
+            "one engine tensorizes every actor row, so pass a 16.635-compatible --il-anchor-checkpoint"
+        )
     expert_bc_sampler = (
         None
         if args.expert_bc_manifest is None
@@ -1445,7 +1499,9 @@ def main() -> int:
             "focus_deck_count": len(manifest.focus_decks),
             "gpus": gpu_names,
             "parallel_matches": engine_count * lanes,
-            "ruleset_id": ppo_ruleset_id_v4(environment_config),
+            "ruleset_id": ppo_ruleset_id_v4(environment_config, checkpoint_release),
+            "competitive_release": checkpoint_release,
+            "model_config": asdict(checkpoint_model_config),
             "decision_ticks": 5,
             "policy_gameplay_end_tick": NATIVE_GAMEPLAY_END_TICK,
             "rollout_segment_decision_steps": args.rollout_segment_seconds * 4,

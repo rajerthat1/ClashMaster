@@ -10,17 +10,19 @@ from typing import Callable
 
 import torch
 
-from ...battle_env import BattleEnvV1
-from ...contracts import ActionKind, ActionV1
+from ...battle_env import ENTITY_LIMIT, EVENT_LIMIT, EVENT_WINDOW_TICKS, STANDARD_MATCH_TICKS, BattleEnvV1
+from ...contracts import ActionKind, ActionV1, EnvironmentConfigV1
 from ...cr_native_env import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    FIRST_PLAYABLE_TICK,
     NATIVE_RENDER_SPEEDS,
     NativeClashEnv,
     RunnerError,
 )
 from ...match_factory import MatchConfig
 from ...rich_telemetry_adapter import RuntimeEffectCatalog
+from ...ruleset import build_native_ruleset_manifest, load_native_build_profile
 from .expert import FIRST_POLICY_DECISION_TICK, POLICY_DECISION_TICKS
 from .factory import production_semantic_bundle
 from .policy_session import build_policy_session_v4, load_policy_v4
@@ -38,6 +40,18 @@ def _rendered_action(action: ActionV1) -> ActionV1:
         action,
         execute_offset_ticks=1,
         metadata=metadata,
+    )
+
+
+def _native_environment_config() -> EnvironmentConfigV1:
+    """Match BattleEnvV1's constructor defaults exactly (the manifest is a check)."""
+
+    return EnvironmentConfigV1(
+        warmup_ticks=FIRST_PLAYABLE_TICK,
+        max_battle_ticks=STANDARD_MATCH_TICKS,
+        entity_limit=ENTITY_LIMIT,
+        event_limit=EVENT_LIMIT,
+        event_window_ticks=EVENT_WINDOW_TICKS,
     )
 
 
@@ -65,12 +79,31 @@ def run_offline_match(
         return result
     bundle = production_semantic_bundle()
     native = NativeClashEnv(host, port, timeout=30.0)
-    native.public_card_play_events_from_combat_ring = True
+    # Bind the live device build explicitly. The local catalog is release-pinned
+    # (15.535.86); the engine/probe/content identities come from the phone. A
+    # missing pin keeps the previous behaviour, a present one fails closed.
+    environment_config = _native_environment_config()
+    status_fn = getattr(native, "status", None)
+    client_version = str(status_fn().get("clientVersion") or "") if callable(status_fn) else ""
+    native_profile = load_native_build_profile(client_version) if client_version else None
+    ruleset_manifest = None
+    if native_profile is not None:
+        ruleset_manifest = build_native_ruleset_manifest(
+            client_version=client_version,
+            catalog=bundle.native_card_catalog,
+            environment_config=environment_config,
+        )
+    # 16.635.1 omits the combat-ring card-play feed; requesting it fails closed
+    # at reset. Model actions still emit action-executed events.
+    combat_ring_hooks = bool(native_profile.get("combat_ring_hooks", False)) if native_profile else True
+    if (ruleset_manifest is None or ruleset_manifest.config.get("engine") != "crforge") and combat_ring_hooks:
+        native.public_card_play_events_from_combat_ring = True
     environment = BattleEnvV1(
         native=native,
         card_catalog=bundle.native_card_catalog,
         semantic_subset_contract=bundle.semantic_subset_contract,
         effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
+        ruleset_manifest=ruleset_manifest,
     )
     session = None
     decisions = actions = rejected = 0
@@ -103,6 +136,12 @@ def run_offline_match(
             "actor_owner": actor_owner,
             "human_owner": 1 - actor_owner,
             "match": asdict(match),
+            "client_version": client_version,
+            "ruleset_id": getattr(environment, "ruleset_id", None),
+            "native_build": dict(ruleset_manifest.config["native_build"])
+            if ruleset_manifest is not None and ruleset_manifest.config.get("native_build")
+            else None,
+            "combat_ring_hooks": combat_ring_hooks,
         }
         (artifact_dir / "identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
         native.set_speed(speed)

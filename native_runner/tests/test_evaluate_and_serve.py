@@ -45,7 +45,7 @@ def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, t
     monkeypatch.setattr(
         evaluate,
         "production_semantic_bundle",
-        lambda: NS(native_card_catalog=None, semantic_subset_contract=None, native_effect_catalog=None),
+        lambda release=None: NS(native_card_catalog=None, semantic_subset_contract=None, native_effect_catalog=None),
     )
     monkeypatch.setattr(evaluate.RuntimeEffectCatalog, "from_catalog", lambda c: None)
     monkeypatch.setattr(evaluate, "NativeClashEnv", lambda *a, **k: NS(close_transport=lambda: None))

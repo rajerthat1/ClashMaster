@@ -31,7 +31,14 @@ from .components import (
 )
 from .mechanics import EffectSemanticCatalogV1, MechanicProfileCatalogV1
 from .config import ModelConfigV4, UNIVERSAL_ACTION_VERSION, UNIVERSAL_OBSERVATION_VERSION, UNIVERSAL_POLICY_VERSION
-from .decoding import ShadowCandidateLegality
+from .decoding import (
+    DELAY_POLICY_EARLIEST,
+    DELAY_POLICY_SAMPLE,
+    ShadowCandidateLegality,
+    earliest_delay_offset_bin,
+    elixir_multiplier_from_match_scalars,
+    validate_delay_policy,
+)
 from .tensors import (
     ActionEvaluationComponentsV4,
     ActionSequenceV4,
@@ -211,6 +218,8 @@ class UniversalCardPolicyV4(nn.Module):
         self._ppo_action_temperature = 1.0
         self._ppo_continue_temperature = 1.0
         self._inference_delay_offset_max_ms: int | None = None
+        # Runtime-only (never checkpointed); see set_delay_policy.
+        self._delay_policy = DELAY_POLICY_SAMPLE
         self.register_buffer(
             "_inference_delay_offset_mask", torch.ones(len(config.delay_offset_ms), dtype=torch.bool), persistent=False
         )
@@ -292,6 +301,26 @@ class UniversalCardPolicyV4(nn.Module):
         if not isinstance(enabled, bool):
             raise TypeError("PPO rollout sampling mode must be bool")
         self._ppo_rollout_sampling = enabled
+
+    @property
+    def delay_policy(self) -> str:
+        return self._delay_policy
+
+    def set_delay_policy(self, policy: str) -> None:
+        """Choose how sampled/argmax decoding picks each micro-action's delay bin.
+
+        ``"sample"`` (default) uses the delay head exactly as before.
+        ``"earliest"`` ignores the head and plays the first legal bin of the
+        decoder's delay mask (``decoding.earliest_delay_offset_bin``).  The
+        bin is then a deterministic function of the state and the earlier
+        choices, so its log-prob and entropy are excluded (left at 0) from the
+        per-micro components and from the total ``log_prob``/``entropy``, both
+        when sampling (PPO behaviour log-prob) and when evaluating forced
+        actions (PPO learner).  ``delay_offset_log_probs`` and
+        ``delay_offset_legal_mask`` are still filled.  Set it before CUDA Graph
+        capture; it is not saved in checkpoints.
+        """
+        self._delay_policy = validate_delay_policy(policy)
 
     def set_ppo_location_head_fp32(self, enabled: bool) -> None:
         if not isinstance(enabled, bool):
@@ -543,6 +572,7 @@ class UniversalCardPolicyV4(nn.Module):
         batch_size, candidate_count = candidates.mask.shape
         device = context.policy_context.device
         dtype = context.policy_context.dtype
+        earliest_delay = self._delay_policy == DELAY_POLICY_EARLIEST
         if forced_actions is not None:
             if validate:
                 forced_actions.validate(config, candidate_count=candidate_count)
@@ -550,7 +580,19 @@ class UniversalCardPolicyV4(nn.Module):
         else:
             resolved = None
 
-        shadow = ShadowCandidateLegality(candidates, config)
+        # Sampling and teacher forcing share one legality rule,
+        # ``config.delay_aware_legality`` (touch-tick elixir; pre-fix
+        # checkpoints load with the decision-tick rule).  While sampling, the
+        # inference delay cap is part of candidate legality: a candidate that
+        # is affordable only at capped-out bins is illegal, instead of reaching
+        # the delay head's empty-mask fallback.  Forced actions (teacher
+        # forcing, PPO evaluation) are scored without the cap, as before.
+        shadow = ShadowCandidateLegality(
+            candidates,
+            config,
+            elixir_multiplier=elixir_multiplier_from_match_scalars(batch.match_scalars),
+            allowed_delay_bins=self._inference_delay_offset_mask if forced_actions is None else None,
+        )
         initial_legal = shadow.candidate_mask()
         gate_logits = self.gate_head(context.policy_context)
         gate_mask = torch.stack(
@@ -641,7 +683,7 @@ class UniversalCardPolicyV4(nn.Module):
                 raise ValueError("non-GRID candidate must use target cell -1")
             selected_target = torch.where(grid, selected_target, torch.full_like(selected_target, -1))
             target_feature = self._target_feature(location_keys, selected_target, grid)
-            delay_offset_mask = shadow.delay_offset_mask(step=step)
+            delay_offset_mask = shadow.delay_offset_mask(step=step, candidate_index=selected_candidate)
             if forced_actions is None:
                 delay_offset_mask &= self._inference_delay_offset_mask[None]
             delay_distribution = _distribution(
@@ -653,10 +695,19 @@ class UniversalCardPolicyV4(nn.Module):
             selected_delay = (
                 forced_actions.delay_offset_bin[:, step].clamp_min(0)
                 if forced_actions is not None
+                else earliest_delay_offset_bin(delay_offset_mask)
+                if earliest_delay
                 else self._choice(delay_distribution, sample=sample)
             )
             if validate and torch.any(active & ~delay_offset_mask.gather(1, selected_delay[:, None])[:, 0]):
                 raise ValueError("stored delay offsets must preserve action order")
+            if (
+                validate
+                and earliest_delay
+                and forced_actions is not None
+                and torch.any(active & (selected_delay != earliest_delay_offset_bin(delay_offset_mask)))
+            ):
+                raise ValueError("stored delay is not the earliest legal bin under delay_policy='earliest'")
             selected_action_embedding = self._action_embedding(selected_memory, target_feature, selected_delay)
 
             selected_log_prob = candidate_distribution.log_prob(selected_candidate)
@@ -666,10 +717,13 @@ class UniversalCardPolicyV4(nn.Module):
             candidate_entropy[:, step] = candidate_distribution.entropy() * active
             target_log_prob[:, step] = selected_target_log_prob * grid
             target_entropy[:, step] = location_distribution.entropy() * grid
-            delay_offset_log_prob[:, step] = selected_delay_log_prob * active
+            if not earliest_delay:
+                # Under ``earliest`` the bin is not a policy choice: its
+                # log-prob/entropy stay at the initial zeros.
+                delay_offset_log_prob[:, step] = selected_delay_log_prob * active
+                delay_offset_entropy[:, step] = delay_distribution.entropy() * active
             delay_offset_log_probs[:, step] = delay_distribution.logits
             delay_offset_legal_mask[:, step] = delay_offset_mask
-            delay_offset_entropy[:, step] = delay_distribution.entropy() * active
             candidate_index[:, step] = torch.where(active, selected_candidate, candidate_index[:, step])
             selected_uid = candidates.uid.gather(1, selected_candidate[:, None])[:, 0]
             candidate_uid[:, step] = torch.where(active, selected_uid, candidate_uid[:, step])
@@ -866,7 +920,9 @@ class UniversalCardPolicyV4(nn.Module):
         candidates = batch.candidates
         batch_size = batch.batch_size
         device = context.policy_context.device
-        shadow = ShadowCandidateLegality(candidates, self.config)
+        shadow = ShadowCandidateLegality(
+            candidates, self.config, elixir_multiplier=elixir_multiplier_from_match_scalars(batch.match_scalars)
+        )
         initial_legal = shadow.candidate_mask()
         gate_mask = torch.stack(
             (torch.ones(batch_size, dtype=torch.bool, device=device), initial_legal.any(dim=-1)), dim=-1

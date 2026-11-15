@@ -15,6 +15,48 @@ from .model import UniversalCardPolicyV4
 
 CHECKPOINT_SCHEMA_V4 = "universal-card-actor-critic-checkpoint.v4"
 
+# Config keys added after the 15.535 contract.  A checkpoint that predates them
+# omits them from its contract; our model may still carry them at these defaults
+# without changing the architecture it instantiates.
+ADDITIVE_CONFIG_KEYS = frozenset(
+    {
+        "neutralize_pending_ticks_remaining",
+        "delay_aware_legality",
+        "card_id_gate",
+        "ablate_spatial_memory",
+        "ablate_spatial_summary",
+        "ablate_event_summary",
+        "ablate_previous_action_summary",
+        "ablate_relation_bias",
+        "ablate_spatial_pair_bias",
+        "ablate_mechanic_profiles",
+        "ablate_lstm",
+        "ablate_decoder_cross_attention",
+    }
+)
+
+
+def contract_compatible(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> bool:
+    """True when ``actual`` instantiates the architecture ``expected`` describes.
+
+    Every key the checkpoint states must match.  Keys added by newer policy
+    schemas are tolerated only when they are declared additive, so a 15.535
+    checkpoint still loads while a real dimension change never does.
+    """
+
+    for version in ("policy_version", "observation_version", "action_version"):
+        if expected.get(version) != actual.get(version):
+            return False
+    if expected.get("catalog_ids") != actual.get("catalog_ids"):
+        return False
+    expected_config = expected.get("model_config") or {}
+    actual_config = actual.get("model_config") or {}
+    for key, value in expected_config.items():
+        if key not in actual_config or actual_config[key] != value:
+            return False
+    extras = set(actual_config) - set(expected_config)
+    return extras <= ADDITIVE_CONFIG_KEYS
+
 
 def _catalog_ids(model: UniversalCardPolicyV4) -> dict[str, str]:
     return {
@@ -94,13 +136,15 @@ def load_actor_critic_checkpoint(
     grad_scaler: object | None = None,
     map_location: torch.device | str | None = None,
     restore_rng: bool = False,
+    payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Load a strict checkpoint after verifying V4 and catalog identities."""
 
-    payload = torch.load(Path(path), map_location=map_location, weights_only=False)
+    if payload is None:
+        payload = torch.load(Path(path), map_location=map_location, weights_only=False)
     if not isinstance(payload, dict) or payload.get("schema") != CHECKPOINT_SCHEMA_V4:
         raise ValueError("unsupported V4 actor-critic checkpoint")
-    if payload.get("contract") != checkpoint_contract(model):
+    if not contract_compatible(payload.get("contract") or {}, checkpoint_contract(model)):
         raise ValueError("checkpoint model/catalog contract does not match")
     model.load_state_dict(payload["model_state_dict"], strict=True)
     model.set_ppo_gate_temperature(float(payload["ppo_gate_temperature"]))

@@ -13,6 +13,9 @@ UNIVERSAL_ACTION_VERSION = "universal-candidate-action.v4"
 UNIVERSAL_CARD_CATALOG_VERSION = "universal-card-catalog.v3"
 
 
+CARD_ID_GATE_MODES = ("learned", "zero", "one")
+
+
 CARD_RUNTIME_FEATURE_NAMES = (
     "in_hand",
     "is_next_card",
@@ -31,6 +34,31 @@ CARD_RUNTIME_FEATURE_NAMES = (
     "ability_active",
     "unknown_opponent_card_fraction",
 )
+
+# 16.x runtime schema: the actor's own in-flight command for each card token.
+# Added by the 16.635 policy line; a 15.535 checkpoint (16 columns) and a 16.635
+# checkpoint (21 columns) are both valid V4 contracts, resolved by
+# ``ModelConfigV4.card_runtime_feature_dim``.
+CARD_RUNTIME_PENDING_FEATURE_NAMES = (
+    "pending_execution",
+    "pending_ticks_remaining_over_20",
+    "pending_target_x_over_board_width",
+    "pending_target_y_over_board_height",
+    "ability_pending",
+)
+
+CARD_RUNTIME_FEATURE_NAMES_V2 = CARD_RUNTIME_FEATURE_NAMES + CARD_RUNTIME_PENDING_FEATURE_NAMES
+
+# Column of ``pending_ticks_remaining_over_20`` in the 16.x runtime schema.
+PENDING_TICKS_REMAINING_FEATURE_INDEX_V2 = CARD_RUNTIME_FEATURE_NAMES_V2.index(
+    "pending_ticks_remaining_over_20"
+)
+
+# Runtime schemas a V4 checkpoint may declare, keyed by column count.
+CARD_RUNTIME_FEATURE_PROFILES: dict[int, tuple[str, ...]] = {
+    len(CARD_RUNTIME_FEATURE_NAMES): CARD_RUNTIME_FEATURE_NAMES,
+    len(CARD_RUNTIME_FEATURE_NAMES_V2): CARD_RUNTIME_FEATURE_NAMES_V2,
+}
 
 TOWER_FEATURE_NAMES = (
     "hitpoints_ratio",
@@ -312,6 +340,25 @@ class ModelConfigV4:
     initial_act_probability: float = 0.15
     initial_second_probability: float = 0.25
 
+    # 16.x policy-schema switches.  The defaults describe the 15.535 contract
+    # (16 runtime columns, no pending-execution knowledge); a 16.635 checkpoint
+    # sets the matching values in its own contract.  Only
+    # ``neutralize_pending_ticks_remaining`` and the runtime width are consumed
+    # by this tree today; the rest are carried so a strict contract round-trip
+    # remains exact.
+    neutralize_pending_ticks_remaining: bool = False
+    delay_aware_legality: bool = False
+    card_id_gate: str = "learned"
+    ablate_spatial_memory: bool = False
+    ablate_spatial_summary: bool = False
+    ablate_event_summary: bool = False
+    ablate_previous_action_summary: bool = False
+    ablate_relation_bias: bool = False
+    ablate_spatial_pair_bias: bool = False
+    ablate_mechanic_profiles: bool = False
+    ablate_lstm: bool = False
+    ablate_decoder_cross_attention: bool = False
+
     def __post_init__(self) -> None:
         invalid = sorted(item.name for item in fields(self) if item.type == "int" and getattr(self, item.name) <= 0)
         if invalid:
@@ -330,10 +377,18 @@ class ModelConfigV4:
             raise ValueError("group_dim and token_dim must match")
         if self.token_dim % self.attention_heads:
             raise ValueError("token_dim must be divisible by attention_heads")
+        runtime_names = CARD_RUNTIME_FEATURE_PROFILES.get(self.card_runtime_feature_dim)
+        if runtime_names is None:
+            raise ValueError(
+                "card_runtime_feature_dim must match a known runtime schema: "
+                f"{sorted(CARD_RUNTIME_FEATURE_PROFILES)}"
+            )
+        if self.card_id_gate not in CARD_ID_GATE_MODES:
+            raise ValueError(f"card_id_gate must be one of {CARD_ID_GATE_MODES}")
         frozen_widths = {
             "card_static_dim": len(CARD_STATIC_FEATURE_NAMES),
             "card_mechanic_dim": len(CARD_MECHANIC_FEATURE_NAMES),
-            "card_runtime_feature_dim": len(CARD_RUNTIME_FEATURE_NAMES),
+            "card_runtime_feature_dim": len(runtime_names),
             "tower_feature_dim": len(TOWER_FEATURE_NAMES),
             "child_feature_dim": len(CHILD_FEATURE_NAMES),
             "group_feature_dim": len(GROUP_FEATURE_NAMES),

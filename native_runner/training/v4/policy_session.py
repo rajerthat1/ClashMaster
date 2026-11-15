@@ -6,17 +6,19 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 import hashlib
 from pathlib import Path
 import time
-from typing import Mapping
+from typing import Any, Mapping
 import weakref
 
 import torch
 
 from ...battle_env import BattleEnvV1
+from ...competitive_release import available_release_names
 from ...contracts import ObservationV1
 from .checkpoint import load_actor_critic_checkpoint
-from .decoding import ShadowCandidateLegality, decode_action_sequence_v4
+from .decoding import ShadowCandidateLegality, decode_action_sequence_v4, elixir_multiplier_from_match_scalars
 from .expert import POLICY_DECISION_TICKS
-from .factory import build_episode_tensorizer_v4, build_production_model_v4
+from .config import ModelConfigV4
+from .factory import build_episode_tensorizer_v4, build_production_model_v4, production_semantic_bundle
 from .model import UniversalCardPolicyV4
 from .native_actions import DecodedActionSequenceV4
 from .tensorizer import UniversalObservationTensorizerV4
@@ -205,12 +207,26 @@ def resolve_v4_checkpoint(path: str | Path) -> Path:
 
 
 def load_policy_v4(checkpoint: str | Path, *, device: torch.device | str) -> LoadedPolicyV4:
-    """Construct the production V4 model and load a strict V4 checkpoint."""
+    """Construct the V4 model described by a checkpoint and load it strictly.
+
+    The checkpoint's ``contract`` is authoritative: its catalog IDs select the
+    competitive release (16.635 catalogs load next to the default 15.535 ones)
+    and its ``model_config`` builds the model.  A checkpoint that matches no
+    known release fails closed.
+    """
 
     checkpoint_path = resolve_v4_checkpoint(checkpoint)
     actual_device = torch.device(device)
-    model = build_production_model_v4(device=actual_device)
-    payload = load_actor_critic_checkpoint(checkpoint_path, model, map_location=actual_device, restore_rng=False)
+    payload = torch.load(checkpoint_path, map_location=actual_device, weights_only=False)
+    contract = payload.get("contract") if isinstance(payload, dict) else None
+    if not isinstance(contract, Mapping):
+        raise ValueError("V4 checkpoint has no contract")
+    release, _bundle = resolve_checkpoint_release(contract)
+    config = config_from_contract(contract)
+    model = build_production_model_v4(device=actual_device, config=config, release=release)
+    payload = load_actor_critic_checkpoint(
+        checkpoint_path, model, map_location=actual_device, restore_rng=False, payload=payload
+    )
     model.eval()
     return LoadedPolicyV4(
         model=model,
@@ -220,6 +236,51 @@ def load_policy_v4(checkpoint: str | Path, *, device: torch.device | str) -> Loa
         update_step=int(payload["update_step"]),
         training_stage=str(payload["training_stage"]),
     )
+
+
+def _bundle_catalog_ids(bundle: Any) -> dict[str, str]:
+    return {
+        "card": bundle.card_catalog.catalog_id,
+        "ability": bundle.ability_catalog.catalog_id,
+        "entity_archetype": bundle.entity_archetype_catalog.catalog_id,
+        "effect": bundle.effect_catalog.catalog_id,
+        "mechanic_profile": bundle.mechanic_profile_catalog.catalog_id,
+    }
+
+
+def resolve_checkpoint_release(contract: Mapping[str, Any]) -> tuple[str | None, Any]:
+    """Find the release whose catalogs reproduce the checkpoint contract."""
+
+    wanted = contract.get("catalog_ids")
+    if not isinstance(wanted, Mapping):
+        raise ValueError("V4 checkpoint contract has no catalog_ids")
+    for name in (None, *available_release_names()):
+        bundle = production_semantic_bundle(name)
+        if _bundle_catalog_ids(bundle) == dict(wanted):
+            return name, bundle
+    raise ValueError(
+        "checkpoint catalog set matches no known competitive release; "
+        f"known releases: {list(available_release_names())}"
+    )
+
+
+def config_from_contract(contract: Mapping[str, Any]) -> ModelConfigV4:
+    raw = contract.get("model_config")
+    if not isinstance(raw, Mapping):
+        raise ValueError("V4 checkpoint contract has no model_config")
+    return model_config_from_mapping(raw)
+
+
+def model_config_from_mapping(raw: Mapping[str, Any], *, origin: str = "checkpoint") -> ModelConfigV4:
+    """Validate a serialized ``ModelConfigV4`` block from a checkpoint or engine spec."""
+
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{origin} model_config is not a mapping")
+    known = {item.name for item in fields(ModelConfigV4)}
+    unknown = sorted(set(raw) - known)
+    if unknown:
+        raise ValueError(f"{origin} model_config has unknown fields: {unknown}")
+    return ModelConfigV4(**dict(raw))
 
 
 class PolicySessionV4:
@@ -281,7 +342,17 @@ class PolicySessionV4:
         host_batch = self.tensorizer.tensorize(observation, validate=self.validate_tensors)
         if force_act:
             deploy = host_batch.candidates.variant == CANDIDATE_DEPLOY
-            legal = ShadowCandidateLegality(host_batch.candidates, self.tensorizer.config).candidate_mask()
+            match_scalars = getattr(host_batch, "match_scalars", None)
+            extra = (
+                {"elixir_multiplier": elixir_multiplier_from_match_scalars(match_scalars)}
+                if match_scalars is not None
+                else {}
+            )
+            legal = ShadowCandidateLegality(
+                host_batch.candidates,
+                self.tensorizer.config,
+                **extra,
+            ).candidate_mask()
             force_act = bool((legal & deploy).any().item())
             if force_act:
                 host_batch = replace(host_batch, candidates=replace(
@@ -350,7 +421,12 @@ def build_policy_session_v4(
         raise RuntimeError("offline V4 BattleEnv is not configured for five-tick turns")
     return PolicySessionV4(
         model,
-        build_episode_tensorizer_v4(episode, actor_owner=actor_owner),
+        build_episode_tensorizer_v4(
+            episode,
+            actor_owner=actor_owner,
+            bundle=getattr(model, "semantic_bundle", None),
+            config=getattr(model, "config", None),
+        ),
         device=device,
         sample=sample,
         validate_tensors=validate_tensors,

@@ -392,6 +392,65 @@ def _elixir_generated_raw(start_tick: int, end_tick: int) -> float:
     return generated
 
 
+# Touch-time elixir legality (C1 fix).  A policy decision at native tick d may
+# touch its micro-actions at delay bins k = 0..4 (0..200 ms, one native tick
+# per bin; the engine executes each touch 20 ticks later).  Elixir available
+# to the touch at bin k is
+#
+#     e(k) = max(e0, min(10, e0 + regen(d) * k))      e0 = max(0, raw - reserved)
+#
+# with ``regen(d)`` the ELIXIR_SEGMENTS rate at the decision tick (a segment
+# change inside the 5-tick window is ignored, which is conservative) and
+# ``reserved`` the cost of in-flight own commands.  Touched commands stay
+# reserved until they execute, so a compound decision is legal when, in touch
+# order, every prefix fits: cost_i <= e(k_i) - sum_{j<i} cost_j.  The V4
+# decoder (``training.v4.decoding.ShadowCandidateLegality``) applies the same
+# rule to ``candidates.elixir`` (= e0) and the match multiplier.
+TOUCH_WINDOW_DELAY_BINS = 5
+# Half a raw unit (5e-5 elixir).  Costs and e0 are integral raw units, so this
+# is exact at bin 0 while absorbing the decoder's fp32 rounding near a bin edge
+# (a decoder-legal touch is always environment-legal).
+_TOUCH_AFFORDABLE_TOLERANCE_RAW = 0.5
+
+
+def _touch_window_elixir_raw(native_tick: int, effective_elixir_raw: int) -> tuple[float, ...]:
+    """Raw elixir available at each touch delay bin of the decision at ``native_tick``."""
+
+    start = float(effective_elixir_raw)
+    rate = _elixir_raw_per_tick(native_tick)
+    return tuple(max(start, min(100_000.0, start + rate * k)) for k in range(TOUCH_WINDOW_DELAY_BINS))
+
+
+def _earliest_affordable_bin(
+    cost_raw: int, window: Sequence[float], *, spent_raw: int = 0, first_bin: int = 0
+) -> int | None:
+    """First bin ``>= first_bin`` at which ``cost_raw`` fits after ``spent_raw``; None if none."""
+
+    for k in range(max(0, first_bin), len(window)):
+        if cost_raw <= window[k] - spent_raw + _TOUCH_AFFORDABLE_TOLERANCE_RAW:
+            return k
+    return None
+
+
+def _action_touch_delay_bin(action: ActionV1) -> int:
+    """Touch delay bin (0..4) of a policy command within its decision window.
+
+    V4 policy commands carry ``policy_delay_offset_bin``.  Other commands use
+    ``execute_offset_ticks - base_latency_ticks``
+    (latency 1 unless declared), clamped to the window.
+    """
+
+    metadata = action.metadata
+    declared = metadata.get("policy_delay_offset_bin")
+    if type(declared) is int and 0 <= declared < TOUCH_WINDOW_DELAY_BINS:
+        return declared
+    latency = metadata.get("base_latency_ticks")
+    if type(latency) is not int or latency < 1:
+        latency = 1
+    offset = max(1, int(action.execute_offset_ticks or 1))
+    return min(TOUCH_WINDOW_DELAY_BINS - 1, max(0, offset - latency))
+
+
 def _runner_engine(native: object) -> str | None:
     """Best-effort engine detection for an unmanifested local endpoint.
 
@@ -1604,7 +1663,10 @@ class BattleEnvV1:
         if not native_command_available:
             return {}, {"status": "unavailable", "reason": "native_command_api_missing"}
         key_by_canonical_id = {canonical_id: entity_key for entity_key, canonical_id in context.canonical_ids.items()}
-        elixir = float(int(raw_player.get("elixirRaw", 0))) / 10_000.0
+        # Touch-time rule on the raw bar: affordable at some bin of the
+        # decision window.  ``action_mask`` and ``_validate_compound_actions``
+        # then apply the reserved-elixir and per-bin sequential checks.
+        raw_window = _touch_window_elixir_raw(int(source.get("tick", 0)), int(raw_player.get("elixirRaw", 0)))
         candidates: dict[int, tuple[AbilityRuntimeStateV1, EntityKey]] = {}
         reasons: dict[str, str] = {}
         for state in runtime.ability_runtime_states:
@@ -1630,7 +1692,7 @@ class BattleEnvV1:
                 reason = "charges_exhausted"
             elif state.elixir_cost is None:
                 reason = "elixir_cost_unknown"
-            elif state.elixir_cost > elixir:
+            elif _earliest_affordable_bin(int(round(float(state.elixir_cost) * 10_000)), raw_window) is None:
                 reason = "insufficient_elixir"
             elif source_entity in candidates:
                 reason = "duplicate_source_identity"
@@ -2121,6 +2183,12 @@ class BattleEnvV1:
         pending_hand_slots.update(
             int(slot) for slot in player.get("pendingHandSlots", ()) if 0 <= int(slot) < 4
         )
+        # Touch-time legality: a card or ability is a candidate when it is
+        # affordable at some delay bin of this decision window; the earliest
+        # such bin (0..4, native hand slot / source entity keys) is exported
+        # in ``reasons["affordable_from_bin"]``.
+        window_elixir_raw = _touch_window_elixir_raw(int(source.get("tick", 0)), effective_elixir_raw)
+        slot_affordable_from_bin: dict[str, int | None] = {}
         slots: list[bool] = []
         masks: dict[str, Any] = {}
         reasons: dict[str, Any] = {}
@@ -2134,12 +2202,18 @@ class BattleEnvV1:
                 reasons[str(slot)] = "pending_execution"
             elif card.get("cardParameter") is None or card.get("cost") is None:
                 reasons[str(slot)] = "native_selection_unavailable"
-            elif int(card["cost"]) * 10_000 > effective_elixir_raw:
-                reasons[str(slot)] = "insufficient_elixir"
-                has_unaffordable = True
             else:
-                legal = True
-                reasons[str(slot)] = "legal"
+                cost_raw = int(card["cost"]) * 10_000
+                # Kept on the decision-tick rule: WAIT_UNTIL_AFFORDABLE waits
+                # for the card to be affordable without regeneration.
+                has_unaffordable |= cost_raw > effective_elixir_raw
+                affordable_from_bin = _earliest_affordable_bin(cost_raw, window_elixir_raw)
+                slot_affordable_from_bin[str(slot)] = affordable_from_bin
+                if affordable_from_bin is None:
+                    reasons[str(slot)] = "insufficient_elixir"
+                else:
+                    legal = True
+                    reasons[str(slot)] = "legal"
             if card is not None:
                 runtime = self._hand_runtime_contract(card, form_aliases=form_aliases, owner=owner)
                 visible_card_id = int(runtime["visible_card_id"])
@@ -2191,12 +2265,22 @@ class BattleEnvV1:
             slots.append(legal)
         ability_candidates, ability_reasons = self._ability_action_candidates(owner, source, rich_context=rich_context)
         pending_ability_sources = {item.action.source_entity for item in pending_abilities}
+        ability_affordable_from_bin = {
+            str(source_entity): _earliest_affordable_bin(
+                int(round(float(candidate[0].elixir_cost) * 10_000)), window_elixir_raw
+            )
+            for source_entity, candidate in ability_candidates.items()
+            if candidate[0].elixir_cost is not None
+        }
         ability_candidates = {
             source_entity: candidate
             for source_entity, candidate in ability_candidates.items()
             if source_entity not in pending_ability_sources
             and candidate[0].elixir_cost is not None
-            and int(round(float(candidate[0].elixir_cost) * 10_000)) <= effective_elixir_raw
+            and ability_affordable_from_bin[str(source_entity)] is not None
+        }
+        ability_affordable_from_bin = {
+            str(source_entity): ability_affordable_from_bin[str(source_entity)] for source_entity in ability_candidates
         }
         if pending_ability_sources:
             ability_reasons = {
@@ -2223,6 +2307,12 @@ class BattleEnvV1:
                 "raw_elixir": elixir_raw / 10_000.0,
                 "reserved_elixir": reserved_elixir_raw / 10_000.0,
                 "effective_elixir": effective_elixir_raw / 10_000.0,
+                "elixir_regen_per_tick": _elixir_raw_per_tick(int(source.get("tick", 0))) / 10_000.0,
+                "touch_window_elixir": tuple(value / 10_000.0 for value in window_elixir_raw),
+                "affordable_from_bin": {
+                    "slots": slot_affordable_from_bin,
+                    "abilities": ability_affordable_from_bin,
+                },
                 "pending_action_count": (len(pending_cards) + len(pending_abilities)),
                 "territory_source": "v15 standard rules + native-probed terrain",
                 "post_tower_pockets": "conservative captured-command bounds",
@@ -2353,9 +2443,10 @@ class BattleEnvV1:
         hand = {int(item["handIndex"]): item for item in player.get("hand", ())}
         used_slots: set[int] = set()
         ability_count = 0
-        total_cost_raw = 0
+        # (touch delay bin, submission index, cost) for the sequential check.
+        touches: list[tuple[int, int, int]] = []
         planned_buildings: list[OccupiedFootprintV1] = []
-        for action in actions:
+        for index, action in enumerate(actions):
             if action.kind == ActionKind.ACTIVATE_ABILITY:
                 ability_count += 1
                 assert action.source_entity is not None
@@ -2363,7 +2454,9 @@ class BattleEnvV1:
                 state, _key = candidates[action.source_entity]
                 if state.elixir_cost is None:
                     raise BattleEnvError("compound ability has no exact native elixir cost")
-                total_cost_raw += int(round(float(state.elixir_cost) * 10_000))
+                touches.append(
+                    (_action_touch_delay_bin(action), index, int(round(float(state.elixir_cost) * 10_000)))
+                )
                 continue
             if action.kind != ActionKind.PLAY_CARD:
                 continue
@@ -2374,7 +2467,7 @@ class BattleEnvV1:
             selected = hand[action.hand_slot]
             if selected.get("cost") is None:
                 raise BattleEnvError("compound card has no exact native cost")
-            total_cost_raw += int(selected["cost"]) * 10_000
+            touches.append((_action_touch_delay_bin(action), index, int(selected["cost"]) * 10_000))
             card_id = int(selected["cardId"])
             entry = mask.placement_masks[str(action.hand_slot)]
             effective_card_id = int(entry.get("effective_card_id", card_id))
@@ -2400,8 +2493,17 @@ class BattleEnvV1:
             for item in self._pending_abilities
             if item.status in _ABILITY_PENDING_STATUSES and item.action.owner == owner
         )
-        if total_cost_raw > max(0, int(player.get("elixirRaw", 0)) - reserved_cost_raw):
-            raise BattleEnvError("compound decision overspends elixir")
+        # Same accounting as ``action_mask``: e0 = max(0, raw - reserved), then
+        # touch-time regeneration per bin; earlier touches of this decision
+        # stay reserved, so every prefix in touch order must fit.
+        window = _touch_window_elixir_raw(
+            int(raw.get("tick", 0)), max(0, int(player.get("elixirRaw", 0)) - reserved_cost_raw)
+        )
+        spent_raw = 0
+        for touch_bin, _index, cost_raw in sorted(touches):
+            if _earliest_affordable_bin(cost_raw, window, spent_raw=spent_raw, first_bin=touch_bin) != touch_bin:
+                raise BattleEnvError("compound decision overspends elixir")
+            spent_raw += cost_raw
 
     def _world_target(self, action: ActionV1) -> tuple[int, int]:
         assert action.target_grid is not None

@@ -4,14 +4,22 @@ import argparse
 from dataclasses import asdict, replace
 import json
 from pathlib import Path
+import sys
 
 import torch
 
-from ...battle_env import BattleEnvV1
-from ...contracts import ActionKind, ActionV1
-from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, NativeClashEnv
+from ...battle_env import (
+    ENTITY_LIMIT,
+    EVENT_LIMIT,
+    EVENT_WINDOW_TICKS,
+    STANDARD_MATCH_TICKS,
+    BattleEnvV1,
+)
+from ...contracts import ActionKind, ActionV1, EnvironmentConfigV1
+from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, FIRST_PLAYABLE_TICK, NativeClashEnv
 from ...match_factory import MatchConfig
 from ...rich_telemetry_adapter import RuntimeEffectCatalog
+from ...ruleset import build_native_ruleset_manifest, load_native_build_profile
 from .expert import FIRST_POLICY_DECISION_TICK, POLICY_DECISION_TICKS
 from .factory import production_semantic_bundle
 from .policy_session import build_policy_session_v4, load_policy_v4
@@ -34,23 +42,77 @@ def evaluate(
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     policies = [load_policy_v4(path, device=device) for path in (checkpoint_a, checkpoint_b)]
-    bundle = production_semantic_bundle()
+    # Both seats share one engine, and the engine's content build decides which
+    # native catalog can resolve its entities.  Derive it from the checkpoints
+    # (16.635 policies need the 16.635 catalogs) and refuse a mixed pairing.
+    release_a = getattr(policies[0].model, "competitive_release", None)
+    release_b = getattr(policies[1].model, "competitive_release", None)
+    if release_a != release_b:
+        raise ValueError(
+            f"checkpoints use different competitive releases ({release_a!r} vs {release_b!r}); "
+            "one native catalog must serve both seats"
+        )
+    bundle = production_semantic_bundle(release_a)
+    config_a = getattr(policies[0].model, "config", None)
+    config_b = getattr(policies[1].model, "config", None)
+    if config_a is not None and config_b is not None and asdict(config_a) != asdict(config_b):
+        raise ValueError("checkpoints use different model configs")
     native = NativeClashEnv(host, port, timeout=30.0)
+    environment_config = EnvironmentConfigV1(
+        warmup_ticks=FIRST_PLAYABLE_TICK,
+        max_battle_ticks=STANDARD_MATCH_TICKS,
+        entity_limit=ENTITY_LIMIT,
+        event_limit=EVENT_LIMIT,
+        event_window_ticks=EVENT_WINDOW_TICKS,
+        shaping_beta=0.0,
+        shaping_tau_ticks=1200.0,
+        include_native_digest=True,
+    )
+    status_fn = getattr(native, "status", None)
+    client_version = str(status_fn().get("clientVersion") or "") if callable(status_fn) else ""
+    native_profile = load_native_build_profile(client_version) if client_version else None
+    ruleset_manifest = None
+    if native_profile is not None:
+        # The A51 runs a build whose device identities differ from the local
+        # catalog release. Bind that build explicitly so attestation stays
+        # fail-closed instead of comparing against the 15.535 table.
+        ruleset_manifest = build_native_ruleset_manifest(
+            client_version=client_version,
+            catalog=bundle.native_card_catalog,
+            environment_config=environment_config,
+        )
     environment = BattleEnvV1(
         native=native,
         card_catalog=bundle.native_card_catalog,
         semantic_subset_contract=bundle.semantic_subset_contract,
         effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
+        ruleset_manifest=ruleset_manifest,
+        warmup_ticks=FIRST_PLAYABLE_TICK,
+        max_battle_ticks=STANDARD_MATCH_TICKS,
+        entity_limit=ENTITY_LIMIT,
+        event_limit=EVENT_LIMIT,
+        event_window_ticks=EVENT_WINDOW_TICKS,
     )
     # The combat-ring card-play feed is a native-probe hook. crforge records its
     # own plays; asking it for an attested native ring fails closed at reset.
+    # Builds whose probe omits the rich hook rings (16.635.1 today) must not
+    # request it either: model actions already emit action-executed events.
     manifest = getattr(environment, "ruleset_manifest", None)
-    if manifest is None or manifest.config.get("engine") != "crforge":
+    combat_ring_hooks = True
+    if native_profile is not None:
+        combat_ring_hooks = bool(native_profile.get("combat_ring_hooks", False))
+    if (manifest is None or manifest.config.get("engine") != "crforge") and combat_ring_hooks:
         native.public_card_play_events_from_combat_ring = True
+    native_build_identity = None
+    if manifest is not None and manifest.config.get("native_build"):
+        native_build_identity = dict(manifest.config["native_build"])
     identity = {
         "games": games,
         "sample": sample,
         "match": asdict(match),
+        "client_version": client_version,
+        "ruleset_id": getattr(environment, "ruleset_id", None),
+        "native_build": native_build_identity,
         "checkpoints": [
             {"path": str(p.checkpoint_path), "sha256": p.checkpoint_sha256, "checkpoint_id": p.checkpoint_id}
             for p in policies
@@ -103,6 +165,7 @@ def evaluate(
                 actions = [0, 0]
                 rejected = set()
                 terminated = truncated = False
+                decisions = 0
                 while not terminated and not truncated:
                     commands = {}
                     for owner, session in enumerate(sessions):
@@ -116,6 +179,13 @@ def evaluate(
                         commands[owner] = tuple(chosen) or (ActionV1.wait(owner, ticks=POLICY_DECISION_TICKS),)
                     observations, _, terms, truncs, _ = environment.step(commands, record_trace=False)
                     terminated, truncated = bool(terms["__all__"]), bool(truncs["__all__"])
+                    decisions += 1
+                    if decisions % 100 == 0:
+                        print(
+                            f"game {index + 1}/{games} tick {observations[0].tick} decisions {decisions}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                     for observation in observations.values():
                         for event in observation.events:
                             if event.event_type == "action_rejected":
@@ -166,7 +236,12 @@ def main(argv=None):
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--sample", action="store_true")
+    parser.add_argument(
+        "--sample",
+        action="store_true",
+        help="sample from the policy instead of argmax; sparse-action checkpoints "
+        "collapse to WAIT under argmax (docs/native/16.635.1/FINDINGS.md §3.27)",
+    )
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)
     config = json.loads(args.match_config.read_text(encoding="utf-8")) if args.match_config else {}

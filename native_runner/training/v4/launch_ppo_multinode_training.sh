@@ -13,9 +13,30 @@ segment_seconds=${4:-${CR_PPO_SEGMENT_SECONDS:-40}}
 resume_checkpoint=${5:-${CR_PPO_RESUME_CHECKPOINT:-}}
 python=${CR_AI_PYTHON:-python}
 
+# The collector answers one engine packet per GPU forward unless another engine
+# lands inside a short wait window.  With four lockstep engines, set
+# CR_PPO_INFERENCE_BATCH_WAIT_MS to roughly their per-frame latency (~20-40 ms)
+# and check metrics.jsonl's inference_mean_frame_packets; it defaults to 2 ms.
+
 resume_args=()
 if [[ -n $resume_checkpoint ]]; then
   resume_args=(--resume-checkpoint "$resume_checkpoint")
+fi
+
+pool_args=()
+if [[ ${CR_PPO_ALLOW_UNVERIFIED_DECK_POOL:-0} == 1 ]]; then
+  pool_args=(--allow-unverified-deck-pool)
+fi
+
+temperature_args=()
+if [[ -n ${CR_PPO_GATE_TEMPERATURE_START:-} ]]; then
+  temperature_args+=(--gate-temperature-start "$CR_PPO_GATE_TEMPERATURE_START")
+fi
+if [[ -n ${CR_PPO_GATE_TEMPERATURE_END:-} ]]; then
+  temperature_args+=(--gate-temperature-end "$CR_PPO_GATE_TEMPERATURE_END")
+fi
+if [[ -n ${CR_PPO_GATE_TEMPERATURE_ANNEAL_UPDATES:-} ]]; then
+  temperature_args+=(--gate-temperature-anneal-updates "$CR_PPO_GATE_TEMPERATURE_ANNEAL_UPDATES")
 fi
 
 readarray -t topology_values < <("$python" - "$topology" <<'PY'
@@ -63,6 +84,8 @@ exec "$python" -m torch.distributed.run \
   --nproc-per-node="$nproc_per_node" \
   -m native_runner.training.v4.train_ppo_self_play_cluster \
   --deck-pool "${CR_PPO_DECK_POOL:?Set CR_PPO_DECK_POOL in .env}" \
+  "${pool_args[@]}" \
+  "${temperature_args[@]}" \
   --checkpoint "${CR_PPO_CHECKPOINT:?Set CR_PPO_CHECKPOINT in .env}" \
   "${resume_args[@]}" \
   --output-dir "$output_dir" \

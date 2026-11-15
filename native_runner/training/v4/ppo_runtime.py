@@ -33,8 +33,8 @@ def ppo_environment_config_v4(
 
 
 @lru_cache(maxsize=16)
-def ppo_ruleset_id_v4(environment: EnvironmentConfigV1) -> str:
-    bundle = production_semantic_bundle()
+def ppo_ruleset_id_v4(environment: EnvironmentConfigV1, release: str | None = None) -> str:
+    bundle = production_semantic_bundle(release)
     return content_hash(
         {
             "schema": PPO_RULESET_SCHEMA_V4,
@@ -49,13 +49,15 @@ def ppo_ruleset_id_v4(environment: EnvironmentConfigV1) -> str:
     )
 
 
-def build_ppo_environment_v4(native: object, environment: EnvironmentConfigV1) -> BattleEnvV1:
-    bundle = production_semantic_bundle()
+def build_ppo_environment_v4(
+    native: object, environment: EnvironmentConfigV1, *, release: str | None = None
+) -> BattleEnvV1:
+    bundle = production_semantic_bundle(release)
     return BattleEnvV1(
         native=native,  # type: ignore[arg-type]
         card_catalog=bundle.native_card_catalog,
         semantic_subset_contract=bundle.semantic_subset_contract,
-        ruleset_id=ppo_ruleset_id_v4(environment),
+        ruleset_id=ppo_ruleset_id_v4(environment, release),
         warmup_ticks=environment.warmup_ticks,
         max_battle_ticks=environment.max_battle_ticks,
         entity_limit=environment.entity_limit,
@@ -67,10 +69,12 @@ def build_ppo_environment_v4(native: object, environment: EnvironmentConfigV1) -
     )
 
 
-def episode_for_matchup_v4(matchup: ScheduledMatchupV4, environment: EnvironmentConfigV1) -> EpisodeConfigV1:
+def episode_for_matchup_v4(
+    matchup: ScheduledMatchupV4, environment: EnvironmentConfigV1, *, release: str | None = None
+) -> EpisodeConfigV1:
     layout0, layout1 = matchup.runtime_layouts()
     return EpisodeConfigV1(
-        ruleset_id=ppo_ruleset_id_v4(environment),
+        ruleset_id=ppo_ruleset_id_v4(environment, release),
         deck0=layout0.card_ids,
         deck1=layout1.card_ids,
         seed=matchup.seed,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait as wait_futures
 import ctypes
 from contextlib import nullcontext
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 import math
 import os
 import signal
@@ -18,6 +18,7 @@ import torch
 from torch import Tensor
 
 from ...battle_env import TICKS_PER_SECOND, _elixir_generated_raw
+from ...competitive_release import load_release, use_release
 from ...contracts import ActionKind, ActionV1
 from ...match_factory import NATIVE_GAMEPLAY_END_TICK
 from .cluster_self_play import (
@@ -31,9 +32,9 @@ from .cluster_self_play import (
     build_resident_engine_v4,
     concatenate_padded_tensor_records_v4,
 )
-from .decoding import ShadowCandidateLegality, decode_action_sequence_v4
+from .decoding import ShadowCandidateLegality, decode_action_sequence_v4, elixir_multiplier_from_match_scalars
 from .expert import POLICY_DECISION_TICKS
-from .policy_session import _fixed_cuda_graph_batch_v4
+from .policy_session import _fixed_cuda_graph_batch_v4, model_config_from_mapping
 from .matchmaking import POLICY_IL
 from .king_activation_reward import apply_fireball_king_activation_penalty_v4
 from .model import UniversalCardPolicyV4
@@ -55,6 +56,28 @@ from .tensors import (
 
 _PPO_CUDA_GRAPH_ROW_BUCKET = 32
 _INFERENCE_BATCH_WAIT_SECONDS = 0.002
+
+
+def _inference_batch_wait_seconds() -> float:
+    """Extra wait after the first ready packet, in seconds.
+
+    The collector answers one packet per forward unless other engines land
+    inside this window.  On the A51 four engines run in lockstep, so a window
+    comparable to their per-frame latency (tens of ms) lets all four coalesce
+    into one GPU forward; ``CR_PPO_INFERENCE_BATCH_WAIT_MS`` overrides the
+    protocol default without a code change.
+    """
+
+    raw = os.environ.get("CR_PPO_INFERENCE_BATCH_WAIT_MS")
+    if raw is None or not raw.strip():
+        return _INFERENCE_BATCH_WAIT_SECONDS
+    try:
+        milliseconds = float(raw)
+    except ValueError as error:
+        raise ValueError("CR_PPO_INFERENCE_BATCH_WAIT_MS must be a number") from error
+    if not math.isfinite(milliseconds) or not 0.0 <= milliseconds <= 1_000.0:
+        raise ValueError("CR_PPO_INFERENCE_BATCH_WAIT_MS must be in 0..1000")
+    return milliseconds / 1_000.0
 
 
 def _credit_hog_deployments_v4(
@@ -536,6 +559,94 @@ def _action_to_wire(action: ActionSequenceV4) -> tuple[object, ...]:
     )
 
 
+def _decode_failure_dump_path() -> str | None:
+    """Optional JSON path for the pre-step actions of an aborted resident round.
+
+    ``CR_PPO_FAILURE_DUMP=/tmp/opencode/pppo-failure.json`` writes, on the next
+    engine failure, the exact decoded actions and live action-mask reasons for
+    every active lane.  The native batch error names only the env id, and the
+    probe reports one generic message for command rejection, step-bound and
+    capture failures, so this is the cheap way to find the failing command.
+    """
+
+    value = os.environ.get("CR_PPO_FAILURE_DUMP", "").strip()
+    return value or None
+
+
+def _write_decode_failure_dump(
+    path: str,
+    *,
+    error: BaseException,
+    futures: Mapping[Any, int],
+    runtimes: Sequence[Any],
+    decoded_by_match: Mapping[int, Any],
+) -> None:
+    """Best-effort JSON dump; never masks the original engine failure."""
+
+    try:
+        import json
+        from pathlib import Path
+
+        failed: list[int] = []
+        for future, index in futures.items():
+            if future.done():
+                try:
+                    if future.exception() is not None:
+                        failed.append(int(index))
+                except BaseException:  # pragma: no cover - cancelled future
+                    pass
+        if not failed:
+            failed = list(range(len(runtimes)))
+        matches: list[dict[str, Any]] = []
+        for index in sorted(set(failed)):
+            runtime = runtimes[index]
+            decoded = decoded_by_match.get(index, {})
+            match: dict[str, Any] = {
+                "match_index": int(index),
+                "env_id": int(getattr(runtime, "env_id", index)),
+                "tick": int(runtime.observations[0].tick) if runtime.observations else None,
+                "owners": {},
+            }
+            try:
+                matchup = runtime.assignment.matchup
+                match["decks"] = {
+                    "deck0": list(matchup.deck0.card_keys),
+                    "deck1": list(matchup.deck1.card_keys),
+                    "policy_matchup": str(matchup.policy_matchup),
+                }
+            except BaseException:
+                pass
+            for owner, actions in decoded.items():
+                observation = runtime.observations[owner] if owner < len(runtime.observations) else None
+                mask_reasons = None
+                if observation is not None:
+                    mask_reasons = observation.action_mask.reasons
+                match["owners"][str(owner)] = {
+                    "actions": [
+                        {
+                            "owner": action.owner,
+                            "kind": action.kind.value,
+                            "hand_slot": action.hand_slot,
+                            "card_id": action.card_id,
+                            "source_entity": action.source_entity,
+                            "ability_id": action.ability_id,
+                            "target_grid": action.target_grid,
+                            "execute_offset_ticks": action.execute_offset_ticks,
+                            "metadata": dict(action.metadata),
+                        }
+                        for action in actions
+                    ],
+                    "action_mask_reasons": mask_reasons,
+                }
+            matches.append(match)
+        Path(path).write_text(
+            json.dumps({"error": f"{type(error).__name__}: {error}", "matches": matches}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except BaseException:  # pragma: no cover - diagnostics must not change behaviour
+        traceback.print_exc()
+
+
 def _pack_action_batch_to_cpu(actions: ActionSequenceV4, length: int) -> tuple[ActionSequenceV4, Tensor]:
     """Transfer one packed action matrix without Python scalar materialization."""
 
@@ -640,6 +751,11 @@ class AsyncResidentEngineSpecV4:
     segment_decision_steps: int | None = None
     force_frozen_opponent_opening_after_seconds: int | None = None
     force_il_opponent_opening_after_seconds: int | None = None
+    # Tensorization runs on the engine node, so the checkpoint's catalog release
+    # and model config must travel with the engine spec (a process-local release
+    # context in the trainer cannot reach a remote worker).
+    competitive_release: str | None = None
+    model_config: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,6 +887,35 @@ def _shared_rollout_graph_pool_v4(model: UniversalCardPolicyV4, device: torch.de
     return pool
 
 
+class _EagerRolloutSamplerV4:
+    """Non-CUDA fallback for :class:`_StochasticCudaGraphV4`.
+
+    CPU and MPS hosts cannot capture a CUDA graph, which previously made the
+    whole collection loop unreachable without a GPU.  This mirrors ``run`` by
+    sampling eagerly with the same call shape so the loop (and its rollout
+    storage) can be profiled and debugged locally.
+    """
+
+    def __init__(self, device: torch.device, *, autocast_dtype: torch.dtype | None = None) -> None:
+        self.device = device
+        self.autocast_dtype = autocast_dtype
+
+    def run(
+        self,
+        model: UniversalCardPolicyV4,
+        host_batch: UniversalSemanticBatchV4,
+        state: RecurrentPolicyStateV4,
+        episode_start: Tensor,
+        packed_host_batch: _RowPackedTensorRecordV4 | None = None,
+    ) -> Any:
+        batch = host_batch.to_model_input(self.device)
+        enabled = self.autocast_dtype is not None and self.device.type == "cuda"
+        with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype, enabled=enabled):
+            return model.sample_for_ppo_rollout(
+                batch, state, episode_start=episode_start.to(self.device), validate=False
+            )
+
+
 def _persistent_rollout_graph_v4(
     model: UniversalCardPolicyV4,
     device: torch.device,
@@ -797,15 +942,20 @@ def _persistent_rollout_graph_v4(
     if graph is None:
         if bool(model.__dict__.get("_ppo_rollout_cuda_graph_cache_frozen_v4", False)):
             return None
+        if device.type != "cuda":
+            # No graph to capture; sample eagerly with the same interface.
+            graph = _EagerRolloutSamplerV4(device)
+            cache[key] = graph
+            return graph
         graph = _StochasticCudaGraphV4(
             device,
             effect_capacity=effect_capacity,
             relation_capacity=relation_capacity,
-            graph_pool=(_shared_rollout_graph_pool_v4(model, device) if device.type == "cuda" else None),
+            graph_pool=_shared_rollout_graph_pool_v4(model, device),
         )
         cache[key] = graph
-    if not isinstance(graph, _StochasticCudaGraphV4):
-        raise RuntimeError("PPO rollout CUDA Graph cache entry changed type")
+    if not isinstance(graph, (_StochasticCudaGraphV4, _EagerRolloutSamplerV4)):
+        raise RuntimeError("PPO rollout sampler cache entry changed type")
     return graph
 
 
@@ -873,15 +1023,32 @@ def _engine_worker(
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     environment_config = ppo_environment_config_v4(gamma_per_decision=gamma_per_decision, shaping_beta=shaping_beta)
-    engine = build_resident_engine_v4(
-        spec.engine_index,
-        environment_config=environment_config,
-        host=spec.host,
-        base_port=spec.base_port,
-        lanes=spec.lanes,
-        timeout=spec.timeout,
-        capture_mode=spec.capture_mode,
+    model_config = (
+        None if spec.model_config is None else model_config_from_mapping(spec.model_config, origin="engine spec")
     )
+
+    def release_scope() -> Any:
+        """Bind the checkpoint's catalog release for the duration of a build.
+
+        ``BattleEnvV1`` re-verifies its semantic subset against the *active*
+        release's form evidence, so an explicit release name is not enough here:
+        the catalog constructors read the context variable too.
+        """
+
+        return use_release(load_release(spec.competitive_release)) if spec.competitive_release else nullcontext()
+
+    with release_scope():
+        engine = build_resident_engine_v4(
+            spec.engine_index,
+            environment_config=environment_config,
+            host=spec.host,
+            base_port=spec.base_port,
+            lanes=spec.lanes,
+            timeout=spec.timeout,
+            capture_mode=spec.capture_mode,
+            competitive_release=spec.competitive_release,
+            model_config=model_config,
+        )
     executor = ThreadPoolExecutor(max_workers=spec.lanes, thread_name_prefix=f"ppo-native-{spec.engine_index}")
     started = time.perf_counter()
     segment_decision_steps = spec.segment_decision_steps
@@ -1131,7 +1298,11 @@ def _engine_worker(
                     deferred = list(runtime.full_elixir_deferred_decision_ticks_before_first_card)
                     deferred[owner] += 1
                     runtime.full_elixir_deferred_decision_ticks_before_first_card = (deferred[0], deferred[1])
-                shadow = ShadowCandidateLegality(batch.candidates, tensorizer.config)
+                shadow = ShadowCandidateLegality(
+                    batch.candidates,
+                    tensorizer.config,
+                    elixir_multiplier=elixir_multiplier_from_match_scalars(batch.match_scalars),
+                )
                 playable = shadow.candidate_mask()[0]
                 hog_playable = bool((playable & (batch.candidates.native_visible_card_id[0] == 26000021)).any().item())
                 submitted_hog = any(
@@ -1210,6 +1381,15 @@ def _engine_worker(
             engine.coordinator.abort_round(error)
             for future in futures:
                 future.cancel()
+            dump_path = _decode_failure_dump_path()
+            if dump_path is not None:
+                _write_decode_failure_dump(
+                    dump_path,
+                    error=error,
+                    futures=futures,
+                    runtimes=runtimes,
+                    decoded_by_match=decoded_by_match,
+                )
             raise
         else:
             engine.coordinator.finish_round()
@@ -1482,7 +1662,8 @@ def _engine_worker(
     try:
         engine.prepare()
         reset_started = time.perf_counter()
-        runtimes = _reset_engine(engine, assignments, environment_config)
+        with release_scope():
+            runtimes = _reset_engine(engine, assignments, environment_config)
         reset_seconds = time.perf_counter() - reset_started
         engine.coordinator.start_session()
         segment_started = time.perf_counter()
@@ -1620,7 +1801,25 @@ def collect_async_cluster_wave_v4(
 ) -> ClusterCollectionV4:
     """Collect recurrent PPO segments from remote resident engines."""
 
-    normalized_specs = tuple(replace(spec, segment_decision_steps=segment_decision_steps) for spec in specs)
+    batch_wait_seconds = _inference_batch_wait_seconds()
+    release = getattr(current_model, "competitive_release", None)
+    tensorizer_config = asdict(current_model.config)
+    peers = (("anchor", anchor_model), *((f"history:{name}", value) for name, value in history_models.items()))
+    for key, model in peers:
+        if asdict(model.config) != tensorizer_config or getattr(model, "competitive_release", release) != release:
+            raise ValueError(
+                f"async {key} model does not share the actor's catalog release/model config; "
+                "one engine tensorizes every actor row, so mixed releases cannot be collected"
+            )
+    normalized_specs = tuple(
+        replace(
+            spec,
+            segment_decision_steps=segment_decision_steps,
+            competitive_release=release,
+            model_config=tensorizer_config,
+        )
+        for spec in specs
+    )
     if not normalized_specs or max_decision_steps <= 0 or segment_decision_steps <= 0:
         raise ValueError("async collection requires engines and a nonnegative wait")
     validate_reward_parameters_v4(locals())
@@ -2168,7 +2367,7 @@ def collect_async_cluster_wave_v4(
             while pending:
                 ready_wait_started = time.perf_counter()
                 ready_futures, _unfinished = wait_futures(tuple(receive_futures), return_when=FIRST_COMPLETED)
-                deadline = time.perf_counter() + _INFERENCE_BATCH_WAIT_SECONDS
+                deadline = time.perf_counter() + batch_wait_seconds
                 while True:
                     remaining = deadline - time.perf_counter()
                     if remaining <= 0:
@@ -2470,7 +2669,13 @@ def collect_async_cluster_wave_v4(
                 )
                 if requested_force.any():
                     legal_force = (
-                        ShadowCandidateLegality(active_model_batch.candidates, models[key].config)
+                        ShadowCandidateLegality(
+                            active_model_batch.candidates,
+                            models[key].config,
+                            elixir_multiplier=elixir_multiplier_from_match_scalars(
+                                active_model_batch.match_scalars
+                            ),
+                        )
                         .candidate_mask()
                         .any(dim=-1)
                     )

@@ -564,6 +564,74 @@ def test_mirror_keeps_visible_native_slot_and_effective_semantics_separate() -> 
     assert action.metadata["policy_effective_cost"] == pytest.approx(mirror_cost)
 
 
+def _delay_aware_candidates(elixir: float) -> ActionCandidatesV4:
+    catalog = _catalog()
+    candidates = _candidates(
+        catalog,
+        (
+            _deploy_row(catalog, card_id=DECK[0], hand_slot=0, cost=4.0, own_card_row=0),
+            _deploy_row(catalog, card_id=DECK[1], hand_slot=1, cost=4.0, own_card_row=1),
+        ),
+    )
+    return replace(candidates, elixir=torch.tensor([elixir]))
+
+
+def test_delay_aware_legality_affords_regeneration_at_the_touch_bin() -> None:
+    config = replace(ModelConfigV4(), delay_aware_legality=True)
+    legacy = replace(ModelConfigV4(), delay_aware_legality=False)
+    candidates = _delay_aware_candidates(3.95)
+
+    legacy_shadow = ShadowCandidateLegality(candidates, legacy)
+    assert legacy_shadow.candidate_mask()[0].tolist() == [False, False]
+
+    shadow = ShadowCandidateLegality(candidates, config, elixir_multiplier=1.0)
+    # 1x regen is 10 * 50 / 28000 elixir per tick: bin 3 is the first affordable one.
+    assert shadow.candidate_mask()[0].tolist() == [True, True]
+    mask = shadow.delay_offset_mask(step=0, candidate_index=torch.tensor([0]))
+    assert mask[0].tolist() == [False, False, False, True, True]
+
+    # A 3x match regenerates three times as fast, so bin 1 already fits.
+    fast = ShadowCandidateLegality(candidates, config, elixir_multiplier=torch.tensor([3.0]))
+    fast_mask = fast.delay_offset_mask(step=0, candidate_index=torch.tensor([0]))
+    assert fast_mask[0].tolist() == [False, True, True, True, True]
+
+
+def test_delay_aware_legality_respects_the_inference_delay_cap() -> None:
+    config = replace(ModelConfigV4(), delay_aware_legality=True)
+    candidates = _delay_aware_candidates(3.95)
+    cap = torch.tensor([True, False, False, False, False])
+    shadow = ShadowCandidateLegality(
+        candidates, config, elixir_multiplier=1.0, allowed_delay_bins=cap
+    )
+    # Affordable only from bin 3, but sampling is capped at bin 0: no candidate.
+    assert shadow.candidate_mask()[0].tolist() == [False, False]
+    # Forced evaluation (no cap) still scores the stored action.
+    uncapped = ShadowCandidateLegality(candidates, config, elixir_multiplier=1.0)
+    assert uncapped.candidate_mask()[0].tolist() == [True, True]
+
+
+def test_delay_aware_legality_reserves_the_first_micro_action_cost() -> None:
+    config = replace(ModelConfigV4(), delay_aware_legality=True)
+    candidates = _delay_aware_candidates(7.9)
+    shadow = ShadowCandidateLegality(candidates, config, elixir_multiplier=3.0)
+
+    assert shadow.candidate_mask()[0].tolist() == [True, True]
+    first_bin = shadow.delay_offset_mask(step=0, candidate_index=torch.tensor([0]))
+    assert first_bin[0].tolist() == [True, True, True, True, True]
+
+    shadow.apply(
+        torch.tensor([True]),
+        torch.tensor([0]),
+        torch.tensor([0]),
+        torch.tensor([0]),
+        step=0,
+    )
+    # 7.9 - 4.0 = 3.9 left; the second 4-cost play needs bin 2 at 3x regen.
+    second = shadow.delay_offset_mask(step=1, candidate_index=torch.tensor([1]))
+    assert second[0].tolist() == [False, False, True, True, True]
+    assert shadow.candidate_mask()[0].tolist() == [False, True]
+
+
 def test_mirror_is_never_legal_as_the_second_micro_action() -> None:
     mirror_deck = (MIRROR_CARD_ID, *DECK[:7])
     catalog = _catalog(*mirror_deck)

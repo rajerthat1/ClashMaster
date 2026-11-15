@@ -11,6 +11,7 @@ import torch
 from ...card_specs import CardSpecCatalog, build_card_catalog
 from ...card_logic import build_static_card_logic_catalog
 from ...competitive_data import competitive_data_initialization
+from ...competitive_release import active_release, load_release, use_release
 from ...battle_env import BattleEnvV1
 from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, ResidentNativeClashEnv
 from ...contracts import AbilitySpecV1, CardSpecV1, EpisodeConfigV1, content_hash
@@ -21,6 +22,7 @@ from ...semantic_subset import SemanticSupportedSubsetV1, build_semantic_support
 from ..card_features import HERO_FORM_TO_BASE_CARD
 from ..tracking import DeterministicPublicTracker
 from .catalog import AbilityCatalogV1, CardCatalogV1, EntityArchetypeCatalogV1, normal_mode_card_specs
+from .config import ModelConfigV4
 from .mechanics import EffectSemanticCatalogV1, MechanicProfileCatalogV1
 from .model import UniversalCardPolicyV4
 from .tensorizer import UniversalObservationTensorizerV4
@@ -43,9 +45,7 @@ class ProductionSemanticBundleV4:
     mechanic_profile_catalog: MechanicProfileCatalogV1
 
 
-@lru_cache(maxsize=1)
-@competitive_data_initialization()
-def production_semantic_bundle() -> ProductionSemanticBundleV4:
+def _build_semantic_bundle() -> ProductionSemanticBundleV4:
     native_cards = build_card_catalog()
     semantic_subset = build_semantic_supported_subset(native_cards)
     static_logic = build_static_card_logic_catalog(card_catalog=native_cards)
@@ -75,15 +75,52 @@ def production_semantic_bundle() -> ProductionSemanticBundleV4:
     )
 
 
-def build_production_model_v4(*, device: torch.device | str | None = None) -> UniversalCardPolicyV4:
-    bundle = production_semantic_bundle()
+@lru_cache(maxsize=8)
+def _bundle_for_release(name: str | None) -> ProductionSemanticBundleV4:
+    release = load_release(name) if name else None
+    with use_release(release), competitive_data_initialization():
+        return _build_semantic_bundle()
+
+
+def production_semantic_bundle(release: str | None = None) -> ProductionSemanticBundleV4:
+    """Build (and cache) the catalog bundle for one release.
+
+    ``None`` is the pinned 15.535 release; a name selects a descriptor under
+    ``native_runner/releases/``.  The active contextvar is restored on return,
+    so callers may hold bundles from two releases at once.
+    """
+
+    if release is None and active_release() is not None:
+        return _bundle_for_release(active_release().name)  # type: ignore[union-attr]
+    return _bundle_for_release(release)
+
+
+def current_bundle() -> ProductionSemanticBundleV4:
+    release = active_release()
+    return production_semantic_bundle(release.name if release else None)
+
+
+def build_production_model_v4(
+    *,
+    device: torch.device | str | None = None,
+    config: ModelConfigV4 | None = None,
+    release: str | None = None,
+) -> UniversalCardPolicyV4:
+    bundle = production_semantic_bundle(release)
     model = UniversalCardPolicyV4(
         bundle.card_catalog,
         ability_catalog=bundle.ability_catalog,
         entity_archetype_catalog=bundle.entity_archetype_catalog,
         effect_catalog=bundle.effect_catalog,
         mechanic_profile_catalog=bundle.mechanic_profile_catalog,
+        config=config,
     )
+    # Attach the bundle so a session built from this model uses the same
+    # catalogs even when another release is active.
+    model.semantic_bundle = bundle  # type: ignore[attr-defined]
+    # The release name is the portable half of that identity: an engine-node
+    # worker rebuilds the same bundle from it.
+    model.competitive_release = release  # type: ignore[attr-defined]
     return model if device is None else model.to(device)
 
 
@@ -162,16 +199,27 @@ def _public_tracker_v4(
 
 
 def build_episode_tensorizers_v4(
-    episode: EpisodeConfigV1, *, horizontal_mirrors: tuple[bool, bool] = (False, False)
+    episode: EpisodeConfigV1,
+    *,
+    horizontal_mirrors: tuple[bool, bool] = (False, False),
+    bundle: ProductionSemanticBundleV4 | None = None,
+    config: ModelConfigV4 | None = None,
 ) -> tuple[UniversalObservationTensorizerV4, UniversalObservationTensorizerV4]:
     return tuple(
-        build_episode_tensorizer_v4(episode, actor_owner=owner, horizontal_mirror=horizontal_mirrors[owner])
+        build_episode_tensorizer_v4(
+            episode, actor_owner=owner, horizontal_mirror=horizontal_mirrors[owner], bundle=bundle, config=config
+        )
         for owner in (0, 1)
     )  # type: ignore[return-value]
 
 
 def build_episode_tensorizer_v4(
-    episode: EpisodeConfigV1, *, actor_owner: int, horizontal_mirror: bool = False
+    episode: EpisodeConfigV1,
+    *,
+    actor_owner: int,
+    horizontal_mirror: bool = False,
+    bundle: ProductionSemanticBundleV4 | None = None,
+    config: ModelConfigV4 | None = None,
 ) -> UniversalObservationTensorizerV4:
     """Build one actor view while retaining both decks in its public tracker.
 
@@ -184,7 +232,7 @@ def build_episode_tensorizer_v4(
 
     if actor_owner not in (0, 1):
         raise ValueError("actor_owner must be 0 or 1")
-    bundle = production_semantic_bundle()
+    bundle = bundle or current_bundle()
     decks = (episode.deck0, episode.deck1)
     forms = tuple(
         tuple(int(value) for value in episode.tags.get(f"deck{owner}_form_availability", (0,) * 8)) for owner in (0, 1)
@@ -201,6 +249,7 @@ def build_episode_tensorizer_v4(
         tracker=_public_tracker_v4(bundle, decks, roles),
         deck_roles=roles[actor_owner],
         horizontal_mirror=horizontal_mirror,
+        config=config,
         reject_unknown_public_semantics=True,
     )
 

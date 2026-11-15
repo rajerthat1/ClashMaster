@@ -14,9 +14,10 @@ from ...contracts import ActionKind, ActionV1
 from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, NATIVE_RENDER_SPEEDS, NativeClashEnv, RunnerError
 from ...match_factory import MatchConfig
 from ...rich_telemetry_adapter import RuntimeEffectCatalog
+from ...ruleset import build_native_ruleset_manifest, load_native_build_profile
 from .expert import FIRST_POLICY_DECISION_TICK, POLICY_DECISION_TICKS
 from .factory import production_semantic_bundle
-from .offline_agent import _rendered_action
+from .offline_agent import _native_environment_config, _rendered_action
 from .policy_session import build_policy_session_v4, load_policy_v4
 
 
@@ -46,12 +47,26 @@ def run_ai_duel(
         return result
     bundle = production_semantic_bundle()
     native = NativeClashEnv(host, port, timeout=30.0)
-    native.public_card_play_events_from_combat_ring = True
+    environment_config = _native_environment_config()
+    status_fn = getattr(native, "status", None)
+    client_version = str(status_fn().get("clientVersion") or "") if callable(status_fn) else ""
+    native_profile = load_native_build_profile(client_version) if client_version else None
+    ruleset_manifest = None
+    if native_profile is not None:
+        ruleset_manifest = build_native_ruleset_manifest(
+            client_version=client_version,
+            catalog=bundle.native_card_catalog,
+            environment_config=environment_config,
+        )
+    combat_ring_hooks = bool(native_profile.get("combat_ring_hooks", False)) if native_profile else True
+    if (ruleset_manifest is None or ruleset_manifest.config.get("engine") != "crforge") and combat_ring_hooks:
+        native.public_card_play_events_from_combat_ring = True
     environment = BattleEnvV1(
         native=native,
         card_catalog=bundle.native_card_catalog,
         semantic_subset_contract=bundle.semantic_subset_contract,
         effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
+        ruleset_manifest=ruleset_manifest,
     )
     sessions = []
     decisions = [0, 0]
@@ -86,6 +101,12 @@ def run_ai_duel(
                 for policy in loaded
             ],
             "match": asdict(match),
+            "client_version": client_version,
+            "ruleset_id": getattr(environment, "ruleset_id", None),
+            "native_build": dict(ruleset_manifest.config["native_build"])
+            if ruleset_manifest is not None and ruleset_manifest.config.get("native_build")
+            else None,
+            "combat_ring_hooks": combat_ring_hooks,
         }
         (artifact_dir / "identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
         native.set_speed(speed)

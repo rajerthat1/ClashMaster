@@ -107,20 +107,21 @@ def normal_mode_card_specs(
         if spec.attributes.get("NotVisible") is not True and spec.attributes.get("NotInUse") is not True
     }
     if require_frozen_baseline:
-        from ...semantic_subset import NORMAL_MODE_POLICY_CARD_IDS, NORMAL_MODE_POLICY_EXCLUDED_CARD_IDS
+        from ...competitive_release import current_identity
 
+        identity = current_identity()
         source_ids = frozenset(int(card_id) for card_id in card_specs)
         if (
-            len(card_specs) != NORMAL_MODE_SOURCE_CARD_COUNT
-            or len(scoped) != NORMAL_MODE_POLICY_CARD_COUNT
-            or frozenset(scoped) != NORMAL_MODE_POLICY_CARD_IDS
-            or source_ids != NORMAL_MODE_POLICY_CARD_IDS | NORMAL_MODE_POLICY_EXCLUDED_CARD_IDS
+            len(card_specs) != identity.source_card_count
+            or len(scoped) != identity.policy_card_count
+            or frozenset(scoped) != identity.policy_card_ids
+            or source_ids != identity.policy_card_ids | identity.excluded_card_ids
         ):
             raise ValueError(
                 "V4 normal-mode card partition drifted: "
                 f"source={len(card_specs)}, eligible={len(scoped)}, "
-                f"expected={NORMAL_MODE_SOURCE_CARD_COUNT}/"
-                f"{NORMAL_MODE_POLICY_CARD_COUNT}"
+                f"expected={identity.source_card_count}/"
+                f"{identity.policy_card_count}"
             )
     return scoped
 

@@ -13,7 +13,8 @@ from ...battle_env import BattleEnvV1
 from ...cr_native_env import NativeClashEnv, ResidentNativeClashEnv
 from ...resident_batch_vector import ResidentBatchCoordinatorV1, ResidentBatchNativeProxyV1
 from .expert import POLICY_DECISION_TICKS
-from .factory import build_episode_tensorizers_v4
+from .config import ModelConfigV4
+from .factory import build_episode_tensorizers_v4, production_semantic_bundle
 from .league import LeagueEntryV4
 from .matchmaking import POLICY_HISTORY, POLICY_IL, ScheduledMatchupV4
 from .ppo import StoredRolloutV4
@@ -41,6 +42,12 @@ class ResidentEngineV4:
     natives: tuple["RetryResidentNativeClashEnv", ...]
     coordinator: ResidentBatchCoordinatorV1
     environments: tuple[BattleEnvV1, ...]
+    # The competitive release (None = pinned 15.535 block) and model config every
+    # tensorizer in this engine must use.  A 16.635 worker lives on the engine
+    # node, so this identity has to travel in the engine spec rather than relying
+    # on the trainer's process-local release context.
+    release: str | None = None
+    model_config: ModelConfigV4 | None = None
 
     @property
     def lanes(self) -> int:
@@ -245,6 +252,8 @@ def build_resident_engine_v4(
     lanes: int = 8,
     timeout: float = 90.0,
     capture_mode: str = "compact",
+    competitive_release: str | None = None,
+    model_config: ModelConfigV4 | None = None,
 ) -> ResidentEngineV4:
     if engine_index < 0 or not 1 <= lanes <= 16:
         raise ValueError("resident engine index/lanes are invalid")
@@ -260,9 +269,17 @@ def build_resident_engine_v4(
         validate_json_capture=False,
     )
     proxies = tuple(ResidentBatchNativeProxyV1(native, coordinator) for native in natives)
-    environments = tuple(build_ppo_environment_v4(proxy, environment_config) for proxy in proxies)
+    environments = tuple(
+        build_ppo_environment_v4(proxy, environment_config, release=competitive_release) for proxy in proxies
+    )
     return ResidentEngineV4(
-        engine_index=int(engine_index), port=port, natives=natives, coordinator=coordinator, environments=environments
+        engine_index=int(engine_index),
+        port=port,
+        natives=natives,
+        coordinator=coordinator,
+        environments=environments,
+        release=competitive_release,
+        model_config=model_config,
     )
 
 
@@ -279,9 +296,10 @@ def _reset_engine(
     if len(assignments) != engine.lanes:
         raise ValueError("one assignment is required for every resident lane")
     engine.coordinator.close_session()
+    bundle = production_semantic_bundle(engine.release)
     runtimes: list[_MatchRuntimeV4] = []
     for env_id, (environment, assignment) in enumerate(zip(engine.environments, assignments, strict=True)):
-        episode = episode_for_matchup_v4(assignment.matchup, environment_config)
+        episode = episode_for_matchup_v4(assignment.matchup, environment_config, release=engine.release)
         observations, _info = environment.reset(
             episode,
             options={
@@ -293,7 +311,7 @@ def _reset_engine(
         )
         if int(observations[0].tick) != environment.warmup_ticks:
             raise RuntimeError("PPO reset did not stop at the standard warmup tick")
-        tensorizers = build_episode_tensorizers_v4(episode)
+        tensorizers = build_episode_tensorizers_v4(episode, bundle=bundle, config=engine.model_config)
         elixir = _initial_elixir(observations)
         for owner, tensorizer in enumerate(tensorizers):
             tensorizer.start_episode(

@@ -8,6 +8,8 @@ from collections.abc import Callable
 from functools import lru_cache
 from typing import Any
 
+import pytest
+
 from native_runner.arena import (
     GRID_HEIGHT,
     GRID_WIDTH,
@@ -21,12 +23,16 @@ from native_runner.battle_env import (
     BattleEnvError,
     BattleEnvV1,
     TOWER_LAYOUT,
+    _action_touch_delay_bin,
+    _earliest_affordable_bin,
+    _touch_window_elixir_raw,
 )
 from native_runner.card_specs import CardSpecCatalog, build_card_catalog
 from native_runner.contracts import (
     ActionKind,
     ActionV1,
     ObservationTier,
+    TargetKind,
 )
 from native_runner.cr_native_env import FIRST_PLAYABLE_TICK, HandAction
 from native_runner.match_factory import MatchConfig
@@ -478,6 +484,11 @@ class BattleEnvironmentTests(unittest.TestCase):
         self.assertEqual(mask.hand_slots, (True, False, True, False))
         self.assertEqual(mask.reasons["slots"]["1"], "insufficient_elixir")
         self.assertEqual(mask.reasons["slots"]["3"], "not_in_hand")
+        # Touch-time legality exports one elixir value per 50 ms delay bin.
+        self.assertEqual(len(mask.reasons["touch_window_elixir"]), 5)
+        self.assertAlmostEqual(mask.reasons["elixir_regen_per_tick"], 50 / 2_800, places=9)
+        self.assertEqual(mask.reasons["affordable_from_bin"]["slots"]["0"], 0)
+        self.assertIsNone(mask.reasons["affordable_from_bin"]["slots"]["1"])
 
         troop = mask.placement_masks["0"]
         spell = mask.placement_masks["2"]
@@ -917,6 +928,44 @@ class BattleEnvironmentTests(unittest.TestCase):
             env.step({0: action, 1: ActionV1.wait(1)})
 
         self.assertEqual(native.queued, [])
+
+
+def test_touch_window_exposes_one_elixir_value_per_delay_bin() -> None:
+    window = _touch_window_elixir_raw(0, 99_950)
+    assert len(window) == 5
+    assert window[0] == 99_950.0
+    # 1x regen is 0.017857 elixir per native tick; the raw bar caps at 10.
+    assert window[1] == 100_000.0
+    assert _earliest_affordable_bin(100_000, window) == 1
+    assert _earliest_affordable_bin(100_500, window) is None
+
+    fast = _touch_window_elixir_raw(4_800, 50_000)
+    assert fast[1] - fast[0] == pytest.approx(100_000 * 50 / 9_300, abs=1e-6)
+
+
+def test_action_touch_bin_prefers_the_policy_delay_metadata() -> None:
+    action = ActionV1(
+        owner=0,
+        kind=ActionKind.PLAY_CARD,
+        hand_slot=0,
+        target_kind=TargetKind.GRID,
+        target_grid=(0, 0),
+        execute_offset_ticks=4,
+        metadata={"policy_delay_offset_bin": 2, "base_latency_ticks": 1},
+    )
+    assert _action_touch_delay_bin(action) == 2
+
+    inferred = ActionV1(
+        owner=0,
+        kind=ActionKind.PLAY_CARD,
+        hand_slot=0,
+        target_kind=TargetKind.GRID,
+        target_grid=(0, 0),
+        execute_offset_ticks=4,
+        metadata={"base_latency_ticks": 1},
+    )
+    # 4 - 1 = bin 3, then clamped into the five-bin window.
+    assert _action_touch_delay_bin(inferred) == 3
 
 
 if __name__ == "__main__":

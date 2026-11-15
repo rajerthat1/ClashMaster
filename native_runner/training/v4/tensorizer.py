@@ -19,6 +19,7 @@ from ...building_placement_profiles import building_placement_profile
 from ...contracts import (
     AbilityRuntimeStateV1,
     AbilityPhase,
+    ActionKind,
     AttackPhase,
     CardKind,
     CardSpecV1,
@@ -39,6 +40,7 @@ from ...contracts import (
     VisibilityPhase,
 )
 from ...perspective import PerspectiveTransformV1
+from ...cr_native_env import LIVE_COMMAND_AGE_TICKS
 from ..card_features import ENTITY_FORM_TO_BASE_CARD
 from .catalog import (
     AbilityCatalogV1,
@@ -47,7 +49,12 @@ from .catalog import (
     UNKNOWN_CARD_VOCAB_ID,
     UNKNOWN_ENTITY_ARCHETYPE_VOCAB_ID,
 )
-from .config import ModelConfigV4, UNIVERSAL_OBSERVATION_VERSION
+from .config import (
+    CARD_RUNTIME_FEATURE_NAMES_V2,
+    PENDING_TICKS_REMAINING_FEATURE_INDEX_V2,
+    ModelConfigV4,
+    UNIVERSAL_OBSERVATION_VERSION,
+)
 from .decoding import candidate_uid_v4
 from .grouping import CausalGroupV4, build_causal_groups
 from .native_actions import MIRROR_CARD_ID, ability_runtime_contract, mirror_play_runtime_contract
@@ -669,7 +676,49 @@ class UniversalObservationTensorizerV4:
             features[10] = float(public_ability.ready)
             features[11] = _finite(public_ability.cooldown_remaining_ms, 30_000.0)
             features[12] = _finite(public_ability.remaining_charges, 4.0)
+        if owner == self.actor_owner and self.config.card_runtime_feature_dim == len(CARD_RUNTIME_FEATURE_NAMES_V2):
+            self._pending_card_features(observation, card_id=card_id, features=features)
+            if self.config.neutralize_pending_ticks_remaining:
+                # Live receipts cannot supply this value (always 0 live), so it
+                # is inert everywhere; the other pending columns are kept.
+                features[PENDING_TICKS_REMAINING_FEATURE_INDEX_V2] = 0.0
         return features
+
+    def _pending_card_features(self, observation: ObservationV1, *, card_id: int, features: list[float]) -> None:
+        """Expose the actor's own in-flight command for this card token.
+
+        The policy submitted the touch itself, so it may know what is coming:
+        the pending card or ability, where it lands, and how many ticks remain
+        until the battle executes it.  ``pending_actions`` is already filtered
+        to the actor, so an opponent's touch never reaches these features.
+        """
+
+        ability_ids = self.ability_ids_by_card.get(card_id, frozenset())
+        for pending in observation.pending_actions:
+            action = pending.action
+            if action.owner != self.actor_owner:
+                raise ValueError("pending action of another owner leaked into the actor observation")
+            remaining = max(0, int(pending.expected_execution_tick) - int(observation.tick))
+            if action.kind is ActionKind.PLAY_CARD:
+                if action.card_id != card_id:
+                    continue
+                model_action = self.perspective.action_to_model(action)
+                if model_action.target_grid is None:
+                    raise ValueError("pending card play has no GRID target")
+                x, y = model_action.target_grid
+                features[16] = 1.0
+                features[17] = _finite(remaining, float(LIVE_COMMAND_AGE_TICKS))
+                features[18] = float(x) / max(1, self.config.board_width - 1)
+                features[19] = float(y) / max(1, self.config.board_height - 1)
+            elif action.kind is ActionKind.ACTIVATE_ABILITY:
+                if action.ability_id is not None:
+                    matches = action.ability_id in ability_ids
+                else:
+                    state = self._ability_state_by_source_entity.get(int(action.source_entity or -1))
+                    matches = state is not None and state.ability_id in ability_ids
+                if matches:
+                    features[20] = 1.0
+                    features[17] = _finite(remaining, float(LIVE_COMMAND_AGE_TICKS))
 
     def _own_card_runtime_form(self, observation: ObservationV1, card_id: int) -> int:
         player = next(item for item in observation.players if item.owner == self.actor_owner)
