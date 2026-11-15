@@ -49,13 +49,14 @@ the next work is the tensorizer (C3), not more lanes.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import json
-from pathlib import Path
 import statistics
 import sys
 import time
-from typing import Any, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 # Run from the repository root without an editable install of the simulator.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -64,9 +65,9 @@ for _path in (_REPO_ROOT, _REPO_ROOT / ".resource" / "crforge" / "python"):
         sys.path.insert(0, str(_path))
 
 import numpy as np
-
 from crforge_env.vector import LadderConfig, SideSetup, VectorBattle
-from crforge_bridge.catalog import Catalog, FORM_EVOLVED, FORM_HERO
+
+from crforge_bridge.catalog import FORM_EVOLVED, FORM_HERO, Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.observe import decode_rows, entity_rows, player_facts
 
@@ -786,93 +787,46 @@ def _measure_existing_path(
     """Time the existing bridge observation + tensorizer path per decision.
 
     The tensorizer is stage C3 work; C1 only needs its per-decision cost to show
-    the split.  Running one WAIT-only episode gives real observations without
-    pulling the policy's decoding into the measurement.
+    the split.  The tensorizer half is timed *inside* a real policy session
+    (``tensorize`` wrapped, ``record_action`` still called by the session), which
+    is the only way to keep the public tracker consistent: replaying
+    observations without the actions the policy recorded trips the hand/cycle
+    partition check.  The observation half stays a cold ``observe`` call on the
+    same tick, which is the build a trained packet pays.
     """
 
     import torch
-
-    from contextlib import nullcontext
-
-    from native_runner.battle_env import (
-        ENTITY_LIMIT,
-        EVENT_LIMIT,
-        EVENT_WINDOW_TICKS,
-        STANDARD_MATCH_TICKS,
-        BattleEnvV1,
-    )
-    from native_runner.competitive_release import load_release, use_release
-    from native_runner.cr_native_env import DEFAULT_HOST, FIRST_PLAYABLE_TICK, NativeClashEnv
-    from native_runner.match_factory import MatchConfig
-    from native_runner.rich_telemetry_adapter import RuntimeEffectCatalog
-    from native_runner.training.v4.expert import POLICY_DECISION_TICKS
-    from native_runner.training.v4.factory import production_semantic_bundle
-    from native_runner.training.v4.policy_session import (
-        build_episode_tensorizer_v4,
-        load_policy_v4,
-    )
+    from bridge_session import build_episode, initial_elixir
 
     torch.set_num_threads(1)
-    policy = load_policy_v4(checkpoint, device="cpu")
-    release = getattr(policy.model, "competitive_release", None)
-    bundle = production_semantic_bundle(release)
-    catalog = Catalog.load()
-    deck_ids = [catalog.card_id(name) for name in DECK]
-    if any(card_id is None for card_id in deck_ids):
-        raise ValueError("the locked deck has a card the bridge catalog cannot name")
-    deck = tuple(int(card_id) for card_id in deck_ids)
-    native = NativeClashEnv(DEFAULT_HOST, port, timeout=30.0)
-    with use_release(load_release(release)) if release else nullcontext():
-        environment = BattleEnvV1(
-            native=native,
-            card_catalog=bundle.native_card_catalog,
-            semantic_subset_contract=bundle.semantic_subset_contract,
-            effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
-            warmup_ticks=FIRST_PLAYABLE_TICK,
-            max_battle_ticks=STANDARD_MATCH_TICKS,
-            entity_limit=ENTITY_LIMIT,
-            event_limit=EVENT_LIMIT,
-            event_window_ticks=EVENT_WINDOW_TICKS,
-        )
-        observations, _ = environment.reset(
-            match_config=MatchConfig(
-                deck0=deck,
-                deck1=deck,
-                deck0_form_availability=tuple(DECK_SLOTS),
-                deck1_form_availability=tuple(DECK_SLOTS),
-                seed=seed,
-            ),
-            options={
-                "render_mode": "headless",
-                "decision_ticks": POLICY_DECISION_TICKS,
-                "event_driven_decisions": False,
-                "allow_initial_remaining_runtime_rejections": True,
-            },
-        )
-        tensorizer = build_episode_tensorizer_v4(
-            environment.episode_config,
-            actor_owner=0,
-            bundle=getattr(policy.model, "semantic_bundle", None),
-            config=getattr(policy.model, "config", None),
-        )
-        initial_elixir = {
-            owner: next(player.elixir_exact for player in observation.players if player.owner == owner)
-            for owner, observation in observations.items()
-        }
-        # Warm the caches and the tensorizer's per-episode state.  A scripted
-        # play every fourth decision keeps entities on the board, so the
-        # tensorizer sees a training-like frame rather than six towers.
-        tensorizer.start_episode(observations[0], initial_elixir=initial_elixir)
-        for step in range(3):
-            tensorizer.tensorize(observations[0], validate=False)
-            observations, _, _, _, _ = environment.step(
-                _scripted_commands(observations, step=step, play_every=4),
-                record_trace=False,
-            )
-        observation_seconds: list[float] = []
-        tensorize_seconds: list[float] = []
-        step_seconds: list[float] = []
-        for step in range(decisions):
+    # The tensorizer half stays on the evaluator deck, which is the shape the C0
+    # soak validates and which the tensorizer classifies completely.  The X-Bow
+    # learner deck currently surfaces a public `effect` entity that resolves to
+    # UNKNOWN archetype (native_data_global_id=1) and fails closed; that is a C2
+    # item, not a C1 measurement (docs/native/16.635.1/FINDINGS.md §3.44).
+    environment, observations, sessions, close = build_episode(
+        port=port, checkpoint=checkpoint, seed=seed
+    )
+    starting_elixir = initial_elixir(observations)
+    for owner, session in sessions.items():
+        session.start_episode(observations[owner], initial_elixir=starting_elixir)
+
+    tensorizer = sessions[0].tensorizer
+    tensorize_seconds: list[float] = []
+    original_tensorize = tensorizer.tensorize
+
+    def timed_tensorize(observation, *, validate: bool = True):
+        before = time.perf_counter()
+        batch = original_tensorize(observation, validate=validate)
+        tensorize_seconds.append(time.perf_counter() - before)
+        return batch
+
+    observation_seconds: list[float] = []
+    step_seconds: list[float] = []
+    measured = 0
+    tensorizer.tensorize = timed_tensorize
+    try:
+        for _ in range(decisions):
             # ``step`` has already built this tick's observations; clear the
             # per-tick scene and mask caches so the timed call is a cold build,
             # which is the cost a trained packet actually pays.
@@ -880,18 +834,22 @@ def _measure_existing_path(
             environment._fair_scene_cache = None
             environment._action_mask_cache.clear()
             before = time.perf_counter()
-            observation = environment.observe(owner=0, policy_features_only=True)
+            environment.observe(owner=0, policy_features_only=True)
             observation_seconds.append(time.perf_counter() - before)
+            commands = {}
+            for owner, session in sessions.items():
+                commands[owner] = tuple(session.decide(observations[owner]).decoded.actions)
             before = time.perf_counter()
-            tensorizer.tensorize(observation, validate=False)
-            tensorize_seconds.append(time.perf_counter() - before)
-            before = time.perf_counter()
-            observations, _, _, _, _ = environment.step(
-                _scripted_commands(observations, step=step + 3, play_every=4),
-                record_trace=False,
+            observations, _, terminated, truncated, _ = environment.step(
+                commands, record_trace=False
             )
             step_seconds.append(time.perf_counter() - before)
-    native.close_transport()
+            measured += 1
+            if bool(terminated["__all__"]) or bool(truncated["__all__"]):
+                break
+    finally:
+        tensorizer.tensorize = original_tensorize
+        close()
 
     def summary(values: list[float]) -> dict[str, float]:
         best = min(values)
@@ -906,38 +864,12 @@ def _measure_existing_path(
     combined = summary([o + t for o, t in zip(observation_seconds, tensorize_seconds)])
     return {
         "source": f"bridge:{port}",
-        "decisions": len(observation_seconds),
+        "decisions": measured,
         "observation": observation,
         "tensorize": tensorize,
         "observation_plus_tensorize": combined,
         "step": summary(step_seconds),
     }
-
-
-def _scripted_commands(observations, *, step: int, play_every: int):
-    """A legal card play every ``play_every`` decisions, else WAIT.
-
-    This gives the tensorizer a frame with spawned characters without pulling
-    a model forward into the measurement.
-    """
-
-    from native_runner.contracts import ActionV1
-
-    commands = {}
-    for owner, observation in observations.items():
-        chosen = None
-        mask = observation.action_mask
-        if step % play_every == 0 and any(mask.hand_slots):
-            slot = next(index for index, legal in enumerate(mask.hand_slots) if legal)
-            entry = mask.placement_masks.get(str(slot))
-            if isinstance(entry, dict):
-                for row, cells in enumerate(entry.get("row_major", ())):
-                    col = next((index for index, cell in enumerate(cells) if cell), None)
-                    if col is not None:
-                        chosen = ActionV1.play(owner, hand_slot=slot, grid=(col, row))
-                        break
-        commands[owner] = chosen or ActionV1.wait(owner, ticks=5)
-    return commands
 
 
 def main(argv: Sequence[str] | None = None) -> int:

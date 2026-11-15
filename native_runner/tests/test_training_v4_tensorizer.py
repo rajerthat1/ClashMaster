@@ -2897,3 +2897,33 @@ def test_lean_contract_construction_tensorizes_identically() -> None:
                 assert torch.equal(
                     getattr(left, nested_field.name), getattr(right, nested_field.name)
                 ), f"{contract_field.name}.{nested_field.name}"
+
+
+@pytest.mark.parametrize(
+    ("value", "scale", "expected"),
+    [
+        (None, 1.0, 0.0),
+        (True, 1.0, 0.0),
+        (False, 1.0, 0.0),
+        (0, 1.0, 0.0),
+        (7, 1.0, 7.0),
+        (7, 2.0, 3.5),
+        (2.5, 5.0, 0.5),
+        (float("nan"), 1.0, 0.0),
+        (float("inf"), 1.0, 0.0),
+        (float("-inf"), 1.0, 0.0),
+        ("3", 1.0, 3.0),
+        ("not a number", 1.0, 0.0),
+        (object(), 1.0, 0.0),
+    ],
+)
+def test_finite_scalar_guard_matches_the_documented_missing_value(value, scale, expected) -> None:
+    """The fast path must not change which values read as "unknown"."""
+
+    import numpy as np
+
+    from native_runner.training.v4.tensorizer import _finite
+
+    assert _finite(value, scale) == expected
+    # numpy scalars take the slow path and keep the same answer.
+    assert _finite(np.float32(value) if isinstance(value, float) else value, scale) == expected

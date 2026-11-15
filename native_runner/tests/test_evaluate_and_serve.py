@@ -54,7 +54,19 @@ def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, t
     result = evaluate.evaluate("a.pt", "b.pt", games=3, match=MatchConfig(seed=7), output=tmp_path)
     assert seeds == [7, 8, 9]
     assert assignments == [("a.pt", 0), ("b.pt", 1), ("b.pt", 0), ("a.pt", 1), ("a.pt", 0), ("b.pt", 1)]
-    assert result == {"requested": 3, "completed": 3, "a_wins": 2, "b_wins": 1, "draws": 0, "truncated": 0}
+    assert result == {
+        "requested": 3,
+        "completed": 3,
+        "a_wins": 2,
+        "b_wins": 1,
+        "draws": 0,
+        "truncated": 0,
+        # Rejects are a first-class gate, not a flavour of "illegal".
+        "illegal_total": 0,
+        "rejected_total": 0,
+        "games_with_rejections": 0,
+        "rejected_reasons": {},
+    }
     assert len((tmp_path / "matches.jsonl").read_text().splitlines()) == 3
     assert len(ended) == 6
 

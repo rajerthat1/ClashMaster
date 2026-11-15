@@ -2743,3 +2743,209 @@ creating intermediate Python contracts.
 
 Evidence: `runs/step-breakdown/ab-{stock,lean}-{1..8}.json`,
 `ab8-{stock,lean}-{1,2}.json`.
+
+### 3.44 The tensorizer is the per-decision packet, and it is Python ceremony (2026-11-16)
+
+The C1 spike (§session 13) split the bulk packet into three parts: vectorized
+observation facts ~0.03 ms/lane, `BattleEnvV1.observe` ~0.65 ms/lane, and
+`UniversalObservationTensorizerV4` ~1.4 ms/lane. The tensorizer was then the
+largest row, so C3's first question is *where inside it* the time goes, and the
+second is whether that time can be tuned or only restructured.
+
+#### The C1 tensorizer figure was measured on an empty board
+
+`_scripted_commands` in `tools/crforge/encoder_spike.py` picked a legal cell with
+
+```python
+entry = mask.placement_masks.get(str(slot))
+if isinstance(entry, dict):      # never true
+```
+
+`placement_masks` entries are `FrozenMapping` contracts, so the guard never
+fired, the scripted policy stayed on `WAIT` for the whole measurement, and the
+tensorizer was timed on a board with towers and no troops. Two consequences:
+
+- the earlier "observe 0.647 + tensorize 1.413 = 2.060 ms/lane" understated the
+  tensorizer, because entity rows, groups, children and relations were empty;
+- it is a silent class of bug in exactly the tool that is supposed to catch
+  silent differences, so it is now `isinstance(entry, Mapping)` in both tools.
+
+Scripted plays also need the building anchor offset: a building placed with
+`subcell_offset=None` is rejected (`building 27000006 requires native subcell
+offset (0.5, 0.5)`), so the scripted policy mirrors the entry's
+`model_subcell_offset` with the acting owner's sign.
+
+#### A replay profiler instead of a live profile
+
+`tools/crforge/profile_tensorizer.py` runs one live bridge episode with a real V4
+policy (`B-general-v275`, the evaluator deck, both seats, sampled decoding),
+captures each decision's observation *and* the `ActionSequenceV4` the policy
+recorded, then replays only the tensorizer half of the decision — `tensorize`
+plus `record_action` — under `cProfile`. Replaying removes the model forward and
+the engine round trip, so the profile is the tensorizer's own cost.
+
+A scripted play cannot be used for this: the public tracker only stays consistent
+when every played card is recorded, and a replay of observations without their
+actions trips the hand/cycle partition check. That is why the tool spies
+`record_action` during the capture and replays the real action tensors.
+
+The tool records three things that make the numbers checkable later:
+
+- a capture digest (`decisions`, recorded actions, first/last tick, entity,
+  pending and event totals) — the same sequence must be replayed;
+- a per-decision SHA-256 over every tensor in the batch, aggregated into one
+  `batch_digest` — an optimized path must be **bit-identical**, not "same shape";
+- CPU ms/decision (`time.process_time`) next to wall time, because this host's
+  wall and even CPU time shift ~1.5–2x with background load and frequency
+  scaling (`HANDOFF.md` §3.43).
+
+Shape of the measured run: **128 decisions** (the episode ends at tick 725),
+entities median **8** (min 0, max 11), 20 pending commands and **12,625 events**
+total (≈99 events per observation, which the public tracker walks on every
+decision).
+
+#### Where the packet goes (stock, 1.069 CPU ms/decision)
+
+`cProfile` sections, cumulative ms/decision, 128 decisions:
+
+| section | cumulative ms | self ms |
+| --- | ---: | ---: |
+| `tensorize` (total) | 2.227 | 0.036 |
+| `_groups` | 0.725 | 0.241 |
+| `_card_sets` | 0.390 | 0.037 |
+| `_candidates` | 0.300 | 0.103 |
+| `_card_runtime_features` | 0.189 | 0.046 |
+| `tracker.update` | 0.172 | 0.038 |
+| `_towers` | 0.145 | 0.048 |
+| `_relations` | 0.142 | 0.085 |
+| `_spatial_planes` | 0.117 | 0.034 |
+| `_events` | 0.090 | 0.041 |
+| `record_action` | 0.064 | 0.015 |
+| `reconcile_owner_private_state` | 0.033 | 0.019 |
+
+The section totals are only half the story. The call census is the other half —
+**3,754 Python calls per decision**, and the top rows are not game logic:
+
+| callee | calls/decision |
+| --- | ---: |
+| `isinstance` | 330 |
+| contract mapping `__getitem__` | 217 |
+| `tensorizer._finite` | 214 |
+| `Mapping.get` (FrozenMapping) | 195 |
+| `dict.get` | 212 |
+| `max` / `min` / `sum` (builtins) | 117 / 101 / 85 |
+| `torch.from_numpy` | 53 |
+| `torch.tensor` | 16 |
+
+Two structural facts follow. First, **34.8 % of profiled time is builtin call
+overhead plus the frozen-mapping layer** (28.1 % builtins — `isinstance`, `len`,
+`dict.get`, `max`/`min`/`sum` — 4.1 % `contracts.py`, 2.6 % `Mapping.get`), while
+the builder's own bytecode is 50.5 %: the packet is Python bookkeeping around
+small arrays, not array math. Second, `_groups` alone is a third of the packet
+because it walks each group with a dozen separate generators (`sum`, `min`,
+`max` over member lists) and allocates a full-capacity arena per decision.
+
+#### What was shipped, and what it did **not** buy
+
+Contained reductions, all bit-identical to the stock tensorizer
+(same `batch_digest` on the same capture):
+
+- **`_finite` fast path** — the common `int`/`float` case skips the
+  `isinstance` chain and the `try/except`; `result - result == 0.0` keeps the
+  NaN/inf behaviour. 214 calls per decision.
+- **Cached actor deck layout** — the actor's deck order is episode-invariant, so
+  the vocabulary sort and eight catalog lookups happen once per episode instead
+  of once per decision.
+- **Per-frame player lookup** — keyed by `(id(observation), owner)` so a
+  perspective-transformed observation cannot serve a raw player row. Removes
+  ~20 `next(...)` scans per decision.
+- **Single-pass group aggregation** — one loop over a group's members replaces
+  ~13 `sum` + 10 `min`/`max` generator passes, with the same arithmetic order.
+
+Profiled effect on the same capture: `_groups` **0.725 → 0.543**, `_card_sets`
+0.390 → 0.326, `_towers` 0.145 → 0.128, whole-section `tensorize`
+2.227 → 1.875.
+
+End-to-end effect: **not measurable on this host.** Two alternating stock/pairs
+(240 decisions, 3 repeats each, CPU ms/decision):
+
+| pair | stock | shipped | delta |
+| --- | ---: | ---: | ---: |
+| 1 | 1.190 | 1.124 | −5.6 % |
+| 2 | 1.263 | 1.435 | +13.5 % |
+
+Run-to-run variance (±15 %) exceeds the effect, so there is no throughput claim
+here; the changes are kept because they are proven identical and do less work,
+not because they moved the gate. A first attempt that replaced
+`torch.tensor(list)` row builds with NumPy arenas was **reverted** for the same
+reason: it was digest-identical and moved `torch.tensor` out of the profile, but
+the end-to-end number was flat, so the extra allocation surface bought nothing.
+
+#### End-to-end at the C1 shape (and why two numbers exist)
+
+The C1 spike at its default shape (256 lanes × 200 × 3, tables 16.635.8,
+content `062a11e0…`) re-measured the existing path with the corrected scripted
+policy and the shipped tensorizer:
+
+| measurement | threads 1 | threads 8 |
+| --- | ---: | ---: |
+| vectorized facts (ms/lane) | **0.0165** | 0.0177 |
+| vectorized decisions/s | **60,702** | 56,495 |
+| per-lane bridge control (ms/lane) | 0.315 | 0.353 |
+| encode speedup | **19.1×** | 19.9× |
+| frame equivalence | pass | pass |
+| cold `observe` (ms/lane) | 0.400 | 0.400 |
+| `tensorize` in-session (ms/lane) | **0.697** | 0.697 |
+| projected end-to-end (ms/lane) | **0.713** | 0.714 |
+| projected decisions/s | **1,402** | 1,400 |
+| projected matches/s (1,214/match) | **1.16** | 1.15 |
+
+So **C3's gate is met**: ~0.71 ms/lane end-to-end, 1.15 matches/s per process,
+against a ≥0.8 matches/s gate. The 10–30× target (≤0.5 ms/lane) is not.
+
+The two tensorizer numbers differ by measurement shape, not by code: the C1 tool
+reports the **minimum** single decision over 100 decisions of a seed-1 game
+(0.697), while the C3 profiler reports the **mean over a whole replay** of a
+seed-7 game whose board carries a median of 8 entities (0.992). A packet's real
+cost is the replay mean, so quote 0.99–1.07 ms/decision when sizing a run and
+0.71 ms/lane only as the gate measurement.
+
+**Open item found on the learner deck.** Measuring the same path with the X-Bow
+learner deck (with its Tesla/Archer/Knight forms) fails closed in the tensorizer:
+`public entity resolved to UNKNOWN archetype: entity_kind='effect',
+native_data_global_id=1`. The evaluator deck did not produce that row in 20
+clean games, so this is a **C2/C5 item**: the resident adapter must classify or
+filter bridge-only effect rows before a learner-deck rollout can be trusted.
+The C1 measurement therefore stays on the evaluator deck.
+
+#### Verdict
+
+The tensorizer is no longer "slow numpy"; it is **per-decision Python object
+ceremony over a 2,200-line semantic builder**. Micro-optimization has been
+measured and does not move the packet. So the C3 gate is met at ~0.73–0.81
+matches/s per process, but the ≤0.5 ms/lane target needs one of two structural
+changes:
+
+1. **Batch the row build across lanes.** One pass over 256 lanes filling the
+   same fixed-size arrays turns 3,754 calls/decision into ~15 calls/lane —
+   this is the 10–30× case, and it is the C3 work the roadmap budgets 1–2 weeks
+   for.
+2. **Port the hot row builders to C/Cython** (daybreak-cr's
+   `cr/native_features.c` shape). `_groups`, `_candidates`, `_relations` and
+   `_card_sets` are ~70 % of the profiled packet and are pure loops over small
+   arrays; a C port keeps the semantic code single-sourced and removes the
+   interpreter, without changing the observation contract.
+
+Do not expect another round of Python tuning to cross 0.5 ms/lane.
+
+Evidence: `runs/crforge-c1/encoder-spike.json` (the C1 default shape, above),
+`runs/crforge-c3/tensorizer-profile.json` (shipped tree), `ab-stock.json` (stock),
+`ab-optimized.json` (NumPy variant, reverted), `ab-pair{1,2}-{stock,python}.json`
+(A/B pairs). All C3 runs: same capture digest, `batch_digest 0a59a11d…`. Tests:
+`native_runner/tests/test_training_v4_tensorizer.py` (72, including the new
+`_finite` guard table), `crforge_bridge/tests` (8).
+
+Tooling notes for the next session: `tools/crforge/bridge_session.py` builds the
+shared live episode (deck, tower troop, release scope, one session per seat) for
+both tools, and `tools/crforge/profile_tensorizer.py --profile-decisions 0` is the
+timing-only mode for A/B runs (cProfile costs several times the work it measures).

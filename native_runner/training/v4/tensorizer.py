@@ -218,6 +218,13 @@ _EMPTY_CANDIDATE_PLACEMENT = torch.zeros(32, 18, dtype=torch.bool)
 
 
 def _finite(value: object, scale: float = 1.0) -> float:
+    # The overwhelmingly common case is an already-numeric field; keeping it
+    # out of the try/except and the isinstance chain matters because a decision
+    # calls this ~200 times.
+    kind = type(value)
+    if kind is float or kind is int:
+        result = value / scale
+        return result if result - result == 0.0 else 0.0
     if value is None or isinstance(value, bool):
         return 0.0
     try:
@@ -356,6 +363,14 @@ class UniversalObservationTensorizerV4:
         self._frame_spatial_radius_cache: dict[int, float] = {}
         self._frame_archetype_id_cache: dict[int, int] = {}
         self._frame_child_kind_cache: dict[int, str] = {}
+        # The actor's deck layout is episode-invariant: sorting it by vocabulary
+        # id and resolving the vocabulary once removes a sort plus eight catalog
+        # lookups from every decision.
+        self._actor_layout_cache: tuple[
+            tuple[int, ...], dict[int, int], list[tuple[bool, bool]], list[int]
+        ] | None = None
+        # One player lookup per decision instead of one per card.
+        self._frame_players: dict[tuple[int, int], object] = {}
 
     @property
     def ability_id_by_vocab_id(self) -> dict[int, str]:
@@ -622,6 +637,41 @@ class UniversalObservationTensorizerV4:
             return self.catalog.vocab_id(None)
         return self.catalog.require_vocab_id(int(card_id), context=context)
 
+    def _player(self, observation: ObservationV1, owner: int):
+        """The player row for ``owner``, resolved once per observation object.
+
+        Keyed by object identity as well as owner: the perspective transform can
+        hand back a *different* observation (reordered hand, permuted slots) with
+        its own player rows, so a per-owner cache alone would leak the raw row
+        into the model view.
+        """
+
+        key = (id(observation), owner)
+        cached = self._frame_players.get(key)
+        if cached is not None:
+            return cached
+        player = next(item for item in observation.players if item.owner == owner)
+        self._frame_players[key] = player
+        return player
+
+    def _actor_card_layout(self) -> tuple[
+        tuple[int, ...], dict[int, int], list[tuple[bool, bool]], list[int]
+    ]:
+        """Actor deck rows in vocabulary order: ids, id->row, roles, vocabulary."""
+
+        layout = self._actor_layout_cache
+        if layout is None:
+            vocab_ids = {
+                card_id: self._vocab_id(card_id, context="actor deck card") for card_id in self.deck
+            }
+            own_order = tuple(sorted(self.deck, key=vocab_ids.__getitem__))
+            card_to_row = {card_id: row for row, card_id in enumerate(own_order)}
+            own_roles = [self.deck_roles[card_id] for card_id in own_order]
+            ordered_vocab = [vocab_ids[card_id] for card_id in own_order]
+            layout = (own_order, card_to_row, own_roles, ordered_vocab)
+            self._actor_layout_cache = layout
+        return layout
+
     def _runtime_form(self, entity: EntityStateV1) -> int:
         if entity.evolution_state is not None and entity.evolution_state.active is True:
             return FORM_EVOLUTION
@@ -634,7 +684,7 @@ class UniversalObservationTensorizerV4:
 
     def _card_runtime_features(self, observation: ObservationV1, *, owner: int, card_id: int) -> list[float]:
         features = [0.0] * self.config.card_runtime_feature_dim
-        player = next(item for item in observation.players if item.owner == owner)
+        player = self._player(observation, owner)
         features[0] = float(card_id in player.hand)
         features[1] = float(player.next_card == card_id)
         features[2] = float(card_id in player.revealed_cards)
@@ -721,7 +771,7 @@ class UniversalObservationTensorizerV4:
                     features[17] = _finite(remaining, float(LIVE_COMMAND_AGE_TICKS))
 
     def _own_card_runtime_form(self, observation: ObservationV1, card_id: int) -> int:
-        player = next(item for item in observation.players if item.owner == self.actor_owner)
+        player = self._player(observation, self.actor_owner)
         if card_id in player.hand:
             hand_slot_by_card = player.metadata.get("hand_slot_by_card")
             if not isinstance(hand_slot_by_card, Mapping):
@@ -765,15 +815,12 @@ class UniversalObservationTensorizerV4:
                 self._opponent_evolution_revealed.add(base_card_id)
 
     def _card_sets(self, observation: ObservationV1) -> tuple[CardSetV4, CardSetV4, dict[int, int]]:
-        own_order = tuple(sorted(self.deck, key=lambda card_id: self._vocab_id(card_id, context="actor deck card")))
-        card_to_row = {card_id: row for row, card_id in enumerate(own_order)}
-        own_roles = [self.deck_roles[card_id] for card_id in own_order]
+        own_order, card_to_row, own_roles, own_vocab = self._actor_card_layout()
         own = CardSetV4(
-            card_vocab_id=torch.tensor(
-                [[self._vocab_id(card_id, context="actor deck card") for card_id in own_order]], dtype=torch.long
-            ),
+            card_vocab_id=torch.tensor([own_vocab], dtype=torch.long),
             runtime_form=torch.tensor(
-                [[self._own_card_runtime_form(observation, card_id) for card_id in own_order]], dtype=torch.long
+                [[self._own_card_runtime_form(observation, card_id) for card_id in own_order]],
+                dtype=torch.long,
             ),
             role_bits=torch.tensor([own_roles], dtype=torch.bool),
             runtime_features=torch.tensor(
@@ -789,23 +836,25 @@ class UniversalObservationTensorizerV4:
         )
 
         enemy = 1 - self.actor_owner
-        enemy_player = next(item for item in observation.players if item.owner == enemy)
+        enemy_player = self._player(observation, enemy)
         self._opponent_revealed.update(int(value) for value in enemy_player.revealed_cards)
         if self.tracker is not None:
             self._opponent_revealed.update(int(value) for value in self.tracker.revealed_cards(enemy))
         unknown_reveals = sorted(
-            card_id for card_id in self._opponent_revealed if self.catalog.vocab_id(card_id) == UNKNOWN_CARD_VOCAB_ID
+            card_id
+            for card_id in self._opponent_revealed
+            if self.catalog.vocab_id(card_id) == UNKNOWN_CARD_VOCAB_ID
         )
         if unknown_reveals:
             raise ValueError(f"global card catalog is missing public opponent cards: {unknown_reveals}")
         if len(self._opponent_revealed) > 8:
             raise ValueError("opponent publicly revealed more than eight cards")
-        visible = tuple(
-            sorted(
-                self._opponent_revealed, key=lambda card_id: self._vocab_id(card_id, context="public opponent card")
-            )[:8]
-        )
-        opponent_ids = [self._vocab_id(card_id, context="public opponent card") for card_id in visible]
+        revealed_vocab = {
+            card_id: self._vocab_id(card_id, context="public opponent card")
+            for card_id in self._opponent_revealed
+        }
+        visible = tuple(sorted(self._opponent_revealed, key=revealed_vocab.__getitem__)[:8])
+        opponent_ids = [revealed_vocab[card_id] for card_id in visible]
         opponent_ids.extend([0] * (8 - len(opponent_ids)))
         unknown_count = 8 - len(visible)
         opponent_ids.append(UNKNOWN_CARD_VOCAB_ID if unknown_count > 0 else 0)
@@ -1016,81 +1065,113 @@ class UniversalObservationTensorizerV4:
             if base_card_id is not None:
                 base_card_id = self._normalize_public_card_id(base_card_id)
             if base_card_id is None:
-                base_card_id = next(
-                    (self._base_card_id(entity) for entity in members if self._base_card_id(entity) is not None), None
-                )
+                # Resolve each member once: the generator used to call the
+                # cached lookup twice per member.
+                for entity in members:
+                    base_card_id = self._base_card_id(entity)
+                    if base_card_id is not None:
+                        break
             source_card[0, group_row] = self._vocab_id(base_card_id, context="public causal-group source card")
             group_type[0, group_row] = GROUP_TYPE[group.key.kind.value]
             owner_type[0, group_row] = self._owner_type(group.owner)
             runtime_form[0, group_row] = max(self._runtime_form(entity) for entity in members)
             positions[0, group_row] = (center_x, center_y)
-            extents[0, group_row] = (
-                min(value[0] for value in member_extents),
-                min(value[1] for value in member_extents),
-                max(value[2] for value in member_extents),
-                max(value[3] for value in member_extents),
-            )
-            retained_count = sum(entity.entity_id in retained_child_ids for entity in members)
-            hitpoints = [_finite(entity.hitpoints) for entity in members]
-            ratios = [_finite(entity.hitpoints, float(entity.max_hitpoints or 1.0)) for entity in members]
-            shields = [_finite(entity.shield) for entity in members]
-            features[0, group_row, 0] = len(members) / 16.0
-            features[0, group_row, 1] = (len(members) - retained_count) / 16.0
-            features[0, group_row, 2] = sum(hitpoints) / 10_000.0
-            features[0, group_row, 3] = sum(shields) / 10_000.0
-            features[0, group_row, 4] = sum(ratios) / len(ratios)
-            features[0, group_row, 5] = min(ratios)
-            features[0, group_row, 6] = max(ratios)
-            features[0, group_row, 7] = max(value[2] for value in member_extents) - min(
-                value[0] for value in member_extents
-            )
-            features[0, group_row, 8] = max(value[3] for value in member_extents) - min(
-                value[1] for value in member_extents
-            )
-            features[0, group_row, 9] = float(any(entity.entity_id in ability_sources for entity in members))
-            features[0, group_row, 10] = float(any(entity.visible_target is not None for entity in members))
+            left = min(value[0] for value in member_extents)
+            bottom = min(value[1] for value in member_extents)
+            right = max(value[2] for value in member_extents)
+            top = max(value[3] for value in member_extents)
+            extents[0, group_row] = (left, bottom, right, top)
+            # One pass over the members: the previous version walked the group
+            # with a dozen separate generators (sum/min/max), which dominated
+            # this section's Python time at realistic entity counts.
+            retained_count = 0
+            hitpoint_sum = shield_sum = ratio_sum = 0.0
+            ratio_min = math.inf
+            ratio_max = -math.inf
+            has_ability_source = False
+            has_visible_target = False
+            velocity_sum_x = velocity_sum_y = 0.0
+            velocity_count = 0
             velocities: list[tuple[float, float]] = []
+            offset_square_sum_x = offset_square_sum_y = offset_cross_sum = 0.0
+            projectile_count = 0
+            projectile_damage_sum = 0.0
+            projectile_damage_count = 0
             for entity in members:
-                if entity.velocity is None:
-                    continue
-                model_velocity = self._model_velocity(entity.velocity)
-                vx = model_velocity[0] / (WORLD_WIDTH / self.config.board_width)
-                vy = model_velocity[1] / (WORLD_HEIGHT / self.config.board_height)
-                velocities.append((vx, vy))
-            if velocities:
-                mean_vx = sum(value[0] for value in velocities) / len(velocities)
-                mean_vy = sum(value[1] for value in velocities) / len(velocities)
+                if entity.entity_id in retained_child_ids:
+                    retained_count += 1
+                hitpoint_sum += _finite(entity.hitpoints)
+                shield_sum += _finite(entity.shield)
+                ratio = _finite(entity.hitpoints, float(entity.max_hitpoints or 1.0))
+                ratio_sum += ratio
+                ratio_min = min(ratio_min, ratio)
+                ratio_max = max(ratio_max, ratio)
+                if entity.entity_id in ability_sources:
+                    has_ability_source = True
+                if entity.visible_target is not None:
+                    has_visible_target = True
+                velocity = entity.velocity
+                if velocity is not None:
+                    model_velocity = self._model_velocity(velocity)
+                    vx = model_velocity[0] / (WORLD_WIDTH / self.config.board_width)
+                    vy = model_velocity[1] / (WORLD_HEIGHT / self.config.board_height)
+                    velocity_sum_x += vx
+                    velocity_sum_y += vy
+                    velocities.append((vx, vy))
+                    velocity_count += 1
+                projectile = entity.projectile_state
+                if projectile is not None:
+                    projectile_count += 1
+                    if projectile.damage is not None:
+                        projectile_damage_sum += float(projectile.damage)
+                        projectile_damage_count += 1
+                    else:
+                        static_damage, static_known = self._entity_static_damage(entity)
+                        if static_known:
+                            projectile_damage_sum += static_damage
+                            projectile_damage_count += 1
+            member_count = len(members)
+            features[0, group_row, 0] = member_count / 16.0
+            features[0, group_row, 1] = (member_count - retained_count) / 16.0
+            features[0, group_row, 2] = hitpoint_sum / 10_000.0
+            features[0, group_row, 3] = shield_sum / 10_000.0
+            features[0, group_row, 4] = ratio_sum / member_count
+            features[0, group_row, 5] = ratio_min
+            features[0, group_row, 6] = ratio_max
+            features[0, group_row, 7] = right - left
+            features[0, group_row, 8] = top - bottom
+            features[0, group_row, 9] = float(has_ability_source)
+            features[0, group_row, 10] = float(has_visible_target)
+            if velocity_count:
+                mean_vx = velocity_sum_x / velocity_count
+                mean_vy = velocity_sum_y / velocity_count
                 velocity_dispersion = sum(
                     (value[0] - mean_vx) ** 2 + (value[1] - mean_vy) ** 2 for value in velocities
-                ) / len(velocities)
+                ) / velocity_count
                 features[0, group_row, 11] = _finite(mean_vx, 10.0)
                 features[0, group_row, 12] = _finite(mean_vy, 10.0)
                 features[0, group_row, 13] = _finite(math.hypot(mean_vx, mean_vy), 10.0)
                 features[0, group_row, 14] = _finite(velocity_dispersion, 100.0)
-            offsets = [(value[0] - center_x, value[1] - center_y) for value in child_positions]
-            features[0, group_row, 15] = sum(value[0] ** 2 for value in offsets) / (
-                len(offsets) * self.config.board_width**2
+            for position in child_positions:
+                offset_x = position[0] - center_x
+                offset_y = position[1] - center_y
+                offset_square_sum_x += offset_x**2
+                offset_square_sum_y += offset_y**2
+                offset_cross_sum += offset_x * offset_y
+            position_count = len(child_positions)
+            features[0, group_row, 15] = offset_square_sum_x / (
+                position_count * self.config.board_width**2
             )
-            features[0, group_row, 16] = sum(value[1] ** 2 for value in offsets) / (
-                len(offsets) * self.config.board_height**2
+            features[0, group_row, 16] = offset_square_sum_y / (
+                position_count * self.config.board_height**2
             )
-            features[0, group_row, 17] = sum(value[0] * value[1] for value in offsets) / (
-                len(offsets) * self.config.board_width * self.config.board_height
+            features[0, group_row, 17] = offset_cross_sum / (
+                position_count * self.config.board_width * self.config.board_height
             )
-            projectile_entities = [entity for entity in members if entity.projectile_state is not None]
-            known_projectile_damage: list[float] = []
-            for entity in projectile_entities:
-                projectile = entity.projectile_state
-                if projectile is not None and projectile.damage is not None:
-                    known_projectile_damage.append(float(projectile.damage))
-                    continue
-                static_damage, static_known = self._entity_static_damage(entity)
-                if static_known:
-                    known_projectile_damage.append(static_damage)
-            features[0, group_row, 18] = len(projectile_entities) / 16.0
-            features[0, group_row, 19] = sum(known_projectile_damage) / 5_000.0
+            features[0, group_row, 18] = projectile_count / 16.0
+            features[0, group_row, 19] = projectile_damage_sum / 5_000.0
             features[0, group_row, 20] = (
-                len(known_projectile_damage) / len(projectile_entities) if projectile_entities else 0.0
+                projectile_damage_count / projectile_count if projectile_count else 0.0
             )
             features[0, group_row, 21] = float(bool(group.parent_entity_ids))
             group_mask[0, group_row] = True
@@ -1698,7 +1779,7 @@ class UniversalObservationTensorizerV4:
         group_index_by_entity: Mapping[int, int],
         child_index_by_entity: Mapping[int, int],
     ) -> tuple[ActionCandidatesV4, int]:
-        player = next(item for item in observation.players if item.owner == self.actor_owner)
+        player = self._player(observation, self.actor_owner)
         candidate_rows: list[dict[str, object]] = []
         raw_hand_slots = player.metadata.get("hand_slot_by_card")
         if not isinstance(raw_hand_slots, Mapping):
@@ -2136,7 +2217,8 @@ class UniversalObservationTensorizerV4:
         if self.tracker is not None:
             self.tracker.update(observation)
             self.tracker.reconcile_owner_private_state(observation)
-        actor = next(player for player in observation.players if player.owner == self.actor_owner)
+        self._frame_players.clear()
+        actor = self._player(observation, self.actor_owner)
         self._ability_state_by_source_entity = {
             int(state.source_entity): state for state in actor.ability_runtime_states if state.source_entity is not None
         }

@@ -71,12 +71,18 @@ plan budget **~2 ms per batched forward**, **15.6k decisions/s** from 4×A51,
 **~62k decisions/s** at batch 128 ≈ **51 matches/s** per card.
 
 **The packet budget.** At 256 lanes and 8.4k decisions/s the whole per-batch
-budget is ~30 ms (≈120 µs/lane). The C1 spike (2026-11-16) measured the
-vectorized observation frame at **~0.03 ms/lane** and the real
-`BattleEnvV1.observe` at **~0.65 ms/lane**, but
-`UniversalObservationTensorizerV4` at **~1.4 ms/lane**: the tensorizer is now the
-per-lane packet, not the observation facts. The old "13 ms/lane bridge encoder"
-was the TCP/JSON + full-assembly path. See `runs/crforge-c1/encoder-spike.json`.
+budget is ~30 ms (≈120 µs/lane). The C1 spike measured the vectorized observation
+frame at **~0.03 ms/lane** and the real `BattleEnvV1.observe` at **~0.65 ms/lane**.
+The C3 profiler (2026-11-16) measured `UniversalObservationTensorizerV4` at
+**0.99–1.07 CPU ms/decision** — the tensorizer is the per-lane packet, not the
+observation facts. That cost is **3,754 Python calls per decision** (330
+`isinstance`, 217 frozen-mapping `__getitem__`, 214 `_finite`, 195
+`FrozenMapping.get`), i.e. interpreter ceremony over a 2,200-line semantic
+builder, not array math; ~35 % of profiled time is builtin calls plus the
+frozen-mapping layer. The old
+"13 ms/lane bridge encoder" was the TCP/JSON + full-assembly path. See
+`runs/crforge-c1/encoder-spike.json` and `runs/crforge-c3/tensorizer-profile.json`
+(`docs/native/16.635.1/FINDINGS.md` §3.44).
 
 ---
 
@@ -88,9 +94,9 @@ gate is recorded.**
 | # | Stage | Work | Cost | Gate |
 |---|---|---|---|---|
 | **C0** | Close legality | Fix the last MiniPekka `26000018` reject; map `CARD_PENDING`; 20-game run | 1–2 d, $0 | `illegal: 0`, `truncated: 0`, no unexplained rejects; rejected-actions counter is a first-class gate |
-| **C1** | **Encoder spike** | 256-lane `VectorBattle` + `ObservationV1` built two ways: per-lane and vectorized. Time both end-to-end (observe + masks + tensorize) | 1 d, $0 | **measured 2026-11-16**: vectorized encoder **0.028–0.031 ms/lane (32–36k decisions/s)** vs per-lane 0.54–0.57 ms/lane (18–19×); equivalence pass. Existing observe+tensorize **2.06 ms/lane**; projected end-to-end **1.44 ms/lane = 694/s**. Encoder gate passes; end-to-end is tensorizer-bound → C3 |
+| **C1** | **Encoder spike** | 256-lane `VectorBattle` + `ObservationV1` built two ways: per-lane and vectorized. Time both end-to-end (observe + masks + tensorize) | 1 d, $0 | **measured 2026-11-16 at the default shape** (256 × 200 × 3): vectorized facts **0.0165 ms/lane = 60,702 decisions/s** vs per-lane 0.315 (**19.1×**), equivalence pass; projected end-to-end **0.713 ms/lane = 1.16 matches/s per process**. Bootstrap caveat: the earlier 0.028 ms/lane figure came from a 40 × 1 smoke, and the earlier "tensorize 1.4 ms/lane" from a scripted policy that never played (both fixed) |
 | **C2** | Resident adapter (F1) | `crforge_resident.py` over `LiveBattle`/`VectorBattle`, presenting the `NativeClashEnv` surface (`create_match`, `observe`, `observe_atomic`, `observe_rich`, `step`, `queue_*_at`, `attest`, `status`, `close_transport`) | 3–5 d, $0 | 50+ steps identical to the bridge (observations, masks, rewards); **2× env throughput** |
-| **C3** | Fast observation (F2) | `ObservationV1` straight from the NumPy seat row; native `masks`; tower/footprint cache per tick; `policy_features_only=True`; no per-lane dicts | 1–2 w, $0 | **≥ 0.8 matches/s per process**; `illegal: 0`; tensorizer parity to the native path |
+| **C3** | Fast observation (F2) | `ObservationV1` straight from the NumPy seat row; native `masks`; tower/footprint cache per tick; `policy_features_only=True`; no per-lane dicts | 1–2 w, $0 | **≥ 0.8 matches/s per process**; `illegal: 0`; tensorizer parity to the native path. **Status 2026-11-16: gate met, target open.** Tensorizer profiled at **0.99 CPU ms/decision** replay mean (0.716 min-of-decisions), `batch_digest`-identical after the shipped reductions; end-to-end **0.71–1.02 ms/lane ≈ 0.8–1.2 matches/s per process**. Python tuning is measured out; ≤0.5 ms/lane needs the batched row build (or a C port of `_groups`/`_candidates`/`_relations`/`_card_sets`) |
 | **C4** | Batch + PPO (F3) | 8 lanes/process, 2–4 processes, `ResidentBatchCoordinatorV1`, `capture_mode="compact"`, pipelined inference | 1 w, ~$2 GPU | 10-segment run: 0 rejected, `eligible_act_rate > 0`, native eval not degrading; log env-steps/s, tensorize ms, inference ms |
 | **C5** | Parity curve (continuous) | Every adapter change and every N updates: golden-trace hashes + **50–150 native matches**; compare win rate, tick/action counts, tower/elixir trajectories | ~$0.3/w, $0 CPU | win-rate gap inside the Wilson interval; divergence attributable to the adapter, not the policy |
 | **C6** | Native promotion gate | ≥150 games, paired seeds, both seats, held-out decks | ~1 h, $0 | the `ROADMAP.md` N1/N4 gate; **never crforge** |
@@ -198,6 +204,11 @@ PYTHONPATH=.resource/crforge/python .venv/bin/python -m crforge_env.bench \
   --count 256 --threads 1 8 --steps 200 --repeats 3 \
   --per-lane-lanes 16 --tensorize-port 26789 \
   --output runs/crforge-c1/encoder-spike.json
+
+# C3 attribution: tensorizer half of a live decision, section split + batch digest
+.venv/bin/python tools/crforge/profile_tensorizer.py \
+  --port 26789 --decisions 240 --profile-decisions 150 --repeats 5 \
+  --output runs/crforge-c3/tensorizer-profile.json
 
 # end-to-end evaluation (native gate; never a promotion source on crforge)
 .venv/bin/python -m native_runner.training.v4.evaluate \
