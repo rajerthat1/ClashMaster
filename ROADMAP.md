@@ -309,12 +309,29 @@ Order of work now:
    old plan were wrong**: their "ceilings" came from the raw resident channel,
    which skips the observation build (~26 ms/packet) and tensorization (~14 ms),
    i.e. ~90 % of a real packet. Measured training floor: **1× x86 0.082/s,
-   2× 0.10/s, 4× 0.15/s** in 6,068-tick matches. Corrected next step: cut the
-   per-packet worker cost (observation build, then parallel tensorization) before
-   adding engines, and do not quote raw-channel matches/s.
-9. Rent a GPU and run 400+ paired eval games before any long fine-tune. Do this
-   only after the worker cost drops or the engine count grows — at the measured
-   per-engine floor the forward is not the bottleneck, so a GPU would sit idle.
+   2× 0.10/s, 4× 0.15/s** in 6,068-tick matches.
+9. **Decision 2026-11-15 — fix the data path, then scale.** The engine, the loop
+   and the model are done; the one thing ~5× behind the field is the per-decision
+   data path. FirstLight's 9.85 matches/s is ~128 slots at our engine's *raw*
+   per-slot rate (0.077 vs 0.081/s); daybreak gets there with a C feature
+   extension and one decision server per GPU. So the plan of record is:
+   1. micro-profile `BattleEnvV1.step` (½ day);
+   2. thin or native the observation path (3–5 days; gate **≤25 ms/packet at
+      8 lanes**, parity corpus unchanged);
+   3. parallelise tensorization (1 day; ≤7 ms/16 rows);
+   4. one short GPU session to validate the pipelined CUDA path;
+   5. move 8 engines to a real 8-core host (this laptop has 2 P-cores;
+      gate ~2/s aggregate);
+   6. 400+ paired native games, then a **bounded specialist fine-tune**
+      (X-Bow 3.0 or Hog 2.6) before the generalist league.
+   If step 2 lands, 1 engine ≈ 0.26/s and 8 engines ≈ 2.1/s ≈ 180 k matches/day,
+   i.e. FirstLight's whole 1,450-round run in ~8 days. The 2.5/s goal survives;
+   it needs 8 engines and a thin path, not one engine and a raw-channel ceiling.
+10. **Cheap parallel experiment.** Rules permitting, ~20 ladder games of
+   `A-hog26-v738` / `B-general-v275` on Null's measure the official-16.635 →
+   Null's-balance domain gap before a long run.
+11. Rent a GPU for the 400+ paired eval games and the fine-tune only after step
+   9.2 lands. At today's packet cost the GPU idles 96 % of the time.
 
 Rent only when a local segment completes in <10 min; do not spend GPU hours on
 CPU-bound prep. Training throughput notes and the portable `ever_*` techniques

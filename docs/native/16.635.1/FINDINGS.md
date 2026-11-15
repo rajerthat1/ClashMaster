@@ -1195,6 +1195,10 @@ throughput tool now reports both aggregates:
 - **capacity** = sum of the per-lane rates. This is the training-relevant
   number (FirstLight's 9.85 matches/s is 16 slots × ~0.62 matches/s) and stays
   correct when lanes have unequal speed.
+  *(Corrected in §3.41: 16 slots × 0.62 would need ~3,700 slot-ticks/s, but the
+  engine does ~490 raw. 9.85/s is consistent with ~128 slots — 16 collectors ×
+  8 — at the raw per-slot rate. The capacity/makespan distinction above still
+  holds; only the parenthetical slot count was wrong.)*
 - **makespan floor** = total slot-ticks / slowest lane's window. This is a lower
   bound that pays for fast lanes finishing early; the previous implementation
   reported only this, which under-counted mixed-speed lanes by ~40%.
@@ -2435,18 +2439,56 @@ and it is neutral (within model noise) wherever it is not a win.
   would need the per-packet worker cost to fall from ~80 ms mean to ~21 ms.
   Pipelining is necessary for scale but not sufficient.
 
-**What is actually left.** Ranked by measured share of the packet:
+**Where the field's 10 matches/s comes from (checked in `.resource`, 2026-11-15).**
+Not a faster engine: a thinner per-decision data path and a far larger farm.
 
-1. **Observation build, ~26 ms/packet** (`BattleEnvV1.step` constructs the
-   semantic observation objects for 16 owners per packet). Biggest single term;
-   it is Python object construction, not the native step (5.6 ms channel).
-2. **Tensorize, ~14 ms/packet** for 16 rows. Parallelising rows across a
-   worker's CPU group (`worker_cpus` currently only sets affinity; the worker
-   still runs `torch.set_num_threads(1)`) is the obvious attempt.
-3. **More engines.** Linear on distinct real cores: 1 engine ≈ 0.082
-   ladder-matches/s, 4 ≈ 0.33, 8 ≈ 0.66, ~30 ≈ 2.5 (≈15 if the packet cost
-   halves). This host has 2 P-cores and 8 E-cores, so 4+ must be read as
-   per-core-normalised and measured on the rented host.
+| | FirstLight-Zero | daybreak-cr | us |
+| --- | --- | --- | --- |
+| Concurrency | 8 resident per collector, many collectors; the 9.85/s figure needs ~16 collectors = **128 slots** | 13–50 collectors, **one game each** | 4 engines x 8 lanes |
+| Per-decision data | compact fixed arrays: 26 scalars, 64 x 14 units, 5 options | the same arrays built by a **C extension** (`cr/native_features.c`; `CR_NATIVE_FEATURES=0` is the Python path) | `ObservationV1` objects + 21-column tensorizer in Python |
+| Serving | one inference server for the whole farm, CUDA graph per (model, batch bucket) | one decision server per GPU, every waiting collector in one CUDA-graph call | local forward, ~2 packets/forward |
+| Model | 1.17M params, pruned to one mirror | 1.26M / 3.4M / 8.0M | 17.5M |
+
+Both call the same `env.step(..., policy_features_only=True)` we do, so the
+engine and the environment contract are not the difference.
+
+**The arithmetic.** 9.85 matches/s / 128 slots = **0.077 matches/s per slot**.
+Our raw engine (no observation work) is **0.081**; our real loop is **0.017**.
+They run at the engine's raw limit; we are ~5x above it. Their edge is that
+observation and serving cost them almost nothing per decision.
+
+That also corrects the §3.25 aside that "FirstLight's 9.85 matches/s is 16 slots
+x ~0.62 matches/s": 16 slots at 0.62/s each would need ~3,700 slot-ticks/s,
+while our engine does ~490 raw and ~150 with capture. The count that makes the
+units consistent is 128 slots, which is what the project actually runs.
+
+**Judgment and plan (session-9 decision).** Fix the data path before buying
+compute or changing engines: it is the only work that multiplies every engine,
+every run and every GPU hour at zero recurring cost.
+
+| # | Step | Effort | Gate |
+| --- | --- | --- | --- |
+| 1 | Micro-profile `BattleEnvV1.step` (cProfile + per-owner split of the 26 ms); decide entities vs events vs relations vs beliefs before rewriting | 1/2 day | top-5 functions explain the 26 ms |
+| 2 | Thin or native the observation path (fuse step->tensor and/or C/numpy; daybreak's *method*, not its code) | 3-5 days | **<=25 ms/packet at 8 lanes**, parity corpus unchanged |
+| 3 | Parallelise tensorization across the worker's CPU group | 1 day | tensorize <=7 ms/16 rows |
+| 4 | One short GPU session (~1 h): validate the pipelined inference thread on CUDA | 1 h | no graph/stream errors; >=0.5/s on 1x x86 |
+| 5 | Move 8 engines to a real 8-core host (plain x86_64 ELF; this laptop has 2 P-cores) | 1 day | ~2/s aggregate |
+| 6 | 400+ paired games on the native engine, then a bounded specialist fine-tune (X-Bow 3.0 or Hog 2.6) before the generalist league | days of GPU | Wilson intervals, 0 rejected |
+
+If step 2 lands, 1 engine is ~0.26 ladder-matches/s and **8 engines ~2.1/s =
+~180 k matches/day**, i.e. FirstLight's whole 1,450-round run in ~8 days. The
+original 2.5/s goal survives; it just needs 8 engines and a thin path, not one
+engine and a raw-channel ceiling.
+
+**Not the plan.** crforge now (different ruleset 16.635.3/8, needs a V4
+observation adapter, never a gate — revisit only if the native farm is still
+uneconomical after step 5); phone farming (the A51 is the ARM64 oracle); a long
+GPU fine-tune before the packet cost drops (the GPU idles 96 % of the time); and
+chasing 2.5/s as a target rather than decisions/day at gateable quality.
+
+**Cheap parallel experiment.** Rules permitting, ~20 ladder games of
+`A-hog26-v738` / `B-general-v275` on Null's measure the one risk throughput
+cannot: the official-16.635 -> Null's-balance domain gap.
 
 **Unverified.** The CUDA path was not exercised in this session (no GPU): the
 inference thread is CPU-verified only. Before a paid run, confirm on the box

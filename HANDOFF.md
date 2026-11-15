@@ -153,29 +153,60 @@ tensorize, 6 ms channel** — 51 ms median / 82 ms mean. The 2.5/s goal at 8
 engines needs ~21 ms/packet, i.e. the worker cost must roughly halve.
 Pipelining cannot do that; it removes ~12 ms/packet of coordinator idle.
 
+### Judgment — fix the data path, then scale
+
+The engine, the loop and the model are done. The single thing that is ~5× behind
+the field is the per-decision **data path**, and it is the only fix that
+multiplies every engine, every future run and every GPU hour at zero recurring
+cost. Checked in `.resource` on 2026-11-15:
+
+| | FirstLight-Zero | daybreak-cr | us |
+| --- | --- | --- | --- |
+| Concurrency | 8 resident per collector, many collectors (the 10/s figure needs ~16 collectors = **128 slots**) | 13–50 collectors, **one game each** | 4 engines × 8 lanes |
+| Per-decision data | compact fixed arrays (26 scalars, 64×14 units, 5 options) | same arrays built by a **C extension** (`cr/native_features.c`); `CR_NATIVE_FEATURES=0` is the Python path | `ObservationV1` objects + 21-column tensorizer in Python |
+| Serving | one server for the farm, CUDA graph per batch bucket | one decision server per GPU, all waiting collectors per call | local forward, ~2 packets/forward |
+| Model | 1.17M, pruned to one mirror | 1.26M / 3.4M / 8.0M | 17.5M |
+
+**The arithmetic.** 9.85 matches/s ÷ 128 slots = **0.077 matches/s per slot**.
+Our raw engine (no observation work) is **0.081**; our real loop is **0.017**.
+So they run at the engine's raw limit and we are ~5× above it. Their engine is
+not faster — their per-decision overhead is nearly zero. (The §3.25 note that
+"9.85 matches/s is 16 slots × 0.62" is wrong by ~7× and is superseded here.)
+
+If 40 ms of observation+tensor work becomes ~10 ms, a packet is ~25 ms and one
+engine goes **0.082 → ~0.26 ladder-matches/s**. **8 engines on real cores ≈
+2.1/s ≈ 180 k matches/day**, i.e. FirstLight's whole 1,450-round run in ~8 days.
+That is the goal reached with 8 engines and a thin path, not with one engine and
+a fantasy ceiling.
+
 ### Task order
 
-1. **Cut the observation build** (26 ms/packet outside the channel,
-   `BattleEnvV1.step` building semantic observations for 16 owners). Profile it
-   first with `profile_cluster_collection.py --diagnostic-timing`, then make
-   only what the tensorizer reads. Gate: 1× x86 scripted ≥0.20/s, no behaviour
-   change (the parity corpus is the check).
-2. **Parallelise tensorization.** The worker is pinned to a CPU group but runs
-   `torch.set_num_threads(1)` and tensorizes 16 rows serially. Try a per-lane
-   thread pool inside `frame_packet`. Gate: tensorize ≤7 ms/16 rows.
-3. **Re-measure the ladder** with the corrected units before quoting any
-   matches/s number. Use the profiler's 720-decision denominator and say so, or
-   convert to 6,068-tick matches. The two conventions differ by 1.69×.
-4. **Only then rent the A6000** for `profile_real_collection.py --device cuda`
-   (the CUDA path of the new inference thread is still unverified) and the 400+
-   paired-game gate.
-5. If the worker cost resists: add engines. Linear on distinct real cores —
-   **~30 engines for 2.5/s at the current packet cost, ~15 if it halves** — and
-   the x86 farm is cheap, but this laptop has only 2 performance cores, so
-   measure 4+ on the rented host.
+| # | Step | Effort | Gate |
+| --- | --- | --- | --- |
+| 1 | **Micro-profile `BattleEnvV1.step`** (cProfile + per-owner split of the 26 ms). Decide whether it is entities/events/relations/beliefs before rewriting anything | ½ day | top-5 functions account for the 26 ms |
+| 2 | **Thin or native the observation path** — fuse step→tensor and/or C/numpy the hot loop, following daybreak's method (not its code) | 3–5 days | **≤25 ms/packet at 8 lanes**, parity corpus unchanged, 0 UNKNOWN effects |
+| 3 | **Parallelise tensorization** across the worker's CPU group (it still runs `torch.set_num_threads(1)`) | 1 day | tensorize ≤7 ms/16 rows |
+| 4 | **One short GPU session** (~1 h, ~$1): validate the pipelined inference thread on CUDA and record the real end-to-end number | 1 h | no graph/stream errors, ≥0.5/s on 1× x86 |
+| 5 | **Move to a real 8-core host** for 8 engines (the engine is a plain x86_64 ELF; this laptop has 2 P-cores) | 1 day | 8 engines ≈ 2/s aggregate |
+| 6 | **400+ paired games on the native engine**, then a **bounded specialist fine-tune** (X-Bow 3.0 or Hog 2.6) before the generalist league | days of GPU | Wilson intervals, 0 rejected |
+
+**In parallel, rules permitting:** play ~20 games of `A-hog26-v738` /
+`B-general-v275` on Null's ladder and record the results. It costs almost
+nothing and measures the one risk throughput cannot answer — how far official
+16.635 training transfers to Null's custom balance. Learn that this week, not
+after a month of training.
 
 ### Do not
 
+- Do not chase 2.5 matches/s as a target in itself. Decisions/day at a gateable
+  quality is the metric; 2/s with the 17.5M model is already a serious budget.
+- Do not start crforge now. It is the only 10×+ option, but it reimplements a
+  *different* ruleset (16.635.3/8), needs a V4 observation adapter and is never
+  a valid gate — a 1–2 week detour with parity risk. Revisit after step 5 only
+  if the native farm is still uneconomical.
+- Do not farm phones. The A51 stays the ARM64 parity/deploy oracle.
+- Do not run a long GPU fine-tune before steps 1–3: at today's packet cost the
+  GPU idles 96 % of the time waiting on Python.
 - Do not quote `resident_batch_throughput` matches/s as a training rate. Four
   engines gave 0.736 aggregate because one Python client decodes every lane.
 - Do not expect loop pipelining to lift a row-bound CPU forward (§3.40); it
