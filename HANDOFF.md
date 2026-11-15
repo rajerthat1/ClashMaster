@@ -179,15 +179,46 @@ engine goes **0.082 → ~0.26 ladder-matches/s**. **8 engines on real cores ≈
 That is the goal reached with 8 engines and a thin path, not with one engine and
 a fantasy ceiling.
 
-### Task order
+### Session 10 — attribution done, two fixes shipped (2026-11-15)
+
+Step 1 is finished. New tool
+`tools/native_analysis/profile_step_breakdown.py` runs the worker's own batch
+shape (decode lanes → `begin_round` → lane thread pool → `finish_round`) with a
+scripted play-every-4 policy and reports per-method wall time plus a sequential
+cProfile with per-module totals.
+
+**One lane, 16.635.1, current tree:** `step` **17.1 ms**, of which `observe`
+**10.7 ms (62 %)** — `_entities` 4.7, `_extract_towers` 2.7, `action_mask` 1.9,
+`_players` 0.9, `_events_for` 0.8 — and the engine/channel round 5.0 ms.
+cProfile puts ~34 % of self time in `contracts.py` plus builtin type checks and
+~11 % in `rich_telemetry_adapter.py` + `phase_runtime.py`: the build is dominated
+by validated, deeply frozen Python objects, not game logic. The tensorizer never
+reads entity/tower `runtime_provenance`, `effects`, `shield_state`,
+`capture_runtime`, `periodic_attack_modifier`, `internal` or `movement_target`.
+
+Shipped (both measured):
+- **scalar-first `contracts._freeze`** — paired A/B, median single-lane
+  **48.1 → 57.4 pkt/s (+19 %)**, CPU **19.0 → 15.7 ms/packet**.
+- **one tower projection per tick** — `step` now asks for the rich projection
+  and `observe`/`action_mask`/`_derive_events` reuse it (was two projections of
+  the same tick). `--trace-towers` confirms one computation per tick.
+
+**Lanes do not scale.** Same engine at `--lanes 1/2/4/8`, process CPU measured
+with `getrusage`: the process consumes **0.90–0.94 of one core at every lane
+count**; lanes buy at most ~1.5×. The worker is GIL-bound, so lanes only overlap
+the engine wait. Throughput is **processes (engines)**, not lanes — the earlier
+"8 lanes ≈ 70 lane-decisions/s ≈ 0.082 matches/s" is one Python core, not the
+engine.
+
+### Task order (revised)
 
 | # | Step | Effort | Gate |
 | --- | --- | --- | --- |
-| 1 | **Micro-profile `BattleEnvV1.step`** (cProfile + per-owner split of the 26 ms). Decide whether it is entities/events/relations/beliefs before rewriting anything | ½ day | top-5 functions account for the 26 ms |
-| 2 | **Thin or native the observation path** — fuse step→tensor and/or C/numpy the hot loop, following daybreak's method (not its code) | 3–5 days | **≤25 ms/packet at 8 lanes**, parity corpus unchanged, 0 UNKNOWN effects |
-| 3 | **Parallelise tensorization** across the worker's CPU group (it still runs `torch.set_num_threads(1)`) | 1 day | tensorize ≤7 ms/16 rows |
+| 1 | ~~Micro-profile `BattleEnvV1.step`~~ (**done, §3.42**) | — | top-5 functions = the whole observation build |
+| 2 | **Thin the observation for training** — skip `runtime_provenance` and unused runtime states under `policy_features_only`, add a non-validating internal constructor, cache the hand runtime contract, then re-measure. Fuse step→tensor and/or C/numpy only after those numbers. | 3–5 days | **CPU ≤ 8 ms/packet** and parity corpus unchanged |
+| 3 | **Skip per-lane thread pooling for the Python path**; tensorization parallelism only where torch releases the GIL, otherwise use processes. | 1 day | tensorize ≤7 ms/16 rows *measured*, not assumed |
 | 4 | **One short GPU session** (~1 h, ~$1): validate the pipelined inference thread on CUDA and record the real end-to-end number | 1 h | no graph/stream errors, ≥0.5/s on 1× x86 |
-| 5 | **Move to a real 8-core host** for 8 engines (the engine is a plain x86_64 ELF; this laptop has 2 P-cores) | 1 day | 8 engines ≈ 2/s aggregate |
+| 5 | **Move to a real 8-core host** for 8 engines (the engine is a plain x86_64 ELF; this laptop has 2 P-cores). Eight engines = eight processes, which is the parallelism that actually scales. | 1 day | 8 processes ≈ 2/s aggregate |
 | 6 | **400+ paired games on the native engine**, then a **bounded specialist fine-tune** (X-Bow 3.0 or Hog 2.6) before the generalist league | days of GPU | Wilson intervals, 0 rejected |
 
 **In parallel, rules permitting:** play ~20 games of `A-hog26-v738` /
@@ -213,6 +244,10 @@ after a month of training.
   pays only when the forward is fixed-cost (GPU) and there are enough engines
   that the coordinator would be the serial resource.
 - Do not raise `CR_PPO_INFERENCE_BATCH_WAIT_MS` — still a measured loss.
+- Do not add lanes expecting throughput: the worker is GIL-bound (0.90–0.94 of
+  one core at 1–8 lanes, best run 1.5×). Add processes (engines) instead.
+- Do not measure the data path with wall time on this laptop while a browser is
+  running; use CPU ms/packet and the section shares. Absolute rates move ±30 %.
 - Do not run the new inference thread on CUDA until graph capture/replay,
   autocast and the `model_streams` waits are confirmed there.
 - Everything else in "Do not do" below still applies.
@@ -230,7 +265,15 @@ done
 # away from the engine hosts when both run on this laptop.
 taskset -c 4-11 .venv/bin/python tools/native_analysis/profile_cluster_collection.py \
     --engines 4 --lanes 8 --steps 120 --diagnostic-timing --allow-cpu-sharing
-```
+
+# §3.42 attribution: one lane on one core, cProfile of 60 sequential steps.
+# Engine 0 owns CPU 0, so pin the profiler to an E-core and leave the engine alone.
+taskset -c 4 .venv/bin/python tools/native_analysis/profile_step_breakdown.py \
+    --checkpoint .resource/RoyaleFish/models/B-general-v275.pt \
+    --engines 1 --lanes 1 --steps 100 --warmup 5 --profile-steps 60 \
+    --play-every 4 --profile-dump /tmp/opencode/step.prof \
+    --output runs/step-breakdown/lane1.json
+# scaling proof: repeat with --lanes 1/2/4/8 and read cpu_ms_per_packet
 
 A51, if needed for a parity comparison only:
 `./launch_cluster_a51.sh --engines 1 --base-port 26799`.

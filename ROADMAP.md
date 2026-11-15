@@ -315,10 +315,22 @@ Order of work now:
    data path. FirstLight's 9.85 matches/s is ~128 slots at our engine's *raw*
    per-slot rate (0.077 vs 0.081/s); daybreak gets there with a C feature
    extension and one decision server per GPU. So the plan of record is:
-   1. micro-profile `BattleEnvV1.step` (½ day);
-   2. thin or native the observation path (3–5 days; gate **≤25 ms/packet at
-      8 lanes**, parity corpus unchanged);
-   3. parallelise tensorization (1 day; ≤7 ms/16 rows);
+   1. ~~micro-profile `BattleEnvV1.step`~~ (**done 2026-11-15, §3.42**): one lane
+      is 17.1 ms `step` / 10.7 ms `observe`, split `_entities` 4.7,
+      `_extract_towers` 2.7, `action_mask` 1.9, `_players` 0.9,
+      `_events_for` 0.8; ~34 % of self time is contract validate/freeze, ~11 %
+      rich telemetry projection. Two fixes shipped: scalar-first
+      `contracts._freeze` (**+19 % median pkt/s**) and one tower projection per
+      tick. **Lanes are GIL-bound** (0.90–0.94 of one core at 1–8 lanes, ≤1.5×),
+      so throughput is processes, not lanes.
+   2. thin the observation for training — skip `runtime_provenance` and unused
+      runtime states under `policy_features_only`, non-validating internal
+      constructor, cache the hand runtime contract (3–5 days; gate
+      **CPU ≤8 ms/packet**, parity corpus unchanged); fuse to tensor / C only
+      after that;
+   3. drop per-lane Python thread pooling; parallelise tensorization only where
+      torch releases the GIL, otherwise use processes (1 day; ≤7 ms/16 rows
+      *measured*);
    4. one short GPU session to validate the pipelined CUDA path;
    5. move 8 engines to a real 8-core host (this laptop has 2 P-cores;
       gate ~2/s aggregate);

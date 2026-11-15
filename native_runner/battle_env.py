@@ -656,6 +656,10 @@ class BattleEnvV1:
         self._placement_mask_cache: dict[tuple[Any, ...], Mapping[str, Any]] = {}
         self._runtime_placement_cache: dict[tuple[Any, ...], tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
         self._ordinary_tower_cache: dict[tuple[int, int, int | None], tuple[TowerStateV1, ...]] = {}
+        # Towers projected with rich runtime telemetry.  That result is a
+        # superset of the ordinary one, so one computation per tick can serve
+        # ``step``, ``action_mask``, ``_derive_events`` and ``observe``.
+        self._rich_tower_cache: dict[tuple[int, int, int | None], tuple[TowerStateV1, ...]] = {}
         self._action_mask_cache: dict[tuple[Any, ...], ActionMaskV1] = {}
         self._action_player_runtime_cache: dict[tuple[int, int, int | None, int], Any] = {}
         self._public_metadata_static: Mapping[str, Any] | None = None
@@ -1001,6 +1005,7 @@ class BattleEnvV1:
         self._raw = dict(raw)
         self._invalidate_rich_cache()
         self._ordinary_tower_cache.clear()
+        self._rich_tower_cache.clear()
         self._action_mask_cache.clear()
         self._action_player_runtime_cache.clear()
         if prefetched_rich is not None:
@@ -1377,10 +1382,20 @@ class BattleEnvV1:
     def _extract_towers(
         self, raw: Mapping[str, Any], *, rich_context: _RichObservationContext | None = None
     ) -> tuple[TowerStateV1, ...]:
-        cache_identity: tuple[int, int, int | None] | None = None
+        # One tick has one tower answer.  A rich result is a superset of the
+        # ordinary one, so either kind can satisfy a non-rich caller, but a
+        # rich caller must not reuse an ordinary entry.  Before this, ``step``
+        # projected the after-state without runtime telemetry and ``observe``
+        # projected the same state again with it on every packet.
+        cache_identity = self._rich_identity(raw)
         if rich_context is None:
-            cache_identity = self._rich_identity(raw)
             cached = self._ordinary_tower_cache.get(cache_identity)
+            if cached is None:
+                cached = self._rich_tower_cache.get(cache_identity)
+            if cached is not None:
+                return cached
+        else:
+            cached = self._rich_tower_cache.get(cache_identity)
             if cached is not None:
                 return cached
         tower_items = self._bound_tower_items(raw)
@@ -1537,10 +1552,13 @@ class BattleEnvV1:
                 )
             )
         towers = tuple(result)
-        if cache_identity is not None:
-            if len(self._ordinary_tower_cache) >= 4:
-                self._ordinary_tower_cache.clear()
-            self._ordinary_tower_cache[cache_identity] = towers
+        if rich_context is not None:
+            if len(self._rich_tower_cache) >= 4:
+                self._rich_tower_cache.clear()
+            self._rich_tower_cache[cache_identity] = towers
+        if len(self._ordinary_tower_cache) >= 4:
+            self._ordinary_tower_cache.clear()
+        self._ordinary_tower_cache[cache_identity] = towers
         return towers
 
     @staticmethod
@@ -3007,7 +3025,10 @@ class BattleEnvV1:
             exact_native_visibility=exact_native_visibility,
             resolved_pending=resolved_pending,
         )
-        after_towers = self._extract_towers(after)
+        # Project the after-state once, with the rich telemetry that ``observe``
+        # needs, so the observation build reuses it instead of recomputing the
+        # same tick without runtime fields.
+        after_towers = self._extract_towers(after, rich_context=after_rich_context)
         terminal = self._terminal(after, after_towers)
         self._terminated = terminal.ended
         self._truncated = not self._terminated and self._canonical_tick(after_native_tick) >= self.max_battle_ticks
@@ -3563,6 +3584,7 @@ class BattleEnvV1:
                 raise BattleEnvError("native tower_activate did not bind to its fixed king tower")
             self._activated_king_tower_ids.add(king_identity[0])
             self._ordinary_tower_cache.clear()
+            self._rich_tower_cache.clear()
         data: dict[str, Any] = {
             "native_sequence": event.sequence,
             "native_event_id": (f"remaining:{state_epoch}:{event.sequence}"),

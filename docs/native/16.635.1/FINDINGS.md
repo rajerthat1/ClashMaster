@@ -2498,3 +2498,147 @@ cross-stream waits behave from a non-main thread — the collector-protocol test
 covers the eager/CPU sampler.
 
 Evidence: `runs/loop-pipeline-20261115/` (`s8-*.json`, stress log).
+
+### 3.42 `BattleEnvV1.step` attribution — contract plumbing, and lanes do not scale (2026-11-15)
+
+§3.41 established the floor. This section says what the floor is made of and
+what to remove. New tool:
+`tools/native_analysis/profile_step_breakdown.py`. It drives the real resident
+batch protocol in the worker's own shape (decode every lane, `begin_round`, one
+lane thread per slot, `finish_round`) with a scripted policy that plays a card
+every fourth decision when the mask allows it, and reports two views:
+
+- **sections** — wall time inside every relevant `BattleEnvV1` method,
+  accumulated per worker thread and divided by lane packets;
+- **cProfile** — one lane, sequential, sorted by self time, with a per-module
+  aggregate and an optional `--profile-dump` for `pstats.print_callers`.
+
+Setup for every number below: x86_64 engine, release **16.635.1**, checkpoint
+`B-general-v275`, `--play-every 4`, warmup discarded, profiler process pinned to
+a core the engine does not use. The host is an i5-1235U (2 P-cores + 8 E-cores)
+and a browser was running, so absolute rates move ±30 % between runs;
+**CPU ms per packet** and **shares** are the stable quantities.
+
+#### One lane, current tree
+
+Median of three runs (min–max in parentheses):
+
+| section | ms / lane-packet | share of `step` |
+| --- | ---: | ---: |
+| `step` | **17.1** (16.8–19.4) | 100 % |
+| `observe` (both owners) | **10.7** (10.6–11.8) | 62 % |
+| — `_entities` (rich projection per unit) | 4.7 | 27 % |
+| — `_extract_towers` (rich projection per tower) | 2.7 | 16 % |
+| — `action_mask` (two misses per packet) | 1.9 | 11 % |
+| — `_players` | 0.9 | 5 % |
+| — `_events_for` (visibility filter) | 0.8 | 5 % |
+| `_advance_headless` (engine round + channel) | 5.0 | 29 % |
+| post-advance bookkeeping (`_derive_events`, rewards, …) | 0.9 | 5 % |
+| remainder (action normalisation, tracing, …) | 0.5 | 3 % |
+
+The step-1 gate is met: `_entities`, `_extract_towers`, `action_mask`,
+`_players` and `_events_for` *are* the observation build (they sum to 11.0 ms,
+i.e. all of `observe`).
+
+#### Where that CPU actually goes (cProfile, 60 sequential steps)
+
+Per module, self time (top rows cover 64 % of profiled self time):
+
+| origin | ms / step |
+| --- | ---: |
+| Python builtins (`isinstance`, `dict.get`, `getattr`, `any`) | 8.5 |
+| `native_runner/contracts.py` (dataclass `__init__`/`__post_init__`, `_freeze`, `validate_fields`) | 5.7 |
+| `native_runner/battle_env.py` | 5.3 |
+| `native_runner/rich_telemetry_adapter.py` | 3.6 |
+| `native_runner/arena.py` (placement legality) | 1.2 |
+| `native_runner/phase_runtime.py` | 0.9 |
+
+`pstats.print_callers` shows most of the builtin traffic coming from
+`contracts._freeze` (167 k `isinstance` calls per 40 steps before the fix below)
+and the rich adapter's typed field reads. The observation build is dominated by
+**turning the native frame into validated, deeply frozen Python contract
+objects**, not by game logic. `EntityStateV1` has 34 fields and
+`TowerStateV1` 18; the tensorizer reads `internal`, `movement_target`, `effects`,
+`capture_runtime`, `periodic_attack_modifier`, `shield_state` and
+`runtime_provenance` **zero times**.
+
+#### Fix shipped: scalar-first `contracts._freeze`
+
+`FrozenMapping.__init__` runs `_freeze` on every leaf of every contract mapping,
+and the old ordering paid up to four `isinstance` checks before returning a
+plain string. Exact scalar types now return first (subclasses such as enums
+still take the general path), and `str` keys skip a redundant `str()`.
+
+Paired A/B, three alternating single-lane runs each:
+
+| | median pkt/s | CPU ms/packet | `step` ms | `observe` ms |
+| --- | ---: | ---: | ---: | ---: |
+| stock `_freeze` | 48.1 | 19.0 | 20.5 | 13.2 |
+| scalar-first | **57.4** | **15.7** | 17.1 | 10.7 |
+
+Median **+19 %** packets/s for two lines, with no schema or behaviour change.
+
+#### Fix shipped: one tower projection per tick
+
+`step` projected the after-state towers *without* runtime telemetry, then
+`observe` projected the same tick *with* it. A rich result is a superset of the
+ordinary one, so `_extract_towers` now keeps a rich cache and `step` asks for the
+rich projection once; `action_mask`, `_derive_events` and `observe` reuse it.
+`--trace-towers` shows one computed projection per tick and every later call
+served from cache (the remaining ordinary-path calls are hits). The removed
+duplicate was ~0.5–1.8 ms/packet depending on the core — below this host's
+run-to-run noise, but pure waste and now gone.
+
+#### Lanes do not scale — the worker is GIL-bound
+
+Same engine, `--lanes 1..8`, process CPU measured with `getrusage`:
+
+| lanes | pkt/s | CPU ms/packet | process CPU / wall |
+| ---: | ---: | ---: | ---: |
+| 1 | 59.1 | 15.2 | 0.90 |
+| 2 | 49.0 | 18.6 | 0.91 |
+| 4 | 84.0 | 11.0 | 0.93 |
+| 8 | 52.7 | 17.9 | 0.94 |
+
+The process consumes **one core at every lane count** (0.90–0.94) and lanes buy
+at most ~1.5× in the best run. The observation build is pure Python and
+serializes on the GIL; lanes only overlap the engine wait. This is the same
+number as the §3.41 training floor (8 lanes ≈ 70 lane-decisions/s ≈ 0.10
+matches/s) — which had been read as "per-engine throughput".
+
+Consequences:
+
+- **Throughput comes from processes (engines), not lanes.** More lanes per
+  engine is a tail-latency trick, not a multiplier. The worker server already
+  forks one process per engine; that is the parallelism that measured as
+  additive-ish in §3.41.
+- **"Parallelise tensorization across the worker's CPU group" cannot work as
+  written.** Threads in one process cannot overlap Python; only torch ops that
+  release the GIL can. Measure before spending the day.
+- The step-2 target should be **CPU per packet**, not wall per packet.
+
+#### What step 2 should cut, in measured order
+
+1. **Contract machinery (~30–35 % of the build).** Training observations never
+   serialize, hash or compare provenance. `policy_features_only=True` should
+   skip `runtime_provenance` for entities and towers, and internal training
+   construction should bypass field validation (the wire constructors keep it).
+2. **Rich runtime projection (~25–30 %).** `project_runtime` builds attack,
+   phase, visibility, effect, shield and capture states per entity per tick.
+   The tensorizer reads a subset; unused states should not be constructed in
+   training mode.
+3. **`action_mask` (~11 %).** Two misses per packet (one per owner), each over
+   four hand slots, `_hand_runtime_contract` and placement masks; the hand
+   runtime contract is re-derived 16×/packet.
+4. **`_players` + `_events_for` (~10 %).** Per-owner event visibility filtering
+   over the bounded window.
+
+The fused native/C path (daybreak's `native_features.c` method) is still the end
+state — build tensor rows directly from the native frame and never create the
+contract objects. But items 1–4 are ordinary Python edits with measured targets,
+and they shrink the parity surface any C path would have to reproduce, so they
+come first.
+
+Evidence: `runs/step-breakdown/` (`final-lane1-profiled.json`,
+`ab-freeze-*.json`, `gil-lanes-*.json`, `towers-cached-*.json`,
+`verify-towers.json`).

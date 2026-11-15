@@ -106,7 +106,7 @@ class FrozenMapping(Mapping[str, Any]):
     __slots__ = ("_data", "_hash")
 
     def __init__(self, value: Mapping[str, Any] | None = None) -> None:
-        data = {str(key): _freeze(item) for key, item in (value or {}).items()}
+        data = {key if type(key) is str else str(key): _freeze(item) for key, item in (value or {}).items()}
         self._data = MappingProxyType(data)
         self._hash: int | None = None
 
@@ -139,7 +139,17 @@ class FrozenMapping(Mapping[str, Any]):
         return self
 
 
+# Exact types that need no freezing.  ``FrozenMapping.__init__`` runs
+# ``_freeze`` on every leaf of every contract mapping, so the scalar case (the
+# overwhelming majority) must not pay an ``isinstance`` chain first.  Exact
+# types - not ``isinstance`` - deliberately exclude str/int/float subclasses
+# such as enums, which then take the general path unchanged.
+_FREEZE_PASSTHROUGH_TYPES = frozenset({str, int, float, bool, bytes, type(None)})
+
+
 def _freeze(value: Any) -> Any:
+    if type(value) in _FREEZE_PASSTHROUGH_TYPES:
+        return value
     if isinstance(value, FrozenMapping):
         return value
     if isinstance(value, Mapping):
