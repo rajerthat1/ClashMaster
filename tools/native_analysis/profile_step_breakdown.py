@@ -207,33 +207,10 @@ def _install_stock_freeze() -> Any:
     return original
 
 
-def _install_fast_freeze() -> Any:
-    """Diagnostic A/B: scalar-first ``_freeze``.
-
-    ``FrozenMapping.__init__`` runs ``_freeze`` on every leaf of every contract
-    mapping.  The stock ordering starts with an ``isinstance`` chain, so a plain
-    string pays four checks before returning.  This patch is measurement-only
-    until the saving is known.
-    """
-
-    from native_runner import contracts as contracts_module
-
-    scalars = frozenset({str, int, float, bool, bytes, type(None)})
-    original = contracts_module._freeze
-
-    def fast_freeze(value: Any) -> Any:
-        if type(value) in scalars:
-            return value
-        return original(value)
-
-    contracts_module._freeze = fast_freeze
-    return original
-
-
 def _install_tower_trace(trace: dict[str, list[float]]) -> Any:
-    """Classify ``_extract_towers`` calls as rich / cache-hit / cache-miss.
+    """Classify ``_extract_towers`` calls as hit / miss / rich-hit / rich-miss.
 
-    The method has two caches (rich-context callers bypass both), so the
+    The method has two caches and rich callers bypass the ordinary one, so the
     per-packet total alone cannot say whether the cost is recomputation or
     bookkeeping.
     """
@@ -241,10 +218,10 @@ def _install_tower_trace(trace: dict[str, list[float]]) -> Any:
     original = BattleEnvV1._extract_towers
 
     def wrapper(self: Any, raw: Mapping[str, Any], *, rich_context: Any = None) -> Any:
+        identity = BattleEnvV1._rich_identity(raw)
         if rich_context is not None:
-            kind = "rich"
+            kind = "rich_hit" if identity in self._rich_tower_cache else "rich_miss"
         else:
-            identity = BattleEnvV1._rich_identity(raw)
             kind = "hit" if identity in self._ordinary_tower_cache else "miss"
         started = time.perf_counter()
         try:
@@ -463,11 +440,6 @@ def main(argv: list[str] | None = None) -> int:
         help="classify _extract_towers calls as rich / cache-hit / cache-miss",
     )
     parser.add_argument(
-        "--fast-freeze",
-        action="store_true",
-        help="diagnostic: force the scalar-first contracts._freeze (now the shipped default)",
-    )
-    parser.add_argument(
         "--stock-freeze",
         action="store_true",
         help="A/B control: measure with the old contracts._freeze ordering",
@@ -480,11 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.steps < 1 or args.profile_steps < 0:
         raise SystemExit("--steps must be positive and --profile-steps non-negative")
 
-    fast_freeze_original = None
-    if args.stock_freeze:
-        fast_freeze_original = _install_stock_freeze()
-    elif args.fast_freeze:
-        fast_freeze_original = _install_fast_freeze()
+    fast_freeze_original = _install_stock_freeze() if args.stock_freeze else None
     environment_config = ppo_environment_config_v4()
     release_name = args.release
     model_config = None
@@ -673,7 +641,6 @@ def main(argv: list[str] | None = None) -> int:
     step_overhead_ms = max(0.0, step_ms - advance_ms - observe_ms - post_ms)
 
     summary = {
-        "fast_freeze": bool(args.fast_freeze),
         "stock_freeze": bool(args.stock_freeze),
         "engines": len(engines),
         "lanes": args.lanes,
