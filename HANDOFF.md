@@ -278,8 +278,8 @@ Evidence: `runs/crforge-c0-20261116/soak20/` — **9 of 20 games completed at
 wrap-up, all clean**: `illegal_total: 0`, `truncated: 0`, `rejected_total: 0`,
 `games_with_rejections: 0`, seeds 7–15. `summary.json` records the interruption
 honestly; **finish the remaining 11 games before a bulk run**. The 2-game
-`evaluate` re-run is `runs/crforge-c0-20261116/evaluate2/` (see its
-`matches.jsonl`; the first game is clean). `evaluate` now reports
+`evaluate` re-run is clean: **2/2 completed, illegal 0, truncated 0, rejected
+0** (`runs/crforge-c0-20261116/evaluate2/`). `evaluate` now reports
 `illegal_total`, `rejected_total`, `games_with_rejections` and
 `rejected_reasons`; rejected commands are never folded into "illegal".
 
@@ -317,9 +317,8 @@ the bridge's `observe_atomic` `_capture` ~0.8 ms.
 
 ## Next session (2026-11-17, session 14) — C3 tensorizer, then C2 resident adapter
 
-1. **Finish C0**: run the remaining 11 games and complete the 2-game evaluate
-   re-run in `evaluate2/`; the gate stays
-   `illegal 0 / truncated 0 / rejected 0`.
+1. **Finish C0**: run the remaining 11 games (the 2-game evaluate is 2/2 clean);
+   the gate stays `illegal 0 / truncated 0 / rejected 0`.
 2. **C3 (blocking the C1 record)**: feed `UniversalObservationTensorizerV4` from
    the vectorized frame (or vectorize its row build), then re-run
    `tools/crforge/encoder_spike.py` at 256 lanes × 200 × 3. Target ≤1 ms/lane
