@@ -1265,3 +1265,989 @@ done
     --output /tmp/opencode/resident_3x8x6000_actions.json
 adb logcat -b crash -d
 ```
+
+### 3.26 Native ruleset binding for the V4 evaluator — pinned device identity
+
+`BattleEnvV1` builds a `RulesetManifestV1` from `native_runner/supported_engine.json`,
+which is pinned to 15.535.13 / content 15.535.86. On the A51 the probe reports
+16.635.1 / content 16.635.93, so the first evaluator run failed closed with:
+
+```
+native runner does not match RulesetManifest: libg_sha256: expected 110aa2b5…,
+got 0b580222…; content_version: expected 15.535.86, got 16.635.93; …
+```
+
+The fix keeps the gate fail-closed instead of disabling it. A checked-in pin,
+`native_runner/versions/native-16.635.1.json`, records the identities of bytes
+that stay on the device:
+
+| Field | Value |
+| --- | --- |
+| client / content | `16.635.1` / `16.635.93` |
+| `libg.so` SHA-256 | `0b580222…e4eaa` |
+| `libg` build id | `179ac4bd…1c30` |
+| probe SHA-256 | `8721be93…8f81` |
+| content fingerprint | `553c8f15…04b4` |
+| content assets (`assets.scdb`) | `1bac8864…6d0b` |
+| content manifest SHA-1 | `b54188c6…5c44` |
+
+`ruleset.build_native_ruleset_manifest()` builds the normal local manifest
+(catalogs, contracts, timeline) and then replaces the device-resident identity
+groups with those pin values (`engine`, `data` fingerprint, `visual`), records
+the whole pin under `config["native_build"]`, and states the known adaptation
+in `content_adaptation`: the card/effect/projectile catalogs remain the pinned
+15.535.86 release because the 16.635.93 `csv_logic` assets are on the device,
+not in the workspace. Parity evidence: §3.16–§3.22 and the level-11 comparison
+in `builds/native/parity-unit-hp-15.535.29-vs-16.635.1-L11.json`.
+
+`verify_files()` skips only entries under the `device-resident/` prefix, so a
+local file can never be masked by the new rule. The builder also refuses to
+run if the local probe digest differs from the pin, so a rebuilt probe must be
+re-pinned deliberately.
+
+`training/v4/evaluate.py` now reads `status.clientVersion`, loads the matching
+pin (if any), passes the manifest and an explicit environment config to
+`BattleEnvV1`, and records `client_version`, `ruleset_id` and `native_build` in
+`identity.json`. It also stops setting
+`public_card_play_events_from_combat_ring` when the pin declares
+`combat_ring_hooks: false` (16.635.1 rich hook rings are not installed); model
+actions still emit action-executed events, so this only removes the overlay
+feed.
+
+Guard test: `native_runner/tests/test_native_ruleset_build.py` builds the
+manifest, checks the device groups, runs `verify_files`, and verifies a
+synthesized 16.635.1 attestation end to end.
+
+Reproduce::
+
+```bash
+.venv/bin/python -m pytest native_runner/tests/test_native_ruleset_build.py -q
+.venv/bin/python -m native_runner.training.v4.evaluate \
+    --checkpoint-a checkpoints/General/checkpoint-step-00000460.pt \
+    --checkpoint-b checkpoints/IL/checkpoint-step-00029396.pt \
+    --games 2 --output /tmp/opencode/eval-general-nulls --port 26789 --device cpu
+```
+
+### 3.27 V4 evaluator: deterministic argmax is passivity-biased; use `--sample`
+
+The evaluator's first full game on 16.635.1 (`BattleEnvV1` + General vs IL,
+argmax decoding, seed 1) terminated normally but was degenerate:
+
+```
+game 1 seed 1: winner a (General, owner 0), tick 5279, rejected 0
+actions_by_owner [9, 0]
+```
+
+Both checkpoints are valid `universal-card-policy.v4` contracts and load
+strictly. The passivity is in the gate head, not the port:
+
+- with the live opening state (tick 90, elixir 7.6, four legal deploy
+  candidates), both models put only **~6%** probability on `ACT`
+  (General gate logits `[0.329, -2.385]`, IL `[0.318, -2.368]`);
+- `PolicySessionV4.decide(sample=False)` takes the argmax, so at <50% ACT
+  probability it always chooses `WAIT`;
+- the action path itself is fine: `act_after_preselected_act` selects a legal
+  deploy candidate, and with `sample=True` both models play normally
+  (200-decision diagnostic: General 5 plays, IL 6 plays, 0 rejections,
+  elixir cycling rather than pinned at 10).
+
+The IL labels are sparse at the 5-tick decision cadence (a human action in a
+minority of decision windows), so argmax BC collapses to the majority class.
+Evaluation therefore needs stochastic decoding, which `evaluate.py` already
+supports:
+
+```bash
+.venv/bin/python -m native_runner.training.v4.evaluate \
+    --checkpoint-a checkpoints/General/checkpoint-step-00000460.pt \
+    --checkpoint-b checkpoints/IL/checkpoint-step-00029396.pt \
+    --games 2 --sample --output /tmp/opencode/eval-general-nulls \
+    --port 26789 --device cpu
+```
+
+`torch.manual_seed(match.seed)` is set per game, so sampled runs are
+reproducible. `serve_policy.py` already exposes `--sample`; live deployment
+should not use the argmax default without checking gate entropy, or it will
+stand still like the evaluator did.
+
+**Sampled paired evaluation (2026-11-13, SM-A515U, seeds 1–2, mirror default
+deck, both seats, `--sample`).** Identity: `ruleset_id
+0a98e8855d7ea5aff6265460386102a3b290ae3c9bb3207b22f909ef1327dc15`.
+
+| game | seed | A seat | winner | final tick | actions A / B | rejected |
+| ---: | ---: | ---: | --- | ---: | --- | ---: |
+| 1 | 1 | 0 | **General** | 3601 | 26 / 27 | 0 |
+| 2 | 2 | 1 | **General** | 3601 | 25 / 27 | 0 |
+
+Summary: `a_wins 2`, `b_wins 0`, draws 0, truncated 0; normal-terminal rate
+**2/2**. Each match ended on the engine's own `native_final_result` at tick
+3601 (a princess tower inside regulation), 0 rejected actions, empty crash
+buffer.
+
+Wall time was **627 s for two games (~313 s/game)** on one CPU core:
+~1,440 policy forwards per game at ~217 ms each. The engine can step the same
+match in well under a second (§3.18), so **host inference dominates offline
+evaluation**, not the phone. A GPU-backed evaluator is the next throughput
+lever; the A51 itself is not the limiter here.
+
+Artifacts: `/tmp/opencode/eval-general-nulls-sample/` (`identity.json`,
+`matches.jsonl`, `summary.json`); the argmax run is
+`/tmp/opencode/eval-general-nulls/`.
+
+### 3.28 N0 scripted soak — 10/10 clean after fixing the soak checks
+
+Final N0 soak on the SM-A515U (2026-11-13/14), ten seeds of
+`scripted_xbow_match.py`, one fresh `MatchConfig` each, abilities on:
+
+| seed | decisions | actions | abilities | rejected | problems | final tick |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 174 | 57 | 9 | 0 | 0 | 3601 |
+| 2 | 174 | 56 | 8 | 0 | 0 | 3601 |
+| 3 | 194 | 67 | 10 | 0 | 0 | 4024 |
+| 4 | 174 | 57 | 9 | 0 | 0 | 3601 |
+| 5 | 295 | 128 | 16 | 0 | 0 | 6148 |
+| 6 | 174 | 60 | 8 | 0 | 0 | 3601 |
+| 7 | 174 | 58 | 10 | 0 | 0 | 3601 |
+| 8 | 182 | 55 | 6 | 0 | 0 | 3756 |
+| 9 | 189 | 59 | 9 | 0 | 0 | 3899 |
+| 10 | 174 | 52 | 8 | 0 | 0 | 3601 |
+
+Totals: **10/10 matches ended normally, 0 problems, 93 abilities with 0
+rejections, `adb logcat -b crash` empty.** Every match ended on the engine's own
+result (5 at tick 3601, 3 inside regulation, 2 at full time).
+
+Two soak-tool bugs produced the falses seen in the first pass; both are fixed
+in the tools, not in the engine:
+
+1. **Refused placements were validated as plays.** `evaluate_action()` ran even
+   when the engine kept the card in hand, so seed 7 emitted "slot replaced by
+   the same card / did not pay" rows for two refused placements. The tool now
+   detects refusal from the **hand slot identity** (the played card must leave
+   its slot) and skips payment/cycle validation for it. The old elixir
+   heuristic was ambiguous for 1-cost cards at 2x elixir.
+2. **Ability source identity was taken from an object-list scan.** A Hero
+   Knight can be replaced while an older entity is still alive; a stale raw
+   object index made the probe refuse activation. `ready_knight_ability()` now
+   reads the controller's own `championEntityKeys` from the attested rich
+   observation, requires `available`, charges and zero cooldown, and sends the
+   tagged native object id. Seed 5 dropped from 4 rejections to 0 with the same
+   16 activations.
+
+The 1-cost underpayment check is also skipped when `cost <= regen_ceiling` or
+the elixir cap can mask the payment, because that signal is mathematically
+uninformative there; the hand-slot check remains authoritative.
+
+Reproduce::
+
+```bash
+for seed in 1 2 3 4 5 6 7 8 9 10; do
+  .venv/bin/python tools/native_analysis/scripted_xbow_match.py --seed "$seed" \
+      --output "/tmp/opencode/soak_xbow_$seed.json"
+done
+adb logcat -b crash -d
+```
+
+**N0 is now satisfied** (10 clean matches, 0 crashes, stable control ports), and
+**N1 is satisfied** by the sampled General vs IL result in §3.27 (2–0, 0
+rejected, 2/2 normal terminals).
+
+**Operational note (after ~1 h idle).** `:engine0` stopped answering `status`
+while the process was still alive (`S`, not frozen; `:engine1` was the resumed
+activity). The control thread appeared wedged, not the engine. `force-stop` +
+`launch_cluster_a51.sh --engines 2` restored both ports. Keep
+`adb shell svc power stayon usb` enabled for long sessions; bring the engine
+you are driving back to the foreground if it has been covered/idle.
+
+### 3.29 N1 opponent set — General vs IL and Hog 2.6
+
+All runs on the SM-A515U, sampled decoding, mirror default deck, both seats,
+`--sample`, 0 rejected actions, empty crash buffer.
+
+| match | seeds | result (General as A) | ticks | actions A / B | normal terminal |
+| --- | --- | --- | --- | --- | --- |
+| General vs IL | 1–2 | **2–0 General** | 3601, 3601 | 26/27, 25/27 | 2/2 |
+| General vs Hog26-1 | 1–2 | **0–2 Hog** | 6129, 3601 | 52/51, 23/24 | 2/2 |
+| General vs Hog26-2 | 1–2 | **0–2 Hog** | 6120, 6118 | 46/47, 48/48 | 2/2 |
+
+Game 2 of the Hog26-1 run is the informative one: Hog took a princess tower by
+tick 3601 while General played 23 cards, so that specialist converts early.
+General's long-game volume (52 actions) is healthy; the gap is
+conversion/defense quality, not passivity.
+
+Hog26-specialist2 is a much closer 0–2: both games went to full overtime
+(6120 and 6118, `native_final_result`) with 46/48 General actions and 0
+rejections. General now survives regulation against the second specialist and
+loses only after the tower race reaches sudden death, which is the expected
+direction of travel for a generalist against a specialist.
+
+Wall time: General vs IL 627 s / 2 games; General vs Hog26-1 836 s / 2 games;
+General vs Hog26-2 ~840 s / 2 games. Host CPU inference, not the phone.
+
+Artifacts: `/tmp/opencode/eval-general-nulls-sample/`,
+`/tmp/opencode/eval-general-hog1/`, `/tmp/opencode/eval-general-hog2/`.
+
+### 3.30 N3 resident throughput — windowing is the scaling lever
+
+Measured on the SM-A515U (`R58NA0QTHWV`, Android 13) with the 16.635.1 cluster
+APK, four engine activities (`Engine0..3`), `tools/native_analysis/
+resident_batch_throughput.py` (resident `batch-v1`, compact capture, one
+affordable card per owner per action round). All runs completed with zero
+failures and an empty `adb logcat -b crash`.
+
+**The phone was the surprise.** In the default launch all engines except the
+resumed activity land in Android's `background` cpuset:
+
+| cgroup | schedtune | cpuset |
+| --- | --- | --- |
+| `top-app` | `/top-app` | `0-7` |
+| `foreground` | `/foreground` | `0-6` |
+| `background` | `/background` | **`0-1`** (little cores only) |
+
+`launch_cluster_a51.sh --engines 2` produced one `top-app` engine (~4.7
+matches/s burst) and one `background` engine (~1.1-1.4 matches/s): a ~3x
+asymmetry that is a cgroup artifact, not thermals or a probe bug. The big
+cores were only at 936 MHz-1.35 GHz, and `cpu5`'s governor never saw a
+multi-threaded load.
+
+Keep every engine out of `background` by making it visible:
+
+- engine 0: fullscreen (`am start -f 0x18000000`);
+- engine 1: `--windowingMode 4` (split-screen secondary);
+- engines 2+: `--windowingMode 5` (freeform).
+
+Android 13 needs `force_resizable_activities`, `enable_freeform_support` and
+`freeform_window_management` set globally first. `launch_cluster_a51.sh
+--window-mode visible` (default) now does all of this and verifies each
+engine's schedtune cgroup. Split-screen/freeform changes the app window size;
+the probe path is unaffected because actions and observations are native, not
+screen coordinates.
+
+| config | lanes | capacity matches/s | makespan matches/s | notes |
+| --- | ---: | ---: | ---: | --- |
+| 2 engines, default launch | 2×8 | 3.9-6.1 | 2.2-2.8 | one lane in `background`, unstable |
+| 2 engines, split-screen | 2×8 | **5.33** | **5.32** | symmetric, 2.66 per lane |
+| 4 engines, mixed window modes | 4×8 | 12.17 | 6.38 | lane 4 pinned to little core 3 |
+| 4 engines, big cores 4-7 | 4×8 | **12.3-14.4** | **11.1-13.6** | 2.8-3.8 per lane; fresh launches sit at the top |
+| 4 engines, big cores, 16 slots | 4×16 | **14.0-14.5** | **13.4-13.9** | 3.5-3.8 per lane |
+
+Eight consecutive 4×16 runs: **14.0-14.4 matches/s** capacity, **12.1-13.9**
+makespan, no downward drift (battery 22.7 °C, cores still boosting). A fresh
+4×8 launch measured **14.42** matches/s / 13.56 makespan, so the PPO shape and
+the 16-slot shape reach the same engine ceiling; the earlier 12.27 4×8 reading
+was a cooler/boost-variance sample. The probe advertises `slotsPerEngine: 8`;
+the resident controller accepted 16, but the V4 PPO topology pins eight lanes,
+so use `--slots 8` for PPO and 16 for capacity measurements.
+
+`cached_apps_freezer` is now disabled by the launcher as well. The §3.28 idle
+control-socket wedge is consistent with Samsung's `FreecessController`
+suspending a covered engine; the setting is the same one the emulator
+configurator already uses.
+
+**N3 decision.** One A51 supplies ~12–14 matches/s of engine capacity at the
+PPO-required 4×8 shape (~14.5 at 4×16). That is far above host CPU inference
+(~4.6 policy forwards/s, ~1 match/s), so the phone does **not** need a cloud
+engine cluster: the next lever is GPU policy inference, not more engines. A
+single A6000-class GPU plus this phone is the intended topology.
+
+Tooling: `launch_cluster_a51.sh` (windowing + cgroup report),
+`tools/native_analysis/a51_engine_node.py` (attested engine-node manifest) and
+`launch_ppo_a51.sh` (cluster + manifest + remote-worker service) turn the phone
+into a normal V4 PPO engine node. The attested manifest
+(`/tmp/opencode/a51-node0/engine-node-ready.json`) builds a valid
+`v4-ppo-multinode-topology.v1` topology and the worker service binds and
+dispatches. Artifacts: `/tmp/opencode/resident_big4_4x16.json`,
+`resident_split_2x8.json`, `resident_freeform_4x8.json`, `final_4x8.json`,
+`sustain_1..8.json`.
+
+### 3.31 Native-render gate crashes on 16.635.1 (N2)
+
+The headless path is fine, but the **native-render** path is not. Running the
+patched `offline_duel` (both seats = General, `native-render`, mirror default
+deck) on a fresh engine crashes the process deterministically:
+
+```
+F libc  : Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR),
+          fault addr 0x746d67227b39fa  tid 18941 (Thread-2) pid 18885 (:engine1)
+#00 libg.so
+#01 libcrprobe.so (cr_render_gate_swap_buffers+996)
+#02 libg.so (0x154aa8c)
+#03 libg.so (0x1586930)
+#04 libg.so (0x1494248)
+...
+```
+
+The fault address is ASCII data (`{"gmt...`), i.e. a screen/replay object is
+being read as a pointer. The same crash reproduced on a second, freshly
+launched engine (uptime 42 s), so it is not an idle/freezer artifact and not
+the `render off` state: the manifest/worker `render off` leaves
+`renderSuppressed=true` but the crash happens in the pre-suppression
+`process_native_render_request_on_frame_thread()` path.
+
+The frame `cr_render_gate_swap_buffers+996` inlines
+`process_native_render_request_on_frame_thread()` and
+`dismiss_native_dialogs_if_needed()`. The first submits the pending match JSON
+through `g_original_replay_json_setter` after reading the replay manager at
+`replay_manager+0x20`; on 16.635.1 one of those recovered replay-controller
+anchors resolves to a non-replay object. This is the same family as the
+`AMBIGUOUS`/`MISSING` replay-controller anchors in §5, not a Python bug.
+
+**Consequences**
+
+- `native_runner/training/v4/evaluate.py` and all resident/PPO training are
+  **headless** and unaffected (§3.27–§3.30).
+- `offline_agent.py` / `offline_duel.py` are now correctly bound to the live
+  ruleset and no longer request the combat-ring feed, but they still cannot be
+  used on 16.635.1 until the render gate is fixed.
+- Do not use native-render on 16.635.1 for a soak or a demo; it will SIGSEGV
+  the engine. Use the headless evaluator instead.
+
+**N2 action:** resolve the replay JSON setter / replay-manager slot for
+16.635.1 (the `+0x20` controller slot and the setter's `+0x90` manager read),
+then re-attest `render_gate` with a rendered-match smoke. Evidence:
+`/tmp/opencode/duel-smoke.log`, `/tmp/opencode/duel-smoke2.log`, and the
+`adb logcat -b crash` tombstones above.
+
+### 3.32 A51 parity corpus — deterministic, and the gate the x86 port must pass
+
+Captured on the SM-A515U (`R58NA0QTHWV`) with the installed cluster APK
+(`versionCode 160635001`, `versionName 16.635.1`) and probe
+`libcrprobe.so` sha `8721be93…`. A single engine (`Engine0`, CPU 4,
+`schedtune:/top-app`, `coldReady`, headless). Archive:
+`runs/parity-a51/` (gitignored), manifest `runs/parity-a51/manifest.json`,
+schema `v4-a51-parity-corpus.v1`.
+
+Provenance recorded in the manifest:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| probe `libcrprobe.so` (installed) | `8721be936c9cb6218489080ac0b6dc94e0b446af62d6dd157aadd74524928f81` |
+| checkpoint General | `2fb7a94fa5df0f12bd72433874487bc7d84a4efb2a6dac827d7adff0a5eef083` |
+| checkpoint IL | `aafeb446fde7586d8815a5fcb98b024c67236e45927f6ce05c3fd4c54522d729` |
+| cluster APK | `1f33ee4f1c7a33d4cc7d2d5fe54cf3a38dd695582209b2272bff807ae94d417e` |
+
+Evaluator identity pinned `libg` `0b580222…`, content `16.635.93`,
+ruleset `0a98e885…`, `combat_ring_hooks: false`.
+
+**Scripted X-Bow, seeds 1–5** (`scripted_xbow_match.py`, 20 ticks/decision,
+0 problems, 0 ability rejections):
+
+| Seed | Decisions | Actions | Final tick | Crowns | Winner |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 174 | 57 | 3601 | 1–0 | 0 |
+| 2 | 174 | 56 | 3601 | 1–2 | 1 |
+| 3 | 194 | 67 | 4024 | 1–2 | 1 |
+| 4 | 174 | 57 | 3601 | 2–1 | 0 |
+| 5 | 295 | 128 | 6148 | 3–2 | 0 |
+
+**Determinism:** seed 1 was run twice (`a51-seed1.json`,
+`a51-seed1-repeat.json`). Normalising away latency fields, **all 174 decisions
+are identical** — same tick sequence, hand, elixir, actions and terminal. The
+only per-decision difference is `milliseconds`. The scripted policy is
+tick-for-tick reproducible on this build, so it is a valid diff target.
+
+**Model games** (`evaluate.py --sample`, CPU, General vs IL, seeds 7/8, one
+game per seat, 0 rejected actions, both `native_final_result`): **General 2–0
+IL** (ticks 3774 and 3601), matching §3.27.
+
+**Capacity** (`resident_batch_throughput.py --slots 8 --batches 10 --ticks 600
+--actions`): 2.067 matches/s on one engine (12,545 slot-ticks/s, 48 action
+receipts); makespan floor 2.066. This is the single-lane reference; the 4-engine
+figure is §3.30.
+
+**Gate:** the x86_64 16.635.1 engine (step 1.2–1.4) must reproduce these files.
+Use the manifest tool:
+
+```bash
+python tools/native_analysis/parity_manifest.py \
+    --corpus <x86-corpus> --compare runs/parity-a51/manifest.json \
+    --output <x86-corpus>/manifest.json
+```
+
+Exit status 0 means every scripted seed, the evaluator rows and the capacity
+run match the A51. Timing fields are excluded by design; a diverging tick,
+action count, terminal or crown score fails the gate. Re-capture the A51 corpus
+only when the probe or client changes.
+
+### 3.33 RoyaleFish x86 relocation cross-check — 41 anchors recovered, 7 corrections
+
+RoyaleFish's `probe_x86_64_16635.diff` (`sha256 ed56d4722fdca943…`) is a port
+of **this client build** to x86_64 and carries a generated x86 → ARM table for
+145 named anchors. We compared it, byte for byte, with our
+`offset-diff.json`. Tool: `tools/native_analysis/crosscheck_royalefish.py`;
+raw report: [`ROYALEFISH_CROSSCHECK.md`](ROYALEFISH_CROSSCHECK.md); adoption
+table: [`royalefish-overrides.json`](royalefish-overrides.json).
+
+| Bucket | Before | After |
+| --- | ---: | ---: |
+| AGREE (same offset) | 86 | — |
+| CONFLICT (different offset) | 17 | — |
+| RESOLVED (we had no offset) | 42 | — |
+| `EXACT` / `LIKELY` / `MANUAL` / `AMBIGUOUS` / `MISSING` | 59 / 31 / 15 / 33 / 10 | **53 / 23 / 70 / 0 / 2** |
+
+Both unresolved rows are real: `kTranslatedSha256InitializerCall` (already
+missing) and `kCombatHealEffectReturn`.
+
+**Method.** A name is adopted only when the old 15.535.13 anchor and the
+candidate produce the same instruction sequence (not just the same 16-byte
+prologue), and the candidate agrees with RoyaleFish's own
+`logical_{funcs,offsets}.inc` table. The one exception is `kJsonMemberFind`:
+the build contains two map-find implementations with identical bodies, so the
+**caller chain** (`0x139cadc`, the equivalent of old `0x1217934`) decides which
+one the game actually uses. A name-level match alone is not sufficient when the
+build duplicates an operation. Vtable candidates were checked against
+`R_AARCH64_RELATIVE` relocations: every adopted vtable sits in an RW cluster
+with ~120 relocated words in the next `0x400` bytes, so an address in the
+wrong object is detectable even though the file bytes are zero.
+
+**Core anchors corrected (runner path, all previously wrong):**
+
+| Anchor | Was | Now | Evidence |
+| --- | --- | --- | --- |
+| `kReplayManagerGetter` | `0xda0670` | **`0xda0658`** | old `0xc8c5b8` is `adrp; ldr x0,[global]; ret`; `0xda0658` is identical. The old value was a large unrelated function. |
+| `kLibgStringFromUtf8` | `0x15267f0` | **`0x153de30`** | old `0x138a800` is a 3-instruction string initialiser; `0x153de30` matches it exactly. |
+| `kJsonMemberFind` | `0xe38d60` (MANUAL) | **unchanged, `0xe38d60`** | RoyaleFish offers `0xc40d68`, whose body is instruction-identical to old `0xd0e100`. It is the wrong sibling: the 16.635 wrapper `0x139cadc` (the exact shape of old `0x1217934`) does `add x0,x0,#0x18; stp x1,x2,[sp]; bl 0xe38d60` and `0xe38d60` reads a 16-byte StringView. `0xc40d68` is a different map implementation with a LibgString key. Caller-chain evidence wins over a name-level instruction match. |
+| `kStateSnapshotDelete` | `0x11cfb78` | **`0x11ccee8`** | old `0x105e8bc` is a delete function entry; the old value was a `bl` inside the snapshot serialiser. |
+| `kGameAppGetter` | `0x7c27ac` | **`0x7c2808`** | old value was a bare `b` thunk; `0x7c2808` is `adrp; ldr x0,[global]; ret`. |
+| `kReplayBattleControllerClock` | `0xd9c284` | **`0xd9c278`** | old `0xc890bc` is the `ldrb; cbz; ret; sub sp` guard entry; the old value started after the guard. The guard's `cbz` stays inside the 16-byte steal window, so the verbatim ARM trampoline is still correct. |
+| `kBuffAssetClassNameGetter` | unresolved | **`0xebf530`** | now resolved; the 16.635 header has no unresolved core anchor. |
+
+The `kGameAppGetter` adoption deserves one caveat: the old 15.535 anchor inlined
+a lazy-init allocation, while `0x7c2808` is the bare `adrp; ldr; ret` accessor.
+It sits in the same cluster (the following function is the familiar
+`ldr s0,[x0,#0x1a8]` field accessor, old `0x755860` -> `ldr s0,[x0,#0x1a0]`),
+so it is the same singleton with the init moved elsewhere. It is exercised by
+the touch path, not by native configure, so gate it with a live-touch smoke
+before ladder use.
+
+**Four cases where RoyaleFish is not right**
+
+| Anchor | RoyaleFish | Adopted | Why |
+| --- | --- | --- | --- |
+| `kJsonMemberFind` | `0xc40d68` | **`0xe38d60`** | caller chain `0x139cadc` (old `0x1217934`) proves `0xe38d60`; see the table above. |
+| `kWarpPositionCommit` | `0xfc00a0` | **`0xfc019c`** | old `0xe82a34` opens with the full `sub sp,#0x70; stp x28,x27…; stp x20,x19,[sp,#0x60]` frame. `0xfc019c` matches 9/14 instructions including that frame; `0xfc00a0` is a different `0x30`-frame function, and our old value `0xfc01e4` was mid-body. |
+| `kCombatHealAreaReturn` | `0x108f1b0` | **`0x108f1ac`** | the anchor is a *caller offset*, i.e. the return address. The `bl kCombatHeal` is at `0x108f1a8`, so the return is `0x108f1ac`; RoyaleFish annotated one instruction later. |
+| `kCombatHealEffectReturn` | `0x107d99c` | **unresolved** | the old anchor is the return of a third `kCombatHeal` call. The 16.635 build has only two call sites (`0x108940c`, `0x108f1a8`), so the effect-site call was inlined; neither candidate is its return. |
+
+Two other conflicts kept our value: `kActionDispatch` (`0x10809c0`, 16/20
+instruction match) and `kCombatDeflect` (`0x1074190`, exact `0xa0` frame);
+RoyaleFish points at a different overload in both cases. `kCombatImpactFunction`
+went the other way: the agreed `kCombatImpactBoundary` `0x10870fc` lies inside
+`0x1086dc0`, so RoyaleFish is right and our `EXACT` prologue match was a clone.
+
+**What this does and does not do.** It fixes the 16.635 runner/core table and
+gives every rich-telemetry subsystem a complete 16.635 anchor set. It does
+**not** enable the rich rings yet: `cr_replay_probe.cpp` still compiles the
+combat / phase / movement / character-state / remaining / visibility /
+tower-troop hooks out under `CR_PROBE_TARGET_16_635_1`, because those layouts
+are separate 15.535 tables. Porting each subsystem is now mechanical: take the
+new offsets from `offset-diff.json`, emit a per-subsystem 16.635 header, and
+drop its `#if !defined(...)` guard one subsystem at a time. The ARM inline hook
+copies 16 bytes verbatim, so any new hook whose first 16 bytes contain a branch
+target outside the steal window needs a relocated trampoline (N2).
+
+Reproduce:
+
+```bash
+.venv/bin/python tools/native_analysis/diff_builds.py \
+    .resource/native/15.535.13/reference/libg.so \
+    .resource/native/16.635.1/reference/libg.so --probe native_runner/probe \
+    --overrides docs/native/16.635.1/manual-overrides.json \
+    --overrides docs/native/16.635.1/royalefish-overrides.json \
+    --out docs/native/16.635.1/offset-diff.json
+.venv/bin/python tools/native_analysis/gen_layout.py \
+    .resource/native/16.635.1/reference/libg.so \
+    --diff docs/native/16.635.1/offset-diff.json \
+    --fields docs/native/16.635.1/field-offsets.json \
+    --champion docs/native/16.635.1/champion-layout.json \
+    --out native_runner/probe/build_16_635_1_layout.h
+.venv/bin/python tools/native_analysis/crosscheck_royalefish.py
+```
+
+### 3.34 Corrected 16.635.1 core table — verified on the A51 (and one ABI trap)
+
+The §3.33 corrections were built into the ARM64 probe and re-attested on the
+SM-A515U.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| probe `libcrprobe-16.635.1.so` | `db9d560939cfdeae27617f3955919236827d28d051c0784ff42b5cb059b8a691` |
+| cluster APK (`-rf`) | `9e345ad3b2db0cf565a215bd686653ce74463741eb6f80837961d9bb1e6ecf88` |
+| ARM64 `libg.so` | `0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa` |
+
+Bring-up: `launch_cluster_a51.sh --engines 1 --window-mode plain` reported
+`coldReady` on port 26789. All **nine** runner hooks installed with **no
+prologue mismatch**, and `kUnresolvedAnchors` is empty (`kBuffAssetClassNameGetter`
+is now resolved). The clock hook installs at `libg+0xd9c278` — the guard entry,
+one instruction ahead of the old body hook — and the trampoline is still valid
+because the guard's `cbz` target stays inside the 16-byte steal window.
+
+**Scripted X-Bow, seeds 1–2** (same harness and deck as §3.32):
+
+| Seed | Decisions | Actions | Abilities | Rejected | Problems | Final tick | Crowns | Winner |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 1 | 174 | 57 | 9 | 0 | 0 | 3601 | 1–0 | 0 |
+| 2 | 174 | 56 | 8 | 0 | 0 | 3601 | 1–2 | 1 |
+
+Both rows are **identical to the §3.32 corpus** (decision count, action count,
+terminal tick, crown score and winner), and the crash buffer is empty. The
+corrected offsets therefore preserve the scripted decision stream; the existing
+`runs/parity-a51/` corpus remains a valid x86 target (its manifest still records
+the old probe sha — re-capture it before the x86 gate if provenance must be
+exact).
+
+**The ABI trap.** The first adoption also changed `kJsonMemberFind` to
+`0xc40d68` (RoyaleFish's value). On device, `configure` then SIGSEGV'd:
+
+```text
+#00 pc 0x148672c libg.so            # string hash, x0 = FNV offset basis
+#01 pc 0xc40da8 libg.so             # kJsonMemberFind+0x40
+#02 pc 0x3f2dc   libcrprobe.so      # native_controlled_worker_main
+```
+
+`0xc40d68` is instruction-identical to the old `0xd0e100`, but it is the *other*
+map implementation: it reads a `LibgString` (length at `+4`, data at `+8`). The
+game's JSON path uses `0xe38d60`, which reads a 16-byte `{data,size}` StringView;
+its caller `0x139cadc` is the exact shape of the old wrapper `0x1217934`
+(`add x0,x0,#0x18; stp x1,x2,[sp]; bl finder`). Passing a LibgString to
+`0xc40d68` interpreted the key pointer's high word as a length and the size as a
+pointer. Reverting to `0xe38d60` and keeping the StringView ABI restored the
+deterministic matches above.
+
+Lesson for the remaining N2 port: when a build contains two implementations of
+the same operation, adopt by **caller chain and ABI**, not by instruction
+similarity alone. `royalefish-overrides.json` deliberately does not override
+`kJsonMemberFind`.
+
+---
+
+### 3.35 x86_64 16.635.1 engine on this Linux host — **the A51 parity corpus reproduces**
+
+HANDOFF step 1 (x86_64) is done, and it did **not** need the pinned Android
+bionic userland from `LINUX_BIONIC_RUNTIME.md`.  `.resource/Clashback` already
+ships the same client build as x86_64 `libg.so` (sha `c4721bd9…`) together with
+`vendor/crx`, an ELF loader that maps Android x86_64 libraries into a plain
+Linux process and resolves bionic imports against glibc.  The engine boots
+headless in **0.3 s** on this laptop:
+
+```text
+libg base ------------------------------------------------------------------
+JNI_OnLoad -> TitanApplication.nOnNativeLibrariesLoaded
+           -> GameApp.nOnApplicationCreate -> GameApp.createGameMain
+           -> GameApp.nOnCreate -> GameMain::init (data tables 0x720 ready)
+```
+
+**The probe attaches from the host.**  crx maps libg anonymously, so the probe's
+`dlopen`/`/proc/maps` scanners cannot find it.  The x86 build exports
+`cr_probe_attach(libg_base)`, and `crx_engine_host.py` passes the base plus the
+on-disk identity the mapping hides (`CR_PROBE_LIBG_PATH`,
+`CR_PROBE_SELF_PATH`, `CR_PROBE_CONTENT_ROOT`, `CR_PROBE_PACKAGE`,
+`CR_PROBE_ASSETS_MAPPED`).  Everything after attach is the unchanged
+`cr-native-control.v1` endpoint, so every A51 tool runs against it:
+
+```bash
+.venv/bin/python tools/native_analysis/crx_engine_host.py --seconds 1800 &
+.venv/bin/python tools/native_analysis/scripted_xbow_match.py --seed 1 \
+    --output /tmp/opencode/x86-seed1.json
+```
+
+**Port shape.**  `build_16_635_1_layout_x86.h` carries the x86_64 values of the
+core anchors; the rich-ring layout tables stay ARM-only and are not installed on
+16.635.1 (same as the A51).  `install_inline_hook` uses `x86_hook.h` (14-byte
+absolute jump + relocating trampoline), `native_call_x86_64.cpp` replaces the
+ARM assembly for by-value results and the remaining-runtime entries, and
+`logical_{offsets,funcs,vtables}.inc` translate reported x86 offsets back to ARM
+so JSON stays comparable with the A51.
+
+**The mirror of §3.34's ABI trap.**  The first x86 `configure` SIGSEGV'd in
+`lookup_json_member`:
+
+```text
+#0 libg+0x14f50d0  string hash (rdi = 6)
+#1 libg+0xc76a92   kJsonMemberFind
+#2 libcrprobe.so   lookup_json_member
+```
+
+On x86_64 the JSON path calls the **legacy** `LibgString` finder
+(`0xc76a60`, ARM `0xc40d68`), not the `{data,size}` StringView finder
+(`0xe38d60`) the A51 uses.  The 16.635 ARM build and the 16.635 x86_64 build
+contain both implementations and dispatch to different ones.  The probe now
+selects the key ABI per architecture; both paths stay documented so neither is
+"simplified" back into the other.
+
+**Attestation is exact, not bypassed.**  The x86_64 engine is pinned as its own
+release: `native_runner/versions/native-16.635.1-x86_64.json` (package
+`com.supercell.clashroyale`, ABI `x86_64`, libg `c4721bd9…`, probe
+`cd303311f3b8edd6…` (was `b83e3d60…` before the §3.38 host-port fix), content
+`16.635.8`).  `CR_NATIVE_BUILD_ABI=x86_64` selects
+that pin; the ARM64 pin is untouched.  `attest` reports
+`production_ready: true` with every hash populated.
+
+**Parity gate — scripted X-Bow, `runs/parity-a51/` reference:**
+
+| Seed | Decisions | Actions | Abilities | Rejected | Problems | Final tick | Crowns | Winner | vs A51 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| 1 | 174 | 57 | 9 | 0 | 0 | 3601 | 1–0 | 0 | **match** |
+| 2 | 174 | 56 | 8 | 0 | 0 | 3601 | 1–2 | 1 | **match** |
+| 3 | 194 | 67 | 10 | 0 | 0 | 4024 | 1–2 | 1 | **match** |
+| 4 | 174 | 57 | 9 | 0 | 0 | 3601 | 2–1 | 0 | **match** |
+| 5 | 295 | 128 | 16 | 0 | 0 | 6148 | 3–2 | 0 | **match** |
+| 1 repeat | 174 | 57 | 9 | 0 | 0 | 3601 | 1–0 | 0 | deterministic |
+
+`tools/native_analysis/parity_manifest.py --compare runs/parity-a51/manifest.json`
+reports `first_difference: null` for all five seeds, and the repeat is
+decision-identical.  One full scripted match is **~0.22 s** of engine time; the
+0.7 ms mean decision latency is transport, not policy.
+
+**What this changes.**  Training is no longer phone-bound: the 16.635 ruleset
+runs on the host, and the A51 keeps its role as the ARM64 oracle for deployment
+checks.  The evaluator's *policy* stream is still under investigation (below):
+the scripted corpus proves rules and hand/elixir/placement parity, not yet the
+full entity observation the policy tensorizer consumes.
+
+**Evaluator parity — root cause found.**  General-vs-IL on x86_64 finishes
+clean on both seats (`2/2` A, `0` rejected, `native_final_result`) but at ticks
+3601 and 4794 versus the corpus's 3774 and 3601.  A raw trace on the A51 with
+the corrected `db9d5609…` probe reproduces game 1 exactly (tick 3774, winner 0,
+737 decisions), so the corpus is still valid for that probe.  Comparing the two
+converted `ObservationV1` streams, the first 190 decisions are identical; from
+decision 190 the only substantive difference is **projectile runtime**:
+
+```text
+entities[].entity_kind            A51: spell/troop/effect      x86: projectile
+entities[].projectile_state       A51: null                    x86: native state
+provenance.projectile_state       A51: unknown                 x86: native_derived
+```
+
+The first *action* divergence follows at decision 197 (tick 1080): A51 plays a
+Knight, x86 waits.  The cause is the A51 probe's stale vtable table — on 16.635
+it still compares `kProjectileVtable`/`kCharacterVtable`/`kBuffAssetVtable` and
+the capture/threshold/periodic vtables against the 15.535 values, so projectile
+classification fails closed, while the x86 build uses the corrected 16.635
+values.  The A51 observation is therefore the degraded one; x86 restores the
+15.535-shaped (training-shaped) runtime that the checkpoints were trained with.
+
+The ARM 16.635 values are already resolved MANUAL in `offset-diff.json`
+(`kProjectileVtable 0x01a50348`, `kCharacterVtable 0x01a4fbb8`,
+`kBuffAssetVtable 0x01a349f0`, capture `0x01a3fab0`/`0x01a51a20`, threshold
+`0x01a41da0`/`0x01a52fc0`, periodic `0x01a41998`/`0x01a52ca8`).  Emitting them
+in `build_16_635_1_layout.h`, redeploying the ARM probe and re-capturing
+`runs/parity-a51` closes the gap on both sides; mirroring the stale constants on
+x86 freezes the current corpus instead.  Until one is chosen, the scripted
+corpus is the parity evidence; the evaluator comparison is a known A51-side
+observation regression, not an x86 rules difference.
+
+**Resolved in §3.36** with option A: the ARM probe now emits and uses those
+anchors, and the evaluator reproduces the x86 ticks/actions exactly.
+
+### 3.36 ARM64 observation parity — the rich vtables are back, and the evaluator matches x86
+
+§3.35 traced the evaluator divergence to a one-sided fix: the 16.635 rich
+classification constants were emitted for x86_64 only.  On ARM the probe fell
+through to the **15.535** literals, so `kProjectileVtable`,
+`kCharacterVtable`, `kBuffAssetVtable` and the capture/threshold/periodic
+pairings never matched a 16.635 object.  The policy therefore saw
+`entity_kind: spell/troop/effect`, `projectile_state: null` and
+`provenance: unknown` where x86 saw the native projectile runtime.
+
+**Fix (option A from §3.35).** The nine ARM64 anchors resolved in
+`offset-diff.json` are now emitted by `build_16_635_1_layout.h`, and
+`cr_replay_probe.cpp` sources them from the generated header under
+`CR_PROBE_TARGET_16_635_1` on **both** architectures (the four
+`... && defined(__x86_64__)` guards are gone).  Names are identical in both
+headers; `tests/test_probe_build_layout.py` now checks that the two lists agree
+and that the ARM values still equal `offset-diff.json`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| probe `libcrprobe-16.635.1.so` / `libcrprobe.so` | `b80f2bdb02fabc0562e89f9c74f68ec1abcdaed2f0b7dc452f698e6ccef8928a` |
+| cluster APK (`-rf`, 4 engines) | `17893d1c606f7b02c07195d399e6763878b4ae86ff627a38f349fe28b34ca15d` |
+| ARM64 `libg.so` | `0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa` |
+
+The ARM pin (`native_runner/versions/native-16.635.1.json`) now records the new
+probe; `native_runner/probe/out/libcrprobe.so` was refreshed so the default
+`CR_PROBE` path and the pin agree.  `attest` reports production-ready and the
+node manifest records `probe_sha256 b80f2bdb…`.
+
+**Evaluator parity.** General vs IL, seed 7, two games, both seats, `--sample`
+(identity `3e4e3425…`, 0 rejected actions, `native_final_result`):
+
+| Game | Seat | A51 before (§3.32) | A51 after | x86_64 |
+| ---: | --- | --- | --- | --- |
+| 1 | General (owner 0) | tick 3774, actions 28/28 | **tick 3601, actions 25/27** | tick 3601, actions 25/27 |
+| 2 | General (owner 1) | tick 3601, actions 27/26 | **tick 4794, actions 40/37** | tick 4794, actions 40/37 |
+
+Both games now terminate at the same tick with the same action counts, winner
+and crown score as the x86_64 engine.  The converted observation streams agree
+from the first decision; the decision-197 projectile difference in §3.35 is
+gone.  This is the gate that makes the x86 engine an evaluator oracle rather
+than a scripted-only substrate.
+
+**Scripted corpus is unchanged.** Seeds 1–5 and the seed-1 repeat were
+re-captured on the new probe: decisions/actions/terminals are identical to
+§3.32 (174/57/3601, 174/56/3601, 194/67/4024, 174/57/3601, 295/128/6148), and
+the repeat is decision-identical.  The capacity run is structurally identical
+(8 slots × 600 ticks × 10 batches, 48 receipts; 1.918 matches/s on the A51
+versus 21.4 on the x86 host, which is expected and excluded by the comparer).
+Timing, host ports, and per-process resident-slot `generation`/`stateEpoch`
+counters are excluded; the slot count, steps, ticks and action receipts are
+compared.
+
+**Comparator correction.** `tools/native_analysis/parity_manifest.py` used to
+compare the whole evaluator `identity.json`, including package, ABI,
+libg/probe hashes and the ruleset id — fields that *must* differ between the
+ARM64 oracle and the official x86_64 build — and keyed evaluator runs by their
+directory name.  Evaluator entries are now keyed by experiment (checkpoint ids
++ seed + games) and compare only the match definition, catalog release,
+`combat_ring_hooks` and every `matches.jsonl` row.  Scripted and capacity
+comparisons are unchanged.  `tests/test_parity_manifest.py` covers the
+cross-build match, row divergence and match-definition divergence cases.
+
+**Gate result.** The x86_64 corpus reproduces the re-captured ARM corpus in all
+eight entries — five scripted seeds, the seed-1 repeat, the General-vs-IL
+evaluator, and the 1×8 capacity run:
+
+```text
+$ python tools/native_analysis/parity_manifest.py \
+    --corpus runs/parity-x86 --compare runs/parity-a51/manifest.json \
+    --output runs/parity-x86/manifest.json
+8 entries, 1 determinism checks, deterministic=True
+reproduces runs/parity-a51: True
+```
+
+The A51 corpus is `runs/parity-a51/`; both corpora are local (gitignored).
+
+### 3.37 x86_64 PPO worker path — zlib resolution and 16.635 tensorization
+
+The x86_64 engine already served the control API, the scripted matches and the
+evaluator (§3.35/§3.36), but the PPO **worker** data plane failed on its first
+batch:
+
+```text
+RunnerError: resident batch env 7 response decode failed:
+Error -5 while decompressing data: incomplete or truncated stream
+```
+
+The failure was always the last framed slot only because `step_partitioned`
+reports the first failing lane to reach the coordinator; in fact every
+compressed entry was corrupt.
+
+**Root cause.** `compress_json` is on for `capture_mode="compact"`. crx resolves
+the probe's imports through `dlsym(RTLD_DEFAULT)` and substitutes a stub that
+prints *"nothing provides"* and returns 0 for anything it cannot find.
+`tools/native_analysis/crx_engine_host.py` preloaded `libz.so.1` with a plain
+`ctypes.CDLL()`, i.e. `RTLD_LOCAL`, so `compress2`/`compressBound` were *not* in
+the global scope. The probe then:
+
+1. computed `compressBound(...) == 0` (stub), so the scratch buffer was 0 bytes;
+2. called `compress2(...)` (stub), which returned `0 == Z_OK` and left
+   `compressed_size` at 0;
+3. passed `compressed_size < payload_size`, so it flagged a **zero-byte zlib
+   entry** for the host to inflate.
+
+**Fix.** Preload `libz.so.1` (and `libm.so.6`) with `ctypes.RTLD_GLOBAL`, and
+make the host fail closed: after loading the probe it checks crx's `missing`
+table for `compress2`/`compressBound` and exits 4 instead of hosting a probe
+that will silently corrupt the data plane. That fix left the probe binaries
+unchanged (`b80f2bdb…` ARM, `b83e3d60…` x86_64); a later host-identity fix moved
+only the x86_64 hash to `cd303311…` (§3.38). A `compressed_size > 0` guard in
+`resident_multimatch.inc` was written and reverted because it would change both
+pinned hashes to protect only the one host that can lose zlib.
+
+Verified with `tools/native_analysis/profile_cluster_collection.py` against one
+local x86_64 engine, 8 lanes: 24 frames, 0.0 failures, **4.06 packets/s**,
+49 ms median packet interval (the elapsed total includes the eight lane resets).
+
+**The two schemas that blocked remote training.** With transport fixed, the real
+loop exposed the two handoff blockers on the same x86 engine:
+
+| Blocker | Symptom | Fix |
+| --- | --- | --- |
+| worker tensorizer hard-wired to the 16-column schema | `mat1 and mat2 shapes cannot be multiplied (128x16 and 21x128)` for a 16.635 checkpoint | `AsyncResidentEngineSpecV4` now carries `competitive_release` + `model_config` |
+| 15.535 catalogs cannot resolve 16.635 entities | `active public effect resolved to UNKNOWN: buff:2523220774` | the worker builds the checkpoint's release bundle for `BattleEnvV1` **and** both tensorizers |
+
+Mechanics:
+
+- `collect_async_cluster_wave_v4` derives the release/config from the actor
+  model and rewrites every engine spec with them, so the worker cannot disagree
+  with the model the trainer is running. Anchor/history models are rejected up
+  front when their contract differs — one engine tensorizes every actor row.
+- `_engine_worker` binds `use_release(load_release(...))` around engine
+  construction and around `_reset_engine`. Passing the release name alone is not
+  enough: `BattleEnvV1` re-verifies its semantic subset against the *active*
+  release's form evidence, and a named 16.635 release has non-default evidence.
+- The trainer builds the learner and every frozen model from the **checkpoint
+  contract** (`resolve_checkpoint_release` + `config_from_contract`) instead of
+  the pinned default release, checks the IL anchor at startup, and records
+  `competitive_release`/`model_config` in the run config.
+- `evaluate.py` derives its environment bundle from the two checkpoints and
+  refuses a mixed pairing. General-vs-IL stays on the 15.535 bundle, so the
+  §3.36 parity numbers are unchanged.
+
+**Result.** `B-general-v275` (17.5M params, LSTM 768, runtime schema 21,
+`16.635.1` contract) now collects through the CPU PPO worker against the x86
+engine with **0 UNKNOWN effects and 0 rejection/fallback counters**:
+
+```bash
+.venv/bin/python tools/native_analysis/profile_real_collection.py \
+    --checkpoint .resource/RoyaleFish/models/B-general-v275.pt \
+    --engines 1 --lanes 8 --steps 12
+```
+
+One 48-decision segment, 8 lanes × 2 owners = 16 actor rows: 768 owner frames,
+`tensorize 0.96 s`, `native_step 2.34 s`, `model 16.48 s` of 25.0 s wall,
+29.0 lane-decisions/s, `inference_mean_frame_packets 1.0`. The loop is still
+one packet per forward and CPU model time dominates, exactly as profiled in the
+handoff; the GPU box is what removes that term, and the transport now has
+nothing left in it that fails on x86.
+
+General (the 15.535-contract checkpoint) still fails on this engine on a 16.635
+effect id. That is expected and is the correct behaviour: the x86 substrate
+(content 16.635.8) trains 16.635-contract checkpoints, and a 15.535-contract
+model needs the A51's content-matched run or an explicit adaptation step.
+
+The collector's post-first-packet wait is now tunable with
+`CR_PPO_INFERENCE_BATCH_WAIT_MS` (default 2 ms, validated 0–1000). It cannot be
+exercised with more than one x86 engine on this host yet because the probe
+hard-codes its control port to `26789` (fixed in §3.38); measure a widened window on the A51
+cluster (`--engines 4`) and read `inference_mean_frame_packets` back from
+`metrics.jsonl`.
+
+### 3.38 Host engine ports and the learner batching window (2026-11-14)
+
+**Host engine identity.** On Android `JNI_OnLoad` calls
+`initialize_engine_instance()`, which reads the `:engineN` process name or the
+per-user `cr_engine_id` file. crx loads the probe with `dlopen` and never calls
+`JNI_OnLoad`, so every host engine stayed engine 0 on port `26789` even though
+`crx_engine_host.py` already accepted `--port`. `cr_probe_attach` now calls the
+initialiser before starting the control server, and the initialiser honours two
+optional overrides:
+
+| Variable | Range | Effect |
+| --- | --- | --- |
+| `CR_PROBE_ENGINE_ID` | `0..23` | engine id, and the control-lane CPU |
+| `CR_PROBE_CONTROL_PORT` | `1..65535` | listen port; wins over `26789 + id` |
+
+`crx_engine_host.py --engine-index N` exports both and defaults the port to
+`26789 + N`. Verified with two concurrent crx processes — engine 4 on
+`26793`/cpu4 and engine 5 on `26794`/cpu5, both `production_ready`, and one
+`profile_cluster_collection.py --engines 2 --engine-base-port 26793` run
+answered both ports (8 packets, 0 failures). The x86_64 probe pin is now
+`cd303311…`; the ARM artifact remains `b80f2bdb…`, so a later ARM rebuild picks
+up the same code and must update that pin.
+
+**The batching window is a cohort effect.** The collector waits
+`CR_PPO_INFERENCE_BATCH_WAIT_MS` after the first ready packet so the other
+engines can land in the same forward. Measurements: 4 A51 engines, 8 lanes,
+`B-general-v275`, seed 1, gate temperature 0.2, 32 decisions/lane
+(`profile_real_collection.py --engines 4 --lanes 8 --steps 8`). Evidence:
+`runs/batching-20261114/window-*.json` plus the two-engine x86 transport run.
+
+| Window | Mean frame packets/forward | Forwards | Model s | Lane-decisions/s | Wall s |
+| --- | --- | --- | --- | --- | --- |
+| 2 ms (default) | 2.00 | 64 | 70.3 | 23.6 | 86.8 |
+| 30 ms | 2.00 | 64 | 74.5 | 21.5 | 95.1 |
+| 100 ms | 2.00 | 64 | 54.8 | 26.0 | 78.8 |
+| 150 ms | 2.56 | 50 | 61.4 | 23.0 | 89.0 |
+| **250 ms** | **3.88** | **33** | **54.5** | **24.7** | **82.8** |
+
+A batch can only contain engines that already have an outstanding receive. At
+2 ms the first fetch takes two frames, only those two receive actions, and the
+other two sit parked in completed futures; every later forward re-batches the
+same pair. A 20–40 ms window is shorter than one engine round-trip (~100–150 ms
+at 8 lanes; the native step alone is ~60–70 ms), so it changes nothing. At 250 ms the
+just-released pair finishes its step inside the window and all four coalesce:
+**forwards fall from 64 to 33** and mean packets/forward reaches 3.88 (max 4).
+
+CPU wall time is flat because the 17.5M model is the local bottleneck; the
+saving is in per-forward fixed cost, which is what the 4 %-utilised A6000 paid
+in the §3.37 smoke. The window has no single-engine penalty: at 250 ms and one
+engine, `inference_mean_frame_packets` stayed 1.0 and `ready_wait` tracked the
+engine step, not the window. The useful rule is therefore *window ≈ one engine
+step*, not a fixed 20–40 ms; re-measure if lanes or engine count change.
+
+**Action legality is the next blocker, not batching.** The same 4-engine
+configuration at gate temperature 1.0 fails reproducibly at `resident batch env
+5` with `resident batch step or atomic capture failed`; at gate 0.2 the same
+seeded run completes with 0 failures. Both runs used B-general's 16.635
+contract. That is the §3.37 caveat materialising: candidate legality is still
+the 15.535 shadow rule and `delay_aware_legality` is carried but not branched
+on, so a sampled deploy can be legal to the model and rejected by the 16.635
+engine. Fail-closed is correct; the fix is to port delay-aware candidate
+semantics before collecting at full ACT rate.
+
+**Resolved in §3.39.** The port is in; gate temperature 1.0 now completes
+cleanly in six segments, including the 4-engine shape above.
+
+### 3.39 Delay-aware candidate legality — the 16.635 flag is honoured (2026-11-14)
+
+`B-general-v275` declares `delay_aware_legality: true` in its contract, but
+until now this tree carried the flag without branching on it: the decoder and
+`BattleEnvV1` both applied the 15.535 decision-tick rule (`cost <= elixir at
+d`). The rule is now ported from the reference 16.635 implementation
+(FirstLight-Zero, Apache-2.0), and the environment and the policy agree:
+
+    e(k) = max(e0, min(10, e0 + regen_per_tick * k)) - spent
+
+for delay bin `k = 0..4` (0–200 ms), where `e0` is the live effective elixir
+(raw minus in-flight reserved commands) and `spent` is the cost of earlier
+micro-actions of the same decision. A candidate is legal when some reachable
+bin (not before the previous micro-action, and inside the optional inference
+delay cap) is affordable.
+
+**Decoder** (`training/v4/decoding.py`). `ShadowCandidateLegality` gains
+`elixir_multiplier` (from the `elixir_multiplier_over_3` match scalar × 3),
+`allowed_delay_bins`, `spent_elixir`, per-bin `elixir_at_bins`,
+`affordable_at_bins`, a candidate-aware `delay_offset_mask(step,
+candidate_index)` and the `earliest` delay policy
+(`UniversalCardPolicyV4.set_delay_policy`). Legacy checkpoints keep the old
+rule because their contract omits the field (`ADDITIVE_CONFIG_KEYS`), so the
+15.535 General/IL parity numbers are unchanged. The multiplier snaps to the
+native segment table (1× 28 s, 2× 14 s, 3× 9.3 s), which also absorbs the fp16
+`1/3`, `2/3` scalar precision.
+
+**Environment** (`battle_env.py`). `action_mask` now exposes
+`elixir_regen_per_tick`, `touch_window_elixir` and `affordable_from_bin`
+(cards and abilities); ability candidates use the touch window;
+`_validate_compound_actions` checks every prefix in touch order with the
+earlier touches still reserved, and reads the bin from
+`policy_delay_offset_bin` (falling back to
+`execute_offset_ticks - base_latency_ticks`). Expert alignment validates the
+stored delay bin under the same rule.
+
+**Tests.** New unit tests cover regen per bin, the 3× multiplier, the
+inference delay cap and compound reservation
+(`test_training_v4_decoding.py`, `test_battle_env.py`). The four host C++
+contract tests that were failing on the ARM logical-offset helpers now stub
+the identity mapping (`test_action_movement_runtime_telemetry_compile.cpp`,
+`test_phase_runtime_telemetry_compile.cpp`,
+`test_movement_event_json.cpp`, `test_native_telemetry_json.py`), and the full
+`native_runner/tests` suite passes.
+
+**Full-rate collection gate (A51, B-general, gate temperature 1.0).**
+
+| Shape | Seeds | Segments complete | Lane-decisions/s | Rejected |
+| --- | --- | --- | --- | --- |
+| 1 engine × 8 lanes, 40 decisions | 1–5 | **5/5** | 15.0–22.3 | 0 |
+| 4 engines × 8 lanes, 40 decisions | 1 | **1/1** | **28.5** | 0 |
+| 1 x86_64 engine × 8 lanes, 40 decisions | 1 | 1/1 | 23.9 | 0 |
+
+The 4-engine run used the default 2 ms inference window, so it coalesced
+**1.99 packets/forward** (32 actor rows); it is the same shape that failed at
+`resident batch env 5` in §3.38. While it ran, `adb logcat -s CRNativeProbe`
+recorded **3,979 `injected command parse=success` and 0 `parse=failure`**, so
+no sampled command reached the native parser malformed. Evidence:
+`runs/delay-aware-20261114/` (`profile-*.json`, `probe-logcat-4engine.txt`).
+
+**One unreproduced failure.** The first A51 segment run immediately after this
+port still failed once (`env 6`) at gate 1.0. Six later segments — including
+the original 4-engine shape and a fresh 4-engine launch — completed cleanly,
+and the failure could not be re-triggered. It was not captured with the new
+diagnostics, so it is **not** claimed as fixed. Two additions make the next
+occurrence cheap to identify:
+
+- `CR_PPO_FAILURE_DUMP=<path>` writes the pre-step decoded actions, decks and
+  live action-mask reasons for the aborted lanes
+  (`async_cluster_self_play._write_decode_failure_dump`).
+- `CRNativeProbe`'s `injected command parse=…` line in logcat separates a
+  parse/injection rejection from a step-bound or capture failure; the current
+  batch error string still collapses those three stages and should be split in
+  the probe if the failure recurs.

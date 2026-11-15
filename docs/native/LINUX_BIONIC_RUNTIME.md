@@ -1,6 +1,14 @@
 # Linux Bionic runtime — the engine host
 
-Status: **evaluated 2026-11-13; the chosen engine host**
+Status: **superseded for 16.635.1 (2026-11-14).** The bionic bundle below is
+pinned to 15.535.29 and cannot load the 16.635.1 client. The 16.635.1 x86_64
+engine now runs in a plain Linux process through the Clashback `crx` ELF loader
+(`.resource/Clashback/vendor/crx`): no Android userland, no version pin, and the
+same probe control protocol. See `FINDINGS.md` §3.35 and
+`tools/native_analysis/crx_engine_host.py`. Keep this document for the
+15.535.29 proxy and for the bionic internals.
+
+Original status: evaluated 2026-11-13; then the chosen engine host.
 Sources:
 - <https://github.com/IMAX9D/cr-native-linux-bionic>
 - <https://github.com/IMAX9D/cr-native-sandbox>

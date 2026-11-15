@@ -8,16 +8,24 @@ matchup.
 the baseline and PPO initialization. IL, Active IL and the Hog 2.6 specialists
 are opponents/baselines. X-Bow remains a deck option, not the whole plan.
 
-**Current phase:** **Null's Royale 16.635.1 runtime**. The 16.635.1 offline
-APK/probe runs on the A51; the V4 stack trains and evaluates against it. The
-original x86_64 `libg.so` 15.535.29 runtime
+**Current phase:** **N0–N3 pass; the N4 training path now runs end-to-end on
+CPU.** The 16.635.1 offline APK/probe runs on the A51; the V4 stack evaluates
+against it. One A51 supplies ~12–14 matches/s of engine capacity across four
+visible engine windows. The same client build also runs headless on this Linux
+host as an x86_64 engine, and its PPO worker data plane now carries the
+checkpoint's catalog release and model config: `B-general-v275` (17.5M, 16.635)
+collects through it with no decode failures and no unresolved entities. The
+remaining N4 step is the GPU update itself: the collector is CUDA-graph-only and
+the local loop is still one packet per forward. The original x86_64
+`libg.so` 15.535.29 runtime
 ([`cr-native-linux-bionic`](https://github.com/IMAX9D/cr-native-linux-bionic) +
 [`cr-native-sandbox`](https://github.com/IMAX9D/cr-native-sandbox)) remains a
 **proxy lab** for throughput, reward/league experiments and parity — it cannot
 connect to Null's ladder.
 
-**Next milestone:** attach the A51, prove the 16.635.1 engine/`observe_rich`,
-and run the General checkpoint against the included baselines.
+**Next milestone:** widen the collector's batching window (`CR_PPO_INFERENCE_BATCH_WAIT_MS`),
+then rent a small GPU and run the PPO update from a 16.635-contract checkpoint
+with the deck pool + league.
 
 This repository is a fork of
 [FirstLight_CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). The upstream documentation follows
@@ -152,7 +160,7 @@ To compare two included checkpoints, stop any console task and run:
 .\.venv\Scripts\python.exe -m native_runner.training.v4.evaluate `
   --checkpoint-a ./checkpoints/General/checkpoint-step-00000460.pt `
   --checkpoint-b ./checkpoints/IL/checkpoint-step-00029396.pt `
-  --games 2 --output ./evaluations/comparison
+  --games 2 --sample --output ./evaluations/comparison
 ```
 
 Use `--games` for the match count, `--match-config` for decks and levels, and `--seed` for the starting seed. See [model evaluation](checkpoints/README.md#evaluation--模型评测) for results and metrics. To integrate your own actor loop, use the [JSON-lines policy service](docs/policy_service.md).

@@ -1,0 +1,2648 @@
+{
+  "patch": ".resource/RoyaleFish/patches/probe_x86_64_16635.diff",
+  "arm_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
+  "x86_sha256": "c4721bd90f46fd1709e9dc498e286462ad88cf817ec645c5749f0aa445fd6539",
+  "summary": {
+    "agree": 86,
+    "conflict": 17,
+    "resolved": 42,
+    "no_anchor": 0,
+    "total": 145
+  },
+  "buckets": {
+    "agree": [
+      {
+        "name": "kActionSpawnMode1ChildCreateOffset",
+        "anchor": "kActionSpawnMode1ChildCreate",
+        "x86": "0x010dd8a0",
+        "arm": "0x0108d838",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108d838: stp x29, x30, [sp, #-0x40]!",
+          "0x108d83c: str x23, [sp, #0x10]",
+          "0x108d840: stp x22, x21, [sp, #0x20]",
+          "0x108d844: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x0108d838",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kActionSpawnToLocationExecuteOffset",
+        "anchor": "kActionSpawnToLocationExecute",
+        "x86": "0x01006a50",
+        "arm": "0x00fb7e64",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xfb7e64: sub sp, sp, #0xe0",
+          "0xfb7e68: stp x29, x30, [sp, #0x80]",
+          "0xfb7e6c: stp x28, x27, [sp, #0x90]",
+          "0xfb7e70: stp x26, x25, [sp, #0xa0]"
+        ],
+        "ours": "0x00fb7e64",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kActionWaitDispatchCallOffset",
+        "anchor": "kActionWaitDispatchCall",
+        "x86": "0x01105990",
+        "arm": "0x010b6178",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b6178: bl #0x10808f4",
+          "0x10b617c: mov x0, x19",
+          "0x10b6180: ldp x20, x19, [sp, #0x30]",
+          "0x10b6184: ldr x23, [sp, #0x10]"
+        ],
+        "ours": "0x010b6178",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kActionWaitDispatchReturnOffset",
+        "anchor": "kActionWaitDispatchReturn",
+        "x86": "0x01105995",
+        "arm": "0x010b617c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b617c: mov x0, x19",
+          "0x10b6180: ldp x20, x19, [sp, #0x30]",
+          "0x10b6184: ldr x23, [sp, #0x10]",
+          "0x10b6188: ldp x22, x21, [sp, #0x20]"
+        ],
+        "ours": "0x010b617c",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kAreaDamageEligibleOffset",
+        "anchor": "kAreaDamageEligible",
+        "x86": "0x010c9460",
+        "arm": "0x01079120",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1079120: ldr x8, [x0, #0x180]",
+          "0x1079124: cbz x8, #0x1079130",
+          "0x1079128: and w0, wzr, #1",
+          "0x107912c: ret"
+        ],
+        "ours": "0x01079120",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kAreaEffectObjectFactoryOffset",
+        "anchor": "kAreaEffectObjectFactory",
+        "x86": "0x010d0e90",
+        "arm": "0x01080fa4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1080fa4: stp x29, x30, [sp, #-0x20]!",
+          "0x1080fa8: stp x20, x19, [sp, #0x10]",
+          "0x1080fac: mov x29, sp",
+          "0x1080fb0: ldr x8, [x0]"
+        ],
+        "ours": "0x01080fa4",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kAreaEffectObjectTickOffset",
+        "anchor": "kAreaEffectObjectTick",
+        "x86": "0x010c0950",
+        "arm": "0x01070d18",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1070d18: sub sp, sp, #0xf0",
+          "0x1070d1c: stp x29, x30, [sp, #0x90]",
+          "0x1070d20: stp x28, x27, [sp, #0xa0]",
+          "0x1070d24: stp x26, x25, [sp, #0xb0]"
+        ],
+        "ours": "0x01070d18",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kAttackComponentTypeGetterOffset",
+        "anchor": "kAttackComponentTypeGetter",
+        "x86": "0x01109db0",
+        "arm": "0x010ba8c4",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10ba8c4: mov w0, wzr",
+          "0x10ba8c8: ret",
+          "0x10ba8cc: ldr x0, [x0, #0x10]",
+          "0x10ba8d0: ret"
+        ],
+        "ours": "0x010ba8c4",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kBuffAddedOffset",
+        "anchor": "kBuffAdded",
+        "x86": "0x011078c0",
+        "arm": "0x010b820c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b820c: sub sp, sp, #0x70",
+          "0x10b8210: stp x29, x30, [sp, #0x10]",
+          "0x10b8214: stp x28, x27, [sp, #0x20]",
+          "0x10b8218: stp x26, x25, [sp, #0x30]"
+        ],
+        "ours": "0x010b820c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kBuffApplyOffset",
+        "anchor": "kBuffApply",
+        "x86": "0x011078c0",
+        "arm": "0x010b820c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b820c: sub sp, sp, #0x70",
+          "0x10b8210: stp x29, x30, [sp, #0x10]",
+          "0x10b8214: stp x28, x27, [sp, #0x20]",
+          "0x10b8218: stp x26, x25, [sp, #0x30]"
+        ],
+        "ours": "0x010b820c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kBuffApplyOnlyCallOffset",
+        "anchor": "kBuffApplyOnlyCall",
+        "x86": "0x01107588",
+        "arm": "0x010b7dcc",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b7dcc: bl #0x10b820c",
+          "0x10b7dd0: cbz x27, #0x10b7de8",
+          "0x10b7dd4: cmp x27, x24",
+          "0x10b7dd8: b.eq #0x10b7de8"
+        ],
+        "ours": "0x010b7dcc",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kBuffComponentTypeGetterOffset",
+        "anchor": "kBuffComponentTypeGetter",
+        "x86": "0x01107010",
+        "arm": "0x010b79c4",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b79c4: mov w0, #3",
+          "0x10b79c8: ret",
+          "0x10b79cc: ldr w9, [x0, #0x24]",
+          "0x10b79d0: cmp w9, #1"
+        ],
+        "ours": "0x010b79c4",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kBuffRemoveOffset",
+        "anchor": "kBuffRemove",
+        "x86": "0x01107b70",
+        "arm": "0x010b84b0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b84b0: sub sp, sp, #0x90",
+          "0x10b84b4: stp x29, x30, [sp, #0x30]",
+          "0x10b84b8: stp x28, x27, [sp, #0x40]",
+          "0x10b84bc: stp x26, x25, [sp, #0x50]"
+        ],
+        "ours": "0x010b84b0",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kBuffRemoveOnlyCallOffset",
+        "anchor": "kBuffRemoveOnlyCall",
+        "x86": "0x01106918",
+        "arm": "0x010b721c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b721c: bl #0x10b84b0",
+          "0x10b7220: ldrb w8, [x19, #0x4c]",
+          "0x10b7224: cbz w8, #0x10b7274",
+          "0x10b7228: ldp w9, w8, [x19, #0x58]"
+        ],
+        "ours": "0x010b721c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kByteStreamFlipReadOffset",
+        "anchor": "kByteStreamFlipRead",
+        "x86": "0x013eebf0",
+        "arm": "0x01397578",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1397578: ldp w8, w9, [x0, #0x14]",
+          "0x139757c: str xzr, [x0, #0x20]",
+          "0x1397580: str wzr, [x0, #0x14]",
+          "0x1397584: cmp w8, w9"
+        ],
+        "ours": "0x01397578",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kByteStreamResetChecksumOffset",
+        "anchor": "kByteStreamResetChecksum",
+        "x86": "0x013f0a90",
+        "arm": "0x01399518",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1399518: str wzr, [x0, #0xc]",
+          "0x139951c: ret",
+          "0x1399520: stp x29, x30, [sp, #-0x20]!",
+          "0x1399524: stp x20, x19, [sp, #0x10]"
+        ],
+        "ours": "0x01399518",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kByteStreamResetReadOffset",
+        "anchor": "kByteStreamResetRead",
+        "x86": "0x013eebd0",
+        "arm": "0x01397568",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1397568: str wzr, [x0, #0x14]",
+          "0x139756c: str xzr, [x0, #0x20]",
+          "0x1397570: str wzr, [x0, #0x1c]",
+          "0x1397574: ret"
+        ],
+        "ours": "0x01397568",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCardSelectionBuildOffset",
+        "anchor": "kCardSelectionBuild",
+        "x86": "0x00fb7ae0",
+        "arm": "0x00f671a0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xf671a0: cbz x0, #0xf671b4",
+          "0xf671a4: ldr x9, [x0]",
+          "0xf671a8: and w2, w2, #1",
+          "0xf671ac: ldr x3, [x9, #0x110]"
+        ],
+        "ours": "0x00f671a0",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kChangeGameObjectDataExecuteOffset",
+        "anchor": "kChangeGameObjectDataExecute",
+        "x86": "0x00fe3570",
+        "arm": "0x00f93844",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xf93844: stp x29, x30, [sp, #-0x30]!",
+          "0xf93848: str x21, [sp, #0x10]",
+          "0xf9384c: stp x20, x19, [sp, #0x20]",
+          "0xf93850: mov x29, sp"
+        ],
+        "ours": "0x00f93844",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kChefInitOffset",
+        "anchor": "kChefInit",
+        "x86": "0x010f57f0",
+        "arm": "0x010a5378",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10a5378: stp x29, x30, [sp, #-0x20]!",
+          "0x10a537c: str x19, [sp, #0x10]",
+          "0x10a5380: mov x29, sp",
+          "0x10a5384: mov x19, x0"
+        ],
+        "ours": "0x010a5378",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kChefTickOffset",
+        "anchor": "kChefTick",
+        "x86": "0x010f5820",
+        "arm": "0x010a53ac",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10a53ac: stp x29, x30, [sp, #-0x60]!",
+          "0x10a53b0: stp x28, x27, [sp, #0x10]",
+          "0x10a53b4: stp x26, x25, [sp, #0x20]",
+          "0x10a53b8: stp x24, x23, [sp, #0x30]"
+        ],
+        "ours": "0x010a53ac",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kClassicChargeActionReturnOffset",
+        "anchor": "kClassicChargeActionReturn",
+        "x86": "0x01115caa",
+        "arm": "0x010c66b0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c66b0: b #0x10c66e0",
+          "0x10c66b4: mov x0, x21",
+          "0x10c66b8: bl #0x108af54",
+          "0x10c66bc: cbz x0, #0x10c66c8"
+        ],
+        "ours": "0x010c66b0",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCombatConsumeCardOffset",
+        "anchor": "kCombatConsumeCard",
+        "x86": "0x010e5f00",
+        "arm": "0x010959ec",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10959ec: sub sp, sp, #0xf0",
+          "0x10959f0: stp x29, x30, [sp, #0x90]",
+          "0x10959f4: stp x28, x27, [sp, #0xa0]",
+          "0x10959f8: stp x26, x25, [sp, #0xb0]"
+        ],
+        "ours": "0x010959ec",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kCombatExpireCancelCallOffset",
+        "anchor": "kCombatExpireCancelCall",
+        "x86": "0x010d7753",
+        "arm": "0x01087978",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1087978: bl #0x1085d24",
+          "0x108797c: mov w27, wzr",
+          "0x1087980: cbz x21, #0x1087958",
+          "0x1087984: ldrb w8, [x20, #0x226]"
+        ],
+        "ours": "0x01087978",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kCombatExpireCancelReturnOffset",
+        "anchor": "kCombatExpireCancelReturn",
+        "x86": "0x010d7758",
+        "arm": "0x0108797c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108797c: mov w27, wzr",
+          "0x1087980: cbz x21, #0x1087958",
+          "0x1087984: ldrb w8, [x20, #0x226]",
+          "0x1087988: cbz w8, #0x1087958"
+        ],
+        "ours": "0x0108797c",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kCombatExpireSourceLostCallOffset",
+        "anchor": "kCombatExpireSourceLostCall",
+        "x86": "0x010d7676",
+        "arm": "0x0108794c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108794c: bl #0x1085d24",
+          "0x1087950: mov w27, wzr",
+          "0x1087954: mov w24, #1",
+          "0x1087958: cbnz x21, #0x10879d0"
+        ],
+        "ours": "0x0108794c",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kCombatExpireSourceLostReturnOffset",
+        "anchor": "kCombatExpireSourceLostReturn",
+        "x86": "0x010d767b",
+        "arm": "0x01087950",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1087950: mov w27, wzr",
+          "0x1087954: mov w24, #1",
+          "0x1087958: cbnz x21, #0x10879d0",
+          "0x108795c: b #0x1087a00"
+        ],
+        "ours": "0x01087950",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCombatHealOffset",
+        "anchor": "kCombatHeal",
+        "x86": "0x01112140",
+        "arm": "0x010c29a4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c29a4: sub sp, sp, #0x70",
+          "0x10c29a8: stp x29, x30, [sp, #0x10]",
+          "0x10c29ac: stp x28, x27, [sp, #0x20]",
+          "0x10c29b0: stp x26, x25, [sp, #0x30]"
+        ],
+        "ours": "0x010c29a4",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCombatHealProjectileReturnOffset",
+        "anchor": "kCombatHealProjectileReturn",
+        "x86": "0x010d94d7",
+        "arm": "0x01089410",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1089410: ldr x2, [x19, #0x100]",
+          "0x1089414: mov x0, x19",
+          "0x1089418: mov w1, #6",
+          "0x108941c: mov w3, w21"
+        ],
+        "ours": "0x01089410",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kCombatImpactBoundaryOffset",
+        "anchor": "kCombatImpactBoundary",
+        "x86": "0x010870fc",
+        "arm": "0x010870fc",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10870fc: cbz x22, #0x10871b0",
+          "0x1087100: mov x0, x22",
+          "0x1087104: bl #0x1074aa4",
+          "0x1087108: bl #0xec1ff4"
+        ],
+        "ours": "0x010870fc",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCombatProjectileTerminalOffset",
+        "anchor": "kCombatProjectileTerminal",
+        "x86": "0x010d5b20",
+        "arm": "0x01085d24",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1085d24: stp x29, x30, [sp, #-0x20]!",
+          "0x1085d28: str x19, [sp, #0x10]",
+          "0x1085d2c: mov x29, sp",
+          "0x1085d30: ldr x8, [x0, #0x48]"
+        ],
+        "ours": "0x01085d24",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCombatRemoveOffset",
+        "anchor": "kCombatRemove",
+        "x86": "0x010d3280",
+        "arm": "0x0108355c",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108355c: stp x29, x30, [sp, #-0x30]!",
+          "0x1083560: str x21, [sp, #0x10]",
+          "0x1083564: stp x20, x19, [sp, #0x20]",
+          "0x1083568: mov x29, sp"
+        ],
+        "ours": "0x0108355c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kCombatSpawnOffset",
+        "anchor": "kCombatSpawn",
+        "x86": "0x010d3080",
+        "arm": "0x01083358",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1083358: stp x29, x30, [sp, #-0x40]!",
+          "0x108335c: str x23, [sp, #0x10]",
+          "0x1083360: stp x22, x21, [sp, #0x20]",
+          "0x1083364: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x01083358",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kDaggerInitOffset",
+        "anchor": "kDaggerInit",
+        "x86": "0x010f1880",
+        "arm": "0x010a1270",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10a1270: stp x29, x30, [sp, #-0x20]!",
+          "0x10a1274: str x19, [sp, #0x10]",
+          "0x10a1278: mov x29, sp",
+          "0x10a127c: mov x19, x0"
+        ],
+        "ours": "0x010a1270",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kDaggerTickOffset",
+        "anchor": "kDaggerTick",
+        "x86": "0x010f18a0",
+        "arm": "0x010a129c",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10a129c: stp x29, x30, [sp, #-0x40]!",
+          "0x10a12a0: str x23, [sp, #0x10]",
+          "0x10a12a4: stp x22, x21, [sp, #0x20]",
+          "0x10a12a8: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x010a129c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kDeathOpponentResourceCallOffset",
+        "anchor": "kDeathOpponentResourceCall",
+        "x86": "0x011108d1",
+        "arm": "0x010c1394",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c1394: bl #0x1098510",
+          "0x10c1398: mov x0, x22",
+          "0x10c139c: bl #0xe12a88",
+          "0x10c13a0: mov x25, x0"
+        ],
+        "ours": "0x010c1394",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kDeathOpponentResourceReturnOffset",
+        "anchor": "kDeathOpponentResourceReturn",
+        "x86": "0x011108d6",
+        "arm": "0x010c1398",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c1398: mov x0, x22",
+          "0x10c139c: bl #0xe12a88",
+          "0x10c13a0: mov x25, x0",
+          "0x10c13a4: mov x0, x19"
+        ],
+        "ours": "0x010c1398",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kDeathOwnerResourceReturnOffset",
+        "anchor": "kDeathOwnerResourceReturn",
+        "x86": "0x0111080a",
+        "arm": "0x010c127c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c127c: mov x0, x22",
+          "0x10c1280: bl #0xe12a88",
+          "0x10c1284: stur x24, [x29, #-0x18]",
+          "0x10c1288: mov w24, w21"
+        ],
+        "ours": "0x010c127c",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kEffectiveMovementSpeedOffset",
+        "anchor": "kEffectiveMovementSpeed",
+        "x86": "0x010c9960",
+        "arm": "0x010796f4",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10796f4: stp x29, x30, [sp, #-0x30]!",
+          "0x10796f8: str x21, [sp, #0x10]",
+          "0x10796fc: stp x20, x19, [sp, #0x20]",
+          "0x1079700: mov x29, sp"
+        ],
+        "ours": "0x010796f4",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kEffectiveSpeedEffectReturnOffset",
+        "anchor": "kEffectiveSpeedEffectReturn",
+        "x86": "0x010c9abe",
+        "arm": "0x01079908",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1079908: mov w20, w0",
+          "0x107990c: mov x0, x21",
+          "0x1079910: bl #0x108b120",
+          "0x1079914: cbz x0, #0x107995c"
+        ],
+        "ours": "0x01079908",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kEglSwapBuffersGotOffset",
+        "anchor": "kEglSwapBuffersGot",
+        "x86": "0x01b62168",
+        "arm": "0x01a9d6b0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": "0x01a9d6b0",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kExecuteOffset",
+        "anchor": "kExecute",
+        "x86": "0x0110db70",
+        "arm": "0x010be63c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10be63c: sub sp, sp, #0x70",
+          "0x10be640: stp x29, x30, [sp, #0x10]",
+          "0x10be644: stp x28, x27, [sp, #0x20]",
+          "0x10be648: stp x26, x25, [sp, #0x30]"
+        ],
+        "ours": "0x010be63c",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kGameAppPauseGuardOffset",
+        "anchor": "kGameAppPauseGuard",
+        "x86": "0x00794bd0",
+        "arm": "0x007c99ac",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x7c99ac: ldr w8, [x0, #0x1c4]",
+          "0x7c99b0: cmp w8, #0",
+          "0x7c99b4: cset w0, ne",
+          "0x7c99b8: ret"
+        ],
+        "ours": "0x007c99ac",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kGameAppPendingEventSetterOffset",
+        "anchor": "kGameAppPendingEventSetter",
+        "x86": "0x007929f0",
+        "arm": "0x007c79d8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x7c79d8: sub sp, sp, #0xc0",
+          "0x7c79dc: stp x29, x30, [sp, #0x80]",
+          "0x7c79e0: stp x24, x23, [sp, #0x90]",
+          "0x7c79e4: stp x22, x21, [sp, #0xa0]"
+        ],
+        "ours": "0x007c79d8",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kGameAppTouchOffset",
+        "anchor": "kGameAppTouch",
+        "x86": "0x015f23b0",
+        "arm": "0x0156f790",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x156f790: stp x29, x30, [sp, #-0x40]!",
+          "0x156f794: stp x24, x23, [sp, #0x10]",
+          "0x156f798: stp x22, x21, [sp, #0x20]",
+          "0x156f79c: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x0156f790",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kGameStateBaseDestroyOffset",
+        "anchor": "kGameStateBaseDestroy",
+        "x86": "0x009ff0c0",
+        "arm": "0x009fe0b0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x9fe0b0: stp x29, x30, [sp, #-0x20]!",
+          "0x9fe0b4: stp x20, x19, [sp, #0x10]",
+          "0x9fe0b8: mov x29, sp",
+          "0x9fe0bc: mov x19, x0"
+        ],
+        "ours": "0x009fe0b0",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kGameStateConstructorOffset",
+        "anchor": "kGameStateConstructor",
+        "x86": "0x0121f390",
+        "arm": "0x011d1e68",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d1e68: stp x29, x30, [sp, #-0x60]!",
+          "0x11d1e6c: str x27, [sp, #0x10]",
+          "0x11d1e70: stp x26, x25, [sp, #0x20]",
+          "0x11d1e74: stp x24, x23, [sp, #0x30]"
+        ],
+        "ours": "0x011d1e68",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kGameStateContextAOffset",
+        "anchor": "kGameStateContextA",
+        "x86": "0x00851ea0",
+        "arm": "0x00878c00",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x878c00: stp x29, x30, [sp, #-0x20]!",
+          "0x878c04: str x19, [sp, #0x10]",
+          "0x878c08: mov x29, sp",
+          "0x878c0c: adrp x19, #0x1b61000"
+        ],
+        "ours": "0x00878c00",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kGameStateContextBOffset",
+        "anchor": "kGameStateContextB",
+        "x86": "0x01043a60",
+        "arm": "0x00ff253c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xff253c: adrp x0, #0x1aa2000",
+          "0xff2540: add x0, x0, #0x558",
+          "0xff2544: ret",
+          "0xff2548: mov x0, x1"
+        ],
+        "ours": "0x00ff253c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kGameStateContextRootSlotOffset",
+        "anchor": "kGameStateContextRootSlot",
+        "x86": "0x01c26848",
+        "arm": "0x01b61d00",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": false,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": "0x01b61d00",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kGameStateDeleteOffset",
+        "anchor": "kGameStateDelete",
+        "x86": "0x01a55920",
+        "arm": "0x0198db60",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x198db60: adrp x16, #0x1a9c000",
+          "0x198db64: ldr x17, [x16, #0xaf8]",
+          "0x198db68: add x16, x16, #0xaf8",
+          "0x198db6c: br x17"
+        ],
+        "ours": "0x0198db60",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kGameStateDeserializeBodyOffset",
+        "anchor": "kGameStateDeserializeBody",
+        "x86": "0x012220d0",
+        "arm": "0x011d4b14",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d4b14: sub sp, sp, #0x80",
+          "0x11d4b18: stp x29, x30, [sp, #0x20]",
+          "0x11d4b1c: stp x28, x27, [sp, #0x30]",
+          "0x11d4b20: stp x26, x25, [sp, #0x40]"
+        ],
+        "ours": "0x011d4b14",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kGameStateDeserializeHeaderOffset",
+        "anchor": "kGameStateDeserializeHeader",
+        "x86": "0x01221bc0",
+        "arm": "0x011d45c8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d45c8: stp x29, x30, [sp, #-0x30]!",
+          "0x11d45cc: stp x22, x21, [sp, #0x10]",
+          "0x11d45d0: stp x20, x19, [sp, #0x20]",
+          "0x11d45d4: mov x29, sp"
+        ],
+        "ours": "0x011d45c8",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kGameStateDestroyOffset",
+        "anchor": "kGameStateDestroy",
+        "x86": "0x0121f950",
+        "arm": "0x011d2388",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d2388: stp x29, x30, [sp, #-0x50]!",
+          "0x11d238c: str x25, [sp, #0x10]",
+          "0x11d2390: stp x24, x23, [sp, #0x20]",
+          "0x11d2394: stp x22, x21, [sp, #0x30]"
+        ],
+        "ours": "0x011d2388",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kGameStateLoadOffset",
+        "anchor": "kGameStateLoad",
+        "x86": "0x01220470",
+        "arm": "0x011d2dc4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d2dc4: stp x29, x30, [sp, #-0x40]!",
+          "0x11d2dc8: stp x24, x23, [sp, #0x10]",
+          "0x11d2dcc: stp x22, x21, [sp, #0x20]",
+          "0x11d2dd0: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x011d2dc4",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kGameStateNewOffset",
+        "anchor": "kGameStateNew",
+        "x86": "0x01a55910",
+        "arm": "0x0198db50",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x198db50: adrp x16, #0x1a9c000",
+          "0x198db54: ldr x17, [x16, #0xaf0]",
+          "0x198db58: add x16, x16, #0xaf0",
+          "0x198db5c: br x17"
+        ],
+        "ours": "0x0198db50",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kGameStateSetupOffset",
+        "anchor": "kGameStateSetup",
+        "x86": "0x0121f840",
+        "arm": "0x011d225c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d225c: stp x29, x30, [sp, #-0x30]!",
+          "0x11d2260: str x21, [sp, #0x10]",
+          "0x11d2264: stp x20, x19, [sp, #0x20]",
+          "0x11d2268: mov x29, sp"
+        ],
+        "ours": "0x011d225c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kGameStateStepOffset",
+        "anchor": "kGameStateStep",
+        "x86": "0x01220770",
+        "arm": "0x011d3174",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d3174: stp x29, x30, [sp, #-0x30]!",
+          "0x11d3178: str x21, [sp, #0x10]",
+          "0x11d317c: stp x20, x19, [sp, #0x20]",
+          "0x11d3180: mov x29, sp"
+        ],
+        "ours": "0x011d3174",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kGameStateTickOffset",
+        "anchor": "kGameStateTick",
+        "x86": "0x012208c0",
+        "arm": "0x011d32f0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11d32f0: ldr w0, [x0, #0x60]",
+          "0x11d32f4: ret",
+          "0x11d32f8: stp x29, x30, [sp, #-0x30]!",
+          "0x11d32fc: stp x22, x21, [sp, #0x10]"
+        ],
+        "ours": "0x011d32f0",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kGoldenKnightHopOffset",
+        "anchor": "kGoldenKnightHop",
+        "x86": "0x010f76b0",
+        "arm": "0x010a7230",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10a7230: stp x29, x30, [sp, #-0x50]!",
+          "0x10a7234: stp x26, x25, [sp, #0x10]",
+          "0x10a7238: stp x24, x23, [sp, #0x20]",
+          "0x10a723c: stp x22, x21, [sp, #0x30]"
+        ],
+        "ours": "0x010a7230",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kJsonParseOffset",
+        "anchor": "kJsonParse",
+        "x86": "0x013f6330",
+        "arm": "0x0139f838",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x139f838: cbz x0, #0x139f8c8",
+          "0x139f83c: ldr w8, [x0, #4]",
+          "0x139f840: cbz w8, #0x139f8c4",
+          "0x139f844: stp x29, x30, [sp, #-0x30]!"
+        ],
+        "ours": "0x0139f838",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kLocationTileMapEnsureOffset",
+        "anchor": "kLocationTileMapEnsure",
+        "x86": "0x0088dd30",
+        "arm": "0x008ae750",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x8ae750: stp x29, x30, [sp, #-0x30]!",
+          "0x8ae754: stp x22, x21, [sp, #0x10]",
+          "0x8ae758: stp x20, x19, [sp, #0x20]",
+          "0x8ae75c: mov x29, sp"
+        ],
+        "ours": "0x008ae750",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kLocationTileMapLookupOffset",
+        "anchor": "kLocationTileMapLookup",
+        "x86": "0x00f7fe30",
+        "arm": "0x00f2edec",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xf2edec: stp x29, x30, [sp, #-0x20]!",
+          "0xf2edf0: stp x20, x19, [sp, #0x10]",
+          "0xf2edf4: mov x29, sp",
+          "0xf2edf8: mov x19, x0"
+        ],
+        "ours": "0x00f2edec",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kLogicCommandAppendOffset",
+        "anchor": "kLogicCommandAppend",
+        "x86": "0x00eaa010",
+        "arm": "0x00e5443c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xe5443c: ldr x8, [x1]",
+          "0xe54440: cbz x8, #0xe544fc",
+          "0xe54444: stp x29, x30, [sp, #-0x20]!",
+          "0xe54448: stp x20, x19, [sp, #0x10]"
+        ],
+        "ours": "0x00e5443c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kLogicCommandParseOffset",
+        "anchor": "kLogicCommandParse",
+        "x86": "0x00eaaec0",
+        "arm": "0x00e553e4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xe553e4: stp x29, x30, [sp, #-0x30]!",
+          "0xe553e8: str x21, [sp, #0x10]",
+          "0xe553ec: stp x20, x19, [sp, #0x20]",
+          "0xe553f0: mov x29, sp"
+        ],
+        "ours": "0x00e553e4",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kLogicCommandQueueConstructorOffset",
+        "anchor": "kLogicCommandQueueConstructor",
+        "x86": "0x00ea9f20",
+        "arm": "0x00e54328",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xe54328: stp x29, x30, [sp, #-0x20]!",
+          "0xe5432c: stp x20, x19, [sp, #0x10]",
+          "0xe54330: mov x29, sp",
+          "0xe54334: movi v0.2d, #0000000000000000"
+        ],
+        "ours": "0x00e54328",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kLogicCommandQueueDestroyOffset",
+        "anchor": "kLogicCommandQueueDestroy",
+        "x86": "0x00ea9f80",
+        "arm": "0x00e5438c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xe5438c: stp x29, x30, [sp, #-0x30]!",
+          "0xe54390: stp x22, x21, [sp, #0x10]",
+          "0xe54394: stp x20, x19, [sp, #0x20]",
+          "0xe54398: mov x29, sp"
+        ],
+        "ours": "0x00e5438c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kLogicDataByGlobalIdOffset",
+        "anchor": "kLogicDataByGlobalId",
+        "x86": "0x00f4fc80",
+        "arm": "0x00efe42c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xefe42c: stp x29, x30, [sp, #-0x20]!",
+          "0xefe430: stp x20, x19, [sp, #0x10]",
+          "0xefe434: mov x29, sp",
+          "0xefe438: mov x20, x0"
+        ],
+        "ours": "0x00efe42c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kLogicDataTypeGetterOffset",
+        "anchor": "kLogicDataTypeGetter",
+        "x86": "0x00f40e40",
+        "arm": "0x00eeee10",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xeeee10: ldr x0, [x0, #0x10]",
+          "0xeeee14: b #0xef4540",
+          "0xeeee18: mov x0, xzr",
+          "0xeeee1c: ret"
+        ],
+        "ours": "0x00eeee10",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kMovementComponentTypeGetterOffset",
+        "anchor": "kMovementComponentTypeGetter",
+        "x86": "0x011166f0",
+        "arm": "0x010c70f4",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c70f4: mov w0, #1",
+          "0x10c70f8: ret",
+          "0x10c70fc: stp x29, x30, [sp, #-0x20]!",
+          "0x10c7100: str x19, [sp, #0x10]"
+        ],
+        "ours": "0x010c70f4",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kMovementDeltaOffset",
+        "anchor": "kMovementDelta",
+        "x86": "0x01115b80",
+        "arm": "0x010c6560",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c6560: stp x29, x30, [sp, #-0x40]!",
+          "0x10c6564: str x23, [sp, #0x10]",
+          "0x10c6568: stp x22, x21, [sp, #0x20]",
+          "0x10c656c: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x010c6560",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kMovementTickScaleReturnOffset",
+        "anchor": "kMovementTickScaleReturn",
+        "x86": "0x011136fc",
+        "arm": "0x010c3fe8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c3fe8: cmp w0, #0",
+          "0x10c3fec: cinc w8, w0, lt",
+          "0x10c3ff0: asr w8, w8, #1",
+          "0x10c3ff4: b #0x10c4138"
+        ],
+        "ours": "0x010c3fe8",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kNativeReplayRunnerOffset",
+        "anchor": "kNativeReplayRunner",
+        "x86": "0x00dee110",
+        "arm": "0x00d9ae04",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xd9ae04: sub sp, sp, #0xe0",
+          "0xd9ae08: stp x29, x30, [sp, #0x80]",
+          "0xd9ae0c: stp x28, x27, [sp, #0x90]",
+          "0xd9ae10: stp x26, x25, [sp, #0xa0]"
+        ],
+        "ours": "0x00d9ae04",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kPendingObjectAddOffset",
+        "anchor": "kPendingObjectAdd",
+        "x86": "0x010d2e70",
+        "arm": "0x010830f4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10830f4: ldr x8, [x0]",
+          "0x10830f8: ldrb w2, [x0, #0x78]",
+          "0x10830fc: mov w3, wzr",
+          "0x1083100: ldr x4, [x8, #0x40]"
+        ],
+        "ours": "0x010830f4",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kProjectileKindGetterOffset",
+        "anchor": "kProjectileKindGetter",
+        "x86": "0x010d50c0",
+        "arm": "0x0108530c",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108530c: mov w0, #4",
+          "0x1085310: ret",
+          "0x1085314: sub sp, sp, #0xb0",
+          "0x1085318: stp x29, x30, [sp, #0x50]"
+        ],
+        "ours": "0x0108530c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kReplayBattleControllerAlternateUpdateOffset",
+        "anchor": "kReplayBattleControllerAlternateUpdate",
+        "x86": "0x00df0090",
+        "arm": "0x00d9cc24",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xd9cc24: str d8, [sp, #-0x20]!",
+          "0xd9cc28: stp x29, x30, [sp, #8]",
+          "0xd9cc2c: str x19, [sp, #0x18]",
+          "0xd9cc30: add x29, sp, #8"
+        ],
+        "ours": "0x00d9cc24",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kReplayBattleControllerFullUpdateOffset",
+        "anchor": "kReplayBattleControllerFullUpdate",
+        "x86": "0x00deefb0",
+        "arm": "0x00d9bba0",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xd9bba0: sub sp, sp, #0xa0",
+          "0xd9bba4: stp d11, d10, [sp, #0x40]",
+          "0xd9bba8: stp d9, d8, [sp, #0x50]",
+          "0xd9bbac: stp x29, x30, [sp, #0x60]"
+        ],
+        "ours": "0x00d9bba0",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kReplayBattleControllerLifecycleOffset",
+        "anchor": "kReplayBattleControllerLifecycle",
+        "x86": "0x00ded4a0",
+        "arm": "0x00d9a2cc",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xd9a2cc: sub sp, sp, #0x110",
+          "0xd9a2d0: str d8, [sp, #0xc0]",
+          "0xd9a2d4: stp x29, x30, [sp, #0xc8]",
+          "0xd9a2d8: str x28, [sp, #0xd8]"
+        ],
+        "ours": "0x00d9a2cc",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kReplayClockGlobalPauseGuardOffset",
+        "anchor": "kReplayClockGlobalPauseGuard",
+        "x86": "0x00e23e90",
+        "arm": "0x00dcda40",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xdcda40: stp x29, x30, [sp, #-0x10]!",
+          "0xdcda44: mov x29, sp",
+          "0xdcda48: bl #0x1384c9c",
+          "0xdcda4c: cbz x0, #0xdcda6c"
+        ],
+        "ours": "0x00dcda40",
+        "our_confidence": "MANUAL"
+      },
+      {
+        "name": "kReplayJsonSetterOffset",
+        "anchor": "kReplayJsonSetter",
+        "x86": "0x00df58f0",
+        "arm": "0x00da1f90",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xda1f90: stp x29, x30, [sp, #-0x20]!",
+          "0xda1f94: stp x20, x19, [sp, #0x10]",
+          "0xda1f98: mov x29, sp",
+          "0xda1f9c: mov x20, x1"
+        ],
+        "ours": "0x00da1f90",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kResourceFixedDeltaOffset",
+        "anchor": "kResourceFixedDelta",
+        "x86": "0x010e8c40",
+        "arm": "0x01098510",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1098510: stp x29, x30, [sp, #-0x30]!",
+          "0x1098514: str x21, [sp, #0x10]",
+          "0x1098518: stp x20, x19, [sp, #0x20]",
+          "0x109851c: mov x29, sp"
+        ],
+        "ours": "0x01098510",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kResourceWholeDeltaOffset",
+        "anchor": "kResourceWholeDelta",
+        "x86": "0x010e9350",
+        "arm": "0x01098b8c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1098b8c: stp x29, x30, [sp, #-0x30]!",
+          "0x1098b90: stp x22, x21, [sp, #0x10]",
+          "0x1098b94: stp x20, x19, [sp, #0x20]",
+          "0x1098b98: mov x29, sp"
+        ],
+        "ours": "0x01098b8c",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kStateSetterOffset",
+        "anchor": "kStateSetter",
+        "x86": "0x010c6160",
+        "arm": "0x01075d64",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1075d64: sub sp, sp, #0x80",
+          "0x1075d68: stp x29, x30, [sp, #0x20]",
+          "0x1075d6c: stp x28, x27, [sp, #0x30]",
+          "0x1075d70: stp x26, x25, [sp, #0x40]"
+        ],
+        "ours": "0x01075d64",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kStateSnapshotOffset",
+        "anchor": "kStateSnapshot",
+        "x86": "0x00bde9a0",
+        "arm": "0x00bb3ac4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xbb3ac4: stp x29, x30, [sp, #-0x30]!",
+          "0xbb3ac8: str x21, [sp, #0x10]",
+          "0xbb3acc: stp x20, x19, [sp, #0x20]",
+          "0xbb3ad0: mov x29, sp"
+        ],
+        "ours": "0x00bb3ac4",
+        "our_confidence": "LIKELY"
+      },
+      {
+        "name": "kTargetSetOffset",
+        "anchor": "kTargetSet",
+        "x86": "0x01109de0",
+        "arm": "0x010ba8e0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10ba8e0: stp x29, x30, [sp, #-0x50]!",
+          "0x10ba8e4: str x25, [sp, #0x10]",
+          "0x10ba8e8: stp x24, x23, [sp, #0x20]",
+          "0x10ba8ec: stp x22, x21, [sp, #0x30]"
+        ],
+        "ours": "0x010ba8e0",
+        "our_confidence": "EXACT"
+      },
+      {
+        "name": "kTowerTargetSetOffset",
+        "anchor": "kTowerTargetSet",
+        "x86": "0x01109de0",
+        "arm": "0x010ba8e0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10ba8e0: stp x29, x30, [sp, #-0x50]!",
+          "0x10ba8e4: str x25, [sp, #0x10]",
+          "0x10ba8e8: stp x24, x23, [sp, #0x20]",
+          "0x10ba8ec: stp x22, x21, [sp, #0x30]"
+        ],
+        "ours": "0x010ba8e0",
+        "our_confidence": "EXACT"
+      }
+    ],
+    "conflict": [
+      {
+        "name": "kActionDispatchOffset",
+        "anchor": "kActionDispatch",
+        "x86": "0x010d0720",
+        "arm": "0x01080784",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1080784: stp x29, x30, [sp, #-0x30]!",
+          "0x1080788: stp x22, x21, [sp, #0x10]",
+          "0x108078c: stp x20, x19, [sp, #0x20]",
+          "0x1080790: mov x29, sp"
+        ],
+        "ours": "0x010809c0",
+        "our_confidence": "EXACT",
+        "delta": -572
+      },
+      {
+        "name": "kChangeMutationCallOffset",
+        "anchor": "kChangeMutationCall",
+        "x86": "0x00fe35a5",
+        "arm": "0x00f93884",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xf93884: blr x8",
+          "0xf93888: cbz x19, #0xf938e0",
+          "0xf9388c: mov x0, x21",
+          "0xf93890: bl #0x108b454"
+        ],
+        "ours": "0x00f93844",
+        "our_confidence": "LIKELY",
+        "delta": 64
+      },
+      {
+        "name": "kCombatDeflectOffset",
+        "anchor": "kCombatDeflect",
+        "x86": "0x010c1db0",
+        "arm": "0x01071f14",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1071f14: sub sp, sp, #0x90",
+          "0x1071f18: stp x29, x30, [sp, #0x30]",
+          "0x1071f1c: stp x28, x27, [sp, #0x40]",
+          "0x1071f20: stp x26, x25, [sp, #0x50]"
+        ],
+        "ours": "0x01074190",
+        "our_confidence": "LIKELY",
+        "delta": -8828
+      },
+      {
+        "name": "kCombatHealEffectReturnOffset",
+        "anchor": "kCombatHealEffectReturn",
+        "x86": "0x00000001",
+        "arm": "0x0107d99c",
+        "table_kind": "",
+        "table_ok": false,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x107d99c: ldr x27, [sp, #0x30]",
+          "0x107d9a0: ldp x22, x21, [sp, #0x60]",
+          "0x107d9a4: ldp x24, x23, [sp, #0x50]",
+          "0x107d9a8: ldp x26, x25, [sp, #0x40]"
+        ],
+        "ours": "0x00a22aac",
+        "our_confidence": "EXACT",
+        "delta": 6663920
+      },
+      {
+        "name": "kCombatImpactFunctionOffset",
+        "anchor": "kCombatImpactFunction",
+        "x86": "0x010d6aa0",
+        "arm": "0x01086dc0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1086dc0: sub sp, sp, #0xa0",
+          "0x1086dc4: stp x29, x30, [sp, #0x40]",
+          "0x1086dc8: stp x28, x27, [sp, #0x50]",
+          "0x1086dcc: stp x26, x25, [sp, #0x60]"
+        ],
+        "ours": "0x00cce0d0",
+        "our_confidence": "EXACT",
+        "delta": 3902704
+      },
+      {
+        "name": "kDeathOwnerResourceCallOffset",
+        "anchor": "kDeathOwnerResourceCall",
+        "x86": "0x01110805",
+        "arm": "0x010c1278",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c1278: bl #0x1098b8c",
+          "0x10c127c: mov x0, x22",
+          "0x10c1280: bl #0xe12a88",
+          "0x10c1284: stur x24, [x29, #-0x18]"
+        ],
+        "ours": "0x010c1288",
+        "our_confidence": "LIKELY",
+        "delta": -16
+      },
+      {
+        "name": "kGameAppGetterOffset",
+        "anchor": "kGameAppGetter",
+        "x86": "0x0078d070",
+        "arm": "0x007c2808",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x7c2808: adrp x8, #0x1b4b000",
+          "0x7c280c: ldr x0, [x8, #0x720]",
+          "0x7c2810: ret",
+          "0x7c2814: ldr s0, [x0, #0x1a8]"
+        ],
+        "ours": "0x007c27ac",
+        "our_confidence": "EXACT",
+        "delta": 92
+      },
+      {
+        "name": "kJsonMemberFindOffset",
+        "anchor": "kJsonMemberFind",
+        "x86": "0x00c76a60",
+        "arm": "0x00c40d68",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xc40d68: stp x29, x30, [sp, #-0x40]!",
+          "0xc40d6c: str x23, [sp, #0x10]",
+          "0xc40d70: stp x22, x21, [sp, #0x20]",
+          "0xc40d74: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": "0x00e38d60",
+        "our_confidence": "MANUAL",
+        "delta": -2064376
+      },
+      {
+        "name": "kLibgStringFromUtf8Offset",
+        "anchor": "kLibgStringFromUtf8",
+        "x86": "0x015bad60",
+        "arm": "0x0153de30",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x153de30: movi d0, #0x000000ffffffff",
+          "0x153de34: str xzr, [x0, #8]",
+          "0x153de38: str d0, [x0]",
+          "0x153de3c: b #0x153dd4c"
+        ],
+        "ours": "0x015267f0",
+        "our_confidence": "LIKELY",
+        "delta": 95808
+      },
+      {
+        "name": "kPeriodicResourceCallOffset",
+        "anchor": "kPeriodicResourceCall",
+        "x86": "0x010c7ac3",
+        "arm": "0x010775dc",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10775dc: bl #0x1098b8c",
+          "0x10775e0: mov x0, x19",
+          "0x10775e4: bl #0x108ab84",
+          "0x10775e8: bl #0xe12a88"
+        ],
+        "ours": "0x010775f4",
+        "our_confidence": "LIKELY",
+        "delta": -24
+      },
+      {
+        "name": "kPeriodicResourceReturnOffset",
+        "anchor": "kPeriodicResourceReturn",
+        "x86": "0x010c7ac8",
+        "arm": "0x010775e0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10775e0: mov x0, x19",
+          "0x10775e4: bl #0x108ab84",
+          "0x10775e8: bl #0xe12a88",
+          "0x10775ec: mov x22, x0"
+        ],
+        "ours": "0x010775f8",
+        "our_confidence": "LIKELY",
+        "delta": -24
+      },
+      {
+        "name": "kReplayBattleControllerClockOffset",
+        "anchor": "kReplayBattleControllerClock",
+        "x86": "0x00def730",
+        "arm": "0x00d9c278",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xd9c278: ldrb w8, [x0, #0x17c]",
+          "0xd9c27c: cbz w8, #0xd9c284",
+          "0xd9c280: ret",
+          "0xd9c284: sub sp, sp, #0xe0"
+        ],
+        "ours": "0x00d9c284",
+        "our_confidence": "EXACT",
+        "delta": -12
+      },
+      {
+        "name": "kReplayManagerGetterOffset",
+        "anchor": "kReplayManagerGetter",
+        "x86": "0x00df4060",
+        "arm": "0x00da0658",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xda0658: adrp x8, #0x1b7d000",
+          "0xda065c: ldr x0, [x8, #0x210]",
+          "0xda0660: ret",
+          "0xda0664: ldr x0, [x0, #0x50]"
+        ],
+        "ours": "0x00da0670",
+        "our_confidence": "LIKELY",
+        "delta": -24
+      },
+      {
+        "name": "kSpawnAttachHelperCallOffset",
+        "anchor": "kSpawnAttachHelperCall",
+        "x86": "0x010c6bb0",
+        "arm": "0x01076744",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1076744: bl #0x1081904",
+          "0x1076748: mov x0, x22",
+          "0x107674c: mov x1, x23",
+          "0x1076750: bl #0x1080f08"
+        ],
+        "ours": "0x01076758",
+        "our_confidence": "LIKELY",
+        "delta": -20
+      },
+      {
+        "name": "kSpawnAttachHelperReturnOffset",
+        "anchor": "kSpawnAttachHelperReturn",
+        "x86": "0x010c6bb5",
+        "arm": "0x01076748",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1076748: mov x0, x22",
+          "0x107674c: mov x1, x23",
+          "0x1076750: bl #0x1080f08",
+          "0x1076754: cmp w21, #0xb"
+        ],
+        "ours": "0x0107676c",
+        "our_confidence": "LIKELY",
+        "delta": -36
+      },
+      {
+        "name": "kStateSnapshotDeleteOffset",
+        "anchor": "kStateSnapshotDelete",
+        "x86": "0x0121a630",
+        "arm": "0x011ccee8",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x11ccee8: stp x29, x30, [sp, #-0x20]!",
+          "0x11cceec: str x19, [sp, #0x10]",
+          "0x11ccef0: mov x29, sp",
+          "0x11ccef4: adrp x8, #0x1a9b000"
+        ],
+        "ours": "0x011cfb78",
+        "our_confidence": "EXACT",
+        "delta": -11408
+      },
+      {
+        "name": "kWarpPositionCommitOffset",
+        "anchor": "kWarpPositionCommit",
+        "x86": "0x0100e800",
+        "arm": "0x00fc00a0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xfc00a0: sub sp, sp, #0x30",
+          "0xfc00a4: stp x29, x30, [sp, #0x10]",
+          "0xfc00a8: stp x20, x19, [sp, #0x20]",
+          "0xfc00ac: add x29, sp, #0x10"
+        ],
+        "ours": "0x00fc01e4",
+        "our_confidence": "EXACT",
+        "delta": -324
+      }
+    ],
+    "resolved": [
+      {
+        "name": "kActionSpawnMode1ChildCreateReturnOffset",
+        "anchor": "kActionSpawnMode1ChildCreateReturn",
+        "x86": "0x010d2418",
+        "arm": "0x0108236c",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108236c: mov x0, x20",
+          "0x1082370: bl #0xec1f94",
+          "0x1082374: cbnz w0, #0x108229c",
+          "0x1082378: ldr w8, [sp, #0x48]"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kActionSpawnToLocationStaticVtableOffset",
+        "anchor": "kActionSpawnToLocationStaticVtable",
+        "x86": "0x01b0f058",
+        "arm": "0x01a47298",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kActionWaitRuntimeVtableOffset",
+        "anchor": "kActionWaitRuntimeVtable",
+        "x86": "0x01b1d1d8",
+        "arm": "0x01a55418",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kActionWaitStaticVtableOffset",
+        "anchor": "kActionWaitStaticVtable",
+        "x86": "0x01b0fe18",
+        "arm": "0x01a48058",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kActionWaitUpdateOffset",
+        "anchor": "kActionWaitUpdate",
+        "x86": "0x01105930",
+        "arm": "0x010b6110",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b6110: stp x29, x30, [sp, #-0x40]!",
+          "0x10b6114: str x23, [sp, #0x10]",
+          "0x10b6118: stp x22, x21, [sp, #0x20]",
+          "0x10b611c: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kAdditionalAttackReturnOffset",
+        "anchor": "kAdditionalAttackReturn",
+        "x86": "0x0110f17b",
+        "arm": "0x010bfab4",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10bfab4: cbz x27, #0x10bfb2c",
+          "0x10bfab8: ldr w9, [x27, #0xc]",
+          "0x10bfabc: cmp w9, #1",
+          "0x10bfac0: b.lt #0x10bfb2c"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kAreaEffectObjectVtableOffset",
+        "anchor": "kAreaEffectObjectVtable",
+        "x86": "0x01b17760",
+        "arm": "0x01a4f9a0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kAttackComponentVtableOffset",
+        "anchor": "kAttackComponentVtable",
+        "x86": "0x01b1d670",
+        "arm": "0x01a558b0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kAttackExecuteOffset",
+        "anchor": "kAttackExecute",
+        "x86": "0x0110c1d0",
+        "arm": "0x010bcddc",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10bcddc: sub sp, sp, #0x110",
+          "0x10bcde0: stp x29, x30, [sp, #0xb0]",
+          "0x10bcde4: stp x28, x27, [sp, #0xc0]",
+          "0x10bcde8: stp x26, x25, [sp, #0xd0]"
+        ],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kAttackScaleOffset",
+        "anchor": "kAttackScale",
+        "x86": "0x01108b10",
+        "arm": "0x010b94c8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b94c8: stp x29, x30, [sp, #-0x40]!",
+          "0x10b94cc: stp x24, x23, [sp, #0x10]",
+          "0x10b94d0: stp x22, x21, [sp, #0x20]",
+          "0x10b94d4: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kAttackScaleReturnOffset",
+        "anchor": "kAttackScaleReturn",
+        "x86": "0x0110f3cb",
+        "arm": "0x010bfcec",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10bfcec: ldr x8, [x19, #8]",
+          "0x10bfcf0: mov w20, w0",
+          "0x10bfcf4: mov x0, x8",
+          "0x10bfcf8: bl #0x1074aa4"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kAttackStartReturnOffset",
+        "anchor": "kAttackStartReturn",
+        "x86": "0x0110ed8b",
+        "arm": "0x010bf698",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10bf698: ldr w8, [x21, #0x3d8]",
+          "0x10bf69c: and w8, w8, #0xfffffffe",
+          "0x10bf6a0: cmp w8, #2",
+          "0x10bf6a4: ldur w8, [x29, #-0x28]"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kBuffAssetClassNameGetterOffset",
+        "anchor": "kBuffAssetClassNameGetter",
+        "x86": "0x00f11530",
+        "arm": "0x00ebf530",
+        "table_kind": "func",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0xebf530: adrp x0, #0x2f0000",
+          "0xebf534: add x0, x0, #0xe49",
+          "0xebf538: ret",
+          "0xebf53c: ldr x0, [x0, #0x148]"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kBuffAssetVtableOffset",
+        "anchor": "kBuffAssetVtable",
+        "x86": "0x01afc7b0",
+        "arm": "0x01a349f0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kBuffComponentVtableOffset",
+        "anchor": "kBuffComponentVtable",
+        "x86": "0x01b1d5f8",
+        "arm": "0x01a55838",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCaptureCharacterActionDataVtableOffset",
+        "anchor": "kCaptureCharacterActionDataVtable",
+        "x86": "0x01b07870",
+        "arm": "0x01a3fab0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCaptureCharacterRuntimeVtableOffset",
+        "anchor": "kCaptureCharacterRuntimeVtable",
+        "x86": "0x01b197e0",
+        "arm": "0x01a51a20",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kChampionActionDataVtableOffset",
+        "anchor": "kChampionActionDataVtable",
+        "x86": "0x01b07b20",
+        "arm": "0x01a3fd60",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kChampionControllerVtableOffset",
+        "anchor": "kChampionControllerVtable",
+        "x86": "0x01b199f0",
+        "arm": "0x01a51c30",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kChangeGameObjectDataVtableOffset",
+        "anchor": "kChangeGameObjectDataVtable",
+        "x86": "0x01b07c78",
+        "arm": "0x01a3feb8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCharacterAbilityDataVtableOffset",
+        "anchor": "kCharacterAbilityDataVtable",
+        "x86": "0x01afc6a0",
+        "arm": "0x01a348e0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCharacterSpawnHelperOffset",
+        "anchor": "kCharacterSpawnHelper",
+        "x86": "0x010d1710",
+        "arm": "0x01081904",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1081904: sub sp, sp, #0x160",
+          "0x1081908: stp x29, x30, [sp, #0x100]",
+          "0x108190c: stp x28, x27, [sp, #0x110]",
+          "0x1081910: stp x26, x25, [sp, #0x120]"
+        ],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCharacterVtableOffset",
+        "anchor": "kCharacterVtable",
+        "x86": "0x01b17978",
+        "arm": "0x01a4fbb8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kChefRuntimeVtableOffset",
+        "anchor": "kChefRuntimeVtable",
+        "x86": "0x01b19c80",
+        "arm": "0x01a51ec0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kChefStaticVtableOffset",
+        "anchor": "kChefStaticVtable",
+        "x86": "0x01b07f28",
+        "arm": "0x01a40168",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCombatDamageOffset",
+        "anchor": "kCombatDamage",
+        "x86": "0x01111420",
+        "arm": "0x010c1e50",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10c1e50: sub sp, sp, #0xc0",
+          "0x10c1e54: stp x29, x30, [sp, #0x60]",
+          "0x10c1e58: stp x28, x27, [sp, #0x70]",
+          "0x10c1e5c: stp x26, x25, [sp, #0x80]"
+        ],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kCombatHealAreaReturnOffset",
+        "anchor": "kCombatHealAreaReturn",
+        "x86": "0x00000001",
+        "arm": "0x0108f1b0",
+        "table_kind": "",
+        "table_ok": false,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x108f1b0: cmp w8, #1",
+          "0x108f1b4: b.lt #0x108f04c",
+          "0x108f1b8: ldur w9, [x29, #-0x24]",
+          "0x108f1bc: eor w8, w20, #1"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kDaggerRuntimeVtableOffset",
+        "anchor": "kDaggerRuntimeVtable",
+        "x86": "0x01b195d0",
+        "arm": "0x01a51810",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kDaggerStaticVtableOffset",
+        "anchor": "kDaggerStaticVtable",
+        "x86": "0x01b07468",
+        "arm": "0x01a3f6a8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kDashingAttackChainDataVtableOffset",
+        "anchor": "kDashingAttackChainDataVtable",
+        "x86": "0x01b0a8d0",
+        "arm": "0x01a42b10",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kDashingAttackChainRuntimeVtableOffset",
+        "anchor": "kDashingAttackChainRuntimeVtable",
+        "x86": "0x01b1a1e8",
+        "arm": "0x01a52428",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kDeployScaleReturnOffset",
+        "anchor": "kDeployScaleReturn",
+        "x86": "0x00000001",
+        "arm": "0x01077548",
+        "table_kind": "",
+        "table_ok": false,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x1077548: str w9, [x19, #0x15c]",
+          "0x107754c: b.le #0x1077568",
+          "0x1077550: b #0x1076dd0",
+          "0x1077554: mov w0, #0x32"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kExecuteCallerReturnOffset",
+        "anchor": "kExecuteCallerReturn",
+        "x86": "0x0110ec66",
+        "arm": "0x010bf7fc",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10bf7fc: b #0x10bf240",
+          "0x10bf800: ldrb w8, [x19, #0x3e]",
+          "0x10bf804: cbz w8, #0x10bf814",
+          "0x10bf808: mov x0, x19"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kMovementComponentVtableOffset",
+        "anchor": "kMovementComponentVtable",
+        "x86": "0x01b1d7d8",
+        "arm": "0x01a55a18",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kMovementScaleOffset",
+        "anchor": "kMovementScale",
+        "x86": "0x01108990",
+        "arm": "0x010b9300",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10b9300: stp x29, x30, [sp, #-0x40]!",
+          "0x10b9304: stp x24, x23, [sp, #0x10]",
+          "0x10b9308: stp x22, x21, [sp, #0x20]",
+          "0x10b930c: stp x20, x19, [sp, #0x30]"
+        ],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kPeriodicAttackModifierActionDataVtableOffset",
+        "anchor": "kPeriodicAttackModifierActionDataVtable",
+        "x86": "0x01b09758",
+        "arm": "0x01a41998",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kPeriodicAttackModifierRuntimeVtableOffset",
+        "anchor": "kPeriodicAttackModifierRuntimeVtable",
+        "x86": "0x01b1aa68",
+        "arm": "0x01a52ca8",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kPrimaryAttackReturnOffset",
+        "anchor": "kPrimaryAttackReturn",
+        "x86": "0x0110ef91",
+        "arm": "0x010bf944",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": true,
+        "insn": [
+          "0x10bf944: ldrb w8, [x21, #0x3df]",
+          "0x10bf948: cbz w8, #0x10bf9c4",
+          "0x10bf94c: mov w23, w0",
+          "0x10bf950: mov x0, x19"
+        ],
+        "ours": null,
+        "our_confidence": "MISSING"
+      },
+      {
+        "name": "kProjectileVtableOffset",
+        "anchor": "kProjectileVtable",
+        "x86": "0x01b18108",
+        "arm": "0x01a50348",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kThresholdRelocationActionDataVtableOffset",
+        "anchor": "kThresholdRelocationActionDataVtable",
+        "x86": "0x01b09b60",
+        "arm": "0x01a41da0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kThresholdRelocationRuntimeVtableOffset",
+        "anchor": "kThresholdRelocationRuntimeVtable",
+        "x86": "0x01b1ad80",
+        "arm": "0x01a52fc0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      },
+      {
+        "name": "kWarpCharacterDataVtableOffset",
+        "anchor": "kWarpCharacterDataVtable",
+        "x86": "0x01b0ff70",
+        "arm": "0x01a481b0",
+        "table_kind": "offset",
+        "table_ok": true,
+        "mapped": true,
+        "aligned": true,
+        "executable": false,
+        "insn": [],
+        "ours": null,
+        "our_confidence": "AMBIGUOUS"
+      }
+    ],
+    "no_anchor": []
+  }
+}

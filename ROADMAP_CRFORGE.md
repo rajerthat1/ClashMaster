@@ -1,29 +1,39 @@
-# crforge — ultrafast simulator / CI oracle (reference only)
+# crforge — ultrafast simulator / CI oracle / bulk backend
 
-Status: **optional, off the critical path**, revised 2026-11-13
-Role: deterministic ultrafast simulator, differential-test oracle, and CI
-reference. **Not a trainer.**
-Primary plan: [`ROADMAP.md`](ROADMAP.md) — Null's Royale 16.635.1 ladder
-(A51 probe engine + FirstLight V4 General). The cr-native 15.535.29 x86 runtime
-is a proxy lab, not the deployment path.
+Status: **optional accelerator, off the critical path**, revised 2026-11-14
+Role: deterministic ultrafast simulator, differential-test oracle, CI reference,
+and an optional bulk-training backend. **Not the primary trainer, and never the
+final gate.**
+Primary plan: [`ROADMAP.md`](ROADMAP.md) — Null's Royale 16.635.1 ladder.
+Training substrate, in order: **16.635.1 x86_64 native engine** (primary;
+RoyaleFish probe port + `Clashback` lib), then crforge for bulk throughput, with
+the A51 as the parity/deploy oracle.
 
-**Use it for quick sanity checks, CI, and differential testing. Do not train the
-primary policy here and do not extend `observe-rich` on the critical path.**
+**Use it for quick sanity checks, CI, differential testing and — once a V4
+observation adapter exists — bulk PPO. Promote checkpoints only on native-engine
+results.** `crforge/python/` now ships `VectorBattle(256, 8)` with a zero-copy
+NumPy view, so the earlier "not a trainer" verdict is superseded; the remaining
+cost is the observation/action adapter and its fidelity.
 
 ---
 
 ## 0. What this is
 
-crforge is a Java reimplementation of the 16.635.1 client / 16.635.8 data rules.
-It runs without Android, KVM, a game client, or a GPU, which makes it valuable as:
+crforge is a Java reimplementation of the 16.635.1 client / 16.635.8 data rules,
+held tick-for-tick to recorded battles (author conformance set ~43.8k battles,
+127k steps/s on one thread). It runs without Android, KVM, a game client, or a
+GPU, which makes it valuable as:
 
 1. a **deterministic CI oracle** for the same `BattleEnvV1` contract;
 2. an **ultrafast simulator** for quick policy/rule sanity checks;
 3. a **second implementation** for differential testing (lane flips, side swaps,
-   entity identity).
+   entity identity);
+4. a **bulk-training backend** — highest raw throughput of any option, at the
+   cost of a V4→crforge observation adapter and a reimplementation gap.
 
-It is **not** the primary trainer. The 16.635.1 probe/A51 is the deployment and
-training engine; crforge's remaining cost is open-ended `observe-rich` fidelity.
+It is **not** the primary trainer and **not** an evidence source: a policy that
+wins inside a simulator has found a simulator, not the game. The 16.635.1 native
+engine (A51 or x86_64) is the gate.
 
 ---
 
@@ -34,11 +44,9 @@ training engine; crforge's remaining cost is open-ended `observe-rich` fidelity.
 | CI needs a deterministic no-Android test | Use crforge |
 | Quick check of a policy/rule change | Use crforge |
 | Differential test vs the real engine | Use crforge |
-| Bulk PPO / self-play training | **Use the 16.635.1 probe/A51, not crforge** |
-| `observe-rich` extension | Deferred unless a concrete parity need appears |
-
-The single plan in `ROADMAP.md` is the authority. This document is a technical
-reference for the simulator.
+| Bulk PPO / self-play throughput | crforge `VectorBattle`, after a V4 adapter |
+| **Promotion / eval gates** | **Native 16.635.1 engine (x86_64 or A51), never crforge** |
+| `observe-rich` extension | Only once the adapter work starts |
 
 ---
 

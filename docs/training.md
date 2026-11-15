@@ -130,3 +130,102 @@ bash native_runner/training/v4/launch_ppo_multinode_training.sh runs/ppo-smoke r
 Inspect match completion, rejected actions, optimizer metrics, and output checkpoints. Configure longer runs through the launcher arguments and PPO settings in `.env`; see `train_ppo_self_play_cluster --help` for algorithm options. Metrics default to local offline W&B. Resume a full training run with `CR_PPO_RESUME_CHECKPOINT`.
 
 Run the launchers inside your allocated Slurm job. Check engine readiness and training outputs using the [checks guide](validation.md).
+
+### 7.1 USB A51 engine node (no Slurm / KVM / AVD)
+
+A physically attached 16.635.1 A51 can replace an emulator node. Launch the
+cluster with visible windows so every engine stays out of Android's
+`background` cpuset (CPUs 0–1 only; this is a ~2–3x throughput cap —
+`docs/native/16.635.1/FINDINGS.md` §3.30), then attest it and start the local
+worker service:
+
+```sh
+./launch_cluster_a51.sh --engines 4          # big cores 4-7, split/freeform windows
+./launch_ppo_a51.sh --skip-launch --engines 4 --output-dir runs/a51-node0
+```
+
+`launch_ppo_a51.sh` writes `runs/a51-node0/engine-node-ready.json` and starts
+`remote_ppo_worker_server` on `127.0.0.1:29900`. Feed that manifest to
+`build_ppo_multinode_topology` exactly like an emulator node. The manifest
+records eight resident slots per engine and the shared attestation digest.
+
+The A51 host has no GPU, so the trainer still runs on the GPU host. In remote
+mode the trainer opens a single connection to `remote_worker_port` and the
+tensorizers stay on this node, so **only port 29900 needs to be reachable** —
+the engine ports never leave loopback. With the A51 behind NAT, reverse-tunnel
+it from this node:
+
+```sh
+ssh -N -R 29900:127.0.0.1:29900 <gpu-host>
+```
+
+The manifest records `remote_worker_host: 127.0.0.1`, so keep
+`--worker-host 127.0.0.1` and the tunnel is transparent;
+`tcp_endpoint_proxy.py` is the fallback for exposing the engine ports directly.
+
+On the GPU host, give the trainer one worker CPU for each engine plus at least
+one control CPU per rank. Four engines on a 6 vCPU instance:
+
+```sh
+python -m native_runner.training.v4.build_ppo_multinode_topology \
+  --node-ready engine-node-ready.json --output runs/topology.json \
+  --trainer-job-id 1 --trainer-host "$(hostname -s)" --gpus 1 \
+  --worker-cpus 0,1,2,3 --control-cpus 4
+```
+
+The collector is CUDA-graph-only; there is no CPU trainer path. One A6000-class
+GPU is enough: 12.7M parameters need under 2 GB, and `--gpus N` also splits the
+engines across DDP ranks, which buys nothing while a single A51 produces the
+matches.
+
+### 7.2 Preferred training substrate — 16.635.1 on x86_64
+
+The A51 path above is the **parity oracle and deployment rig**. For training
+scale, run the same client build (`160635001`) on x86_64:
+
+- engine: `.resource/Clashback/game/engine/libg.so`, sha `c4721bd9…`
+- probe port: `.resource/RoyaleFish/patches/probe_x86_64_16635.diff`
+- catalogs/framework: the pinned 16.635.1 release
+  (`native_runner/data/competitive-16.635/`, descriptor
+  `native_runner/releases/16.635.1.json`) — see
+  `docs/native/COMPETITIVE_RELEASES.md`
+- baselines: `B-general-v275.pt`, `A-hog26-v738.pt`
+
+Do **not** apply `RoyaleFish/patches/native_runner_16635.diff` wholesale: its
+base is a different 15.535 Python tree and it gets 16.635 data through by
+disabling SHA checks. The catalogs are now a verified selectable release, so the
+16.635 checkpoints load through the normal fail-closed loader; the only schema
+additions needed were the 16.x runtime profile and the additive config fields.
+
+
+Before porting, capture a fixed-seed parity corpus on the A51
+(`tools/native_analysis/scripted_xbow_match.py --seed`, plus one
+`resident_batch_throughput.py` run) and require the x86 engine to reproduce it.
+Promote checkpoints only on native-engine results; simulator (crforge) wins are
+not evidence.
+
+### 7.3 Tensorization identity travels with the engine spec
+
+The remote worker owns the tensorizers (`BattleEnvV1` + both actor views), so
+everything that decides tensor width and entity resolution has to reach it in
+`AsyncResidentEngineSpecV4`, not through trainer process state:
+
+- `competitive_release` — `None` is the pinned 15.535 block; `"16.635.1"` selects
+  `native_runner/releases/16.635.1.json`. The worker binds that release around
+  engine construction and reset because `BattleEnvV1` re-verifies its semantic
+  subset against the *active* release's form evidence.
+- `model_config` — the checkpoint's `ModelConfigV4` (the 16.x schema adds five
+  pending-execution runtime columns, so it is 21 not 16).
+
+`collect_async_cluster_wave_v4` fills both from the actor model and refuses an
+anchor/history model with a different release or config: one engine tensorizes
+every actor row, so a mixed-release run cannot be assembled. The trainer builds
+the learner and every frozen model from its own checkpoint contract
+(`resolve_checkpoint_release` + `config_from_contract`) and records the release
+in the run config.
+
+`tools/native_analysis/crx_engine_host.py` must preload `libz.so.1` with
+`RTLD_GLOBAL`: crx resolves probe imports through `dlsym(RTLD_DEFAULT)` and
+substitutes a stub that returns 0, which silently turns every compressed batch
+entry into zero bytes. The host now refuses to attach the probe when
+`compress2`/`compressBound` are unresolved (`FINDINGS.md` §3.37).
