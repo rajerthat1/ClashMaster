@@ -158,3 +158,8 @@ Use `--games` for the match count, `--match-config` for decks and levels, and `-
 | [Compatibility data](native_runner/data/competitive/README.md) | Card support, model catalogs, and version maintenance |
 | [Checks](docs/validation.md) | Environment checks, tests, and runtime result checks |
 
+## License
+
+ClashMaster is released under the [MIT License](LICENSE). It builds on FirstLight CR,
+which is Apache-2.0; the upstream copyright notice and attribution are preserved in
+this repository's history.
