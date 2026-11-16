@@ -281,6 +281,24 @@ class RolloutSummary:
         }
 
 
+def _rollout_float(value: object, *, label: str) -> Tensor:
+    """A finite float32 actor-row vector that autograd can save.
+
+    The producer samples under ``inference_mode``; ``detach``/``reshape`` keep
+    that tensor kind, and a PPO backward then refuses it.  Cloning outside
+    inference mode is what ``TensorRecordV4.to_storage`` does for the same
+    reason.
+    """
+
+    tensor = torch.as_tensor(value, dtype=torch.float32).detach().reshape(-1)
+    if torch.is_inference(tensor):
+        with torch.inference_mode(False):
+            tensor = tensor.clone()
+    if not torch.isfinite(tensor).all():
+        raise ValueError(f"rollout {label} must be finite")
+    return tensor
+
+
 class CrforgeRolloutStore:
     """Accumulate one decision window per :meth:`append`; finalize to PPO data."""
 
@@ -356,12 +374,10 @@ class CrforgeRolloutStore:
         reward = np.asarray(rewards, dtype=np.float32)
         if reward.shape != (self.lanes, self.seats):
             raise ValueError("rewards must be (lanes, seats)")
-        log_prob = torch.as_tensor(log_prob, dtype=torch.float32).detach().reshape(-1)
-        value = torch.as_tensor(value, dtype=torch.float32).detach().reshape(-1)
+        log_prob = _rollout_float(log_prob, label="log-probability")
+        value = _rollout_float(value, label="value")
         if log_prob.numel() != self.rows or value.numel() != self.rows:
             raise ValueError("log-probability and value need one entry per actor row")
-        if not (torch.isfinite(log_prob).all() and torch.isfinite(value).all()):
-            raise ValueError("rollout log-probability and value must be finite")
         episode_start_rows = self._row_mask(episode_start, self.rows, label="episode_start")
         terminated_rows = self._row_mask(terminated, self.rows, label="terminated")
         truncated_rows = self._row_mask(truncated, self.rows, label="truncated")
@@ -466,6 +482,7 @@ def rollout_statistics(rollout: StoredRolloutV4, *, gamma: float, gae_lambda: fl
         "returns": moments(returns),
         "reward_zero_sum_max_deviation": zero_sum,
         "episode_starts": int(rollout.episode_start.sum()),
+        "mid_rollout_episode_starts": int(rollout.episode_start[1:].sum()) if rollout.time_steps > 1 else 0,
         "terminated": int(rollout.terminated.sum()),
         "truncated": int(rollout.truncated.sum()),
         "valid_rows": int(rollout.valid_mask.sum()),

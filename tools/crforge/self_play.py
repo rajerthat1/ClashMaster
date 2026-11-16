@@ -37,6 +37,14 @@ The reward is ``BattleEnvV1._rewards`` rebuilt from the facts layer
 shaping over crowns and tower damage.  A time-limit cut stores a zero shaping
 term because the vector has already autoreset the lane (see that module).
 
+``--ppo-update`` closes the loop: each finalized segment runs one
+``distributed_ppo_update_v4`` over exactly the stored record (the same reward,
+GAE and validation the native path uses).  A lane that autoreset inside the
+segment is replayed as two contiguous episode segments, so the recurrence never
+carries the dead episode's state into the new one.  The store binds a hash of the
+sampling weights, so an update between segments changes the next segment's
+behaviour identity instead of silently reusing the checkpoint's.
+
 ``--force-second-micro`` is a **timing probe, not a rollout**: the sampled
 policy never emits two micro-actions, so this mode appends a different legal
 play from the open candidates at the sampled play's own delay bin.  The
@@ -52,7 +60,9 @@ the stored sampled action would no longer be the action the engine ran.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import statistics
 import sys
 import time
@@ -79,8 +89,10 @@ from crforge_bridge.vector_tensorize import VectorTensorizer
 from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
 from native_runner.cr_native_env import FIRST_PLAYABLE_TICK
 from native_runner.timeline import load_game_mode_timeline
+from native_runner.training.v4.distributed_ppo import distributed_ppo_update_v4
 from native_runner.training.v4.factory import deck_roles_from_form_availability, production_semantic_bundle
 from native_runner.training.v4.policy_session import load_policy_v4
+from native_runner.training.v4.ppo import PPOConfigV4
 from native_runner.training.v4.tensorizer import UniversalObservationTensorizerV4
 from native_runner.training.v4.tensors import (
     GATE_ACT,
@@ -260,6 +272,94 @@ def _vector(count: int, *, max_ticks: int) -> Any:
     return vector
 
 
+def _policy_state_id(model: torch.nn.Module, checkpoint_id: str) -> str:
+    """Identity of the behaviour weights, not just the file they came from.
+
+    A crforge gate run may update between segments; the stored rollout must say
+    which weights sampled it, or the update could silently replay old behaviour
+    under new parameters.  Parameter and buffer bytes are cheap to hash at a
+    segment boundary.
+    """
+
+    digest = hashlib.sha256(checkpoint_id.encode("utf-8"))
+    for name, tensor in sorted(model.named_parameters()):
+        digest.update(name.encode("utf-8"))
+        digest.update(tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes())
+    for name, tensor in sorted(model.named_buffers()):
+        digest.update(name.encode("utf-8"))
+        digest.update(tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes())
+    return digest.hexdigest()[:32]
+
+
+def _run_segment_update(
+    model: torch.nn.Module,
+    rollout: Any,
+    *,
+    args: argparse.Namespace,
+    device: torch.device,
+    expected_policy_state_id: str,
+    gamma: float,
+) -> dict[str, Any]:
+    """One PPO update over a finalized segment, with the C4 update gate.
+
+    The optimizer is created per call: this is a correctness gate over the
+    stored record, not the training loop, so AdamW momentum does not span the
+    segment boundary.  A real crforge trainer keeps one optimizer.
+    """
+
+    rows = int(rollout.batch_size)
+    minibatch = int(args.ppo_lane_minibatch) or rows
+    minibatch = min(minibatch, rows)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.ppo_learning_rate))
+    config = PPOConfigV4(
+        gamma=gamma,
+        gae_lambda=float(args.gae_lambda),
+        clip_range=float(args.ppo_clip_range),
+        value_clip_range=float(args.ppo_clip_range),
+        value_coefficient=0.5,
+        entropy_coefficient=0.0,
+        max_grad_norm=1.0,
+    )
+    started = time.perf_counter()
+    metrics = distributed_ppo_update_v4(
+        model,
+        optimizer,
+        rollout,
+        epochs=int(args.ppo_epochs),
+        lane_minibatch_size=minibatch,
+        sequence_chunk_steps=int(args.ppo_sequence_chunk),
+        config=config,
+        expected_policy_state_id=expected_policy_state_id,
+        autocast_dtype=None,
+        validate=not args.no_validate,
+    )
+    wall = time.perf_counter() - started
+    finite = bool(metrics) and all(
+        math.isfinite(float(value)) for row in metrics for value in row.values() if isinstance(value, (int, float))
+    )
+    valid = sum(float(row.get("valid_count", 0.0)) for row in metrics)
+    return {
+        "segments_updated": 1,
+        "epochs": int(args.ppo_epochs),
+        "lane_minibatch_size": minibatch,
+        "sequence_chunk_steps": int(args.ppo_sequence_chunk),
+        "learning_rate": float(args.ppo_learning_rate),
+        "clip_range": float(args.ppo_clip_range),
+        "gamma": float(gamma),
+        "gae_lambda": float(args.gae_lambda),
+        "device": str(device),
+        "time_steps": int(rollout.time_steps),
+        "batch_size": rows,
+        "episode_starts": int(rollout.episode_start.sum()),
+        "mid_rollout_episode_starts": int(rollout.episode_start[1:].sum()) if rollout.time_steps > 1 else 0,
+        "wall_s": wall,
+        "valid_count": valid,
+        "finite": finite,
+        "metrics": metrics,
+        "pass": finite and valid > 0.0,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=8)
@@ -304,6 +404,24 @@ def main(argv: list[str] | None = None) -> int:
             "or dropped; 'alternate' does both; refused with rollout storage"
         ),
     )
+    parser.add_argument(
+        "--ppo-update",
+        action="store_true",
+        help=(
+            "run one PPO update on each finalized segment's stored rollout; a lane that "
+            "autoreset mid-segment exercises the episode-boundary replay"
+        ),
+    )
+    parser.add_argument("--ppo-epochs", type=int, default=1, help="PPO epochs per segment update")
+    parser.add_argument(
+        "--ppo-lane-minibatch",
+        type=int,
+        default=0,
+        help="lanes per PPO minibatch (0 = every actor row in one minibatch)",
+    )
+    parser.add_argument("--ppo-sequence-chunk", type=int, default=32, help="TBPTT chunk length in decisions")
+    parser.add_argument("--ppo-clip-range", type=float, default=0.1, help="PPO policy/value clip range")
+    parser.add_argument("--ppo-learning-rate", type=float, default=1e-4, help="AdamW learning rate of the gate update")
     parser.add_argument("--output", type=Path, default=Path("runs/crforge-c4/self-play.json"))
     args = parser.parse_args(argv)
 
@@ -314,6 +432,16 @@ def main(argv: list[str] | None = None) -> int:
             "--force-second-micro replaces the sampled action, so it cannot be stored as a "
             "policy rollout; pass --no-rollout"
         )
+    if args.ppo_update and args.no_rollout:
+        raise SystemExit("--ppo-update needs the stored rollout; drop --no-rollout")
+    if args.ppo_update and (
+        args.ppo_epochs < 1
+        or args.ppo_sequence_chunk < 1
+        or args.ppo_lane_minibatch < 0
+        or args.ppo_learning_rate <= 0.0
+        or args.ppo_clip_range <= 0.0
+    ):
+        raise SystemExit("--ppo-update settings must be positive (and the lane minibatch non-negative)")
     reward_config = CrforgeRewardConfig(shaping_beta=float(args.shaping_beta))
     seats = tuple(dict.fromkeys(int(seat) for seat in args.seats))
     if not seats:
@@ -423,14 +551,16 @@ def main(argv: list[str] | None = None) -> int:
             samples: dict[str, list[float]] = {name: [] for name in timing}
             illegal_peak = 0
             rollout_store = None
+            segment_policy_state_id = None
             if rollout_enabled:
+                segment_policy_state_id = _policy_state_id(model, str(policy.checkpoint_id))
                 rollout_store = CrforgeRolloutStore(
                     lanes=args.count,
                     seats=len(seats),
                     initial_state=RecurrentPolicyStateV4(
                         hidden=state.hidden.detach().clone(), cell=state.cell.detach().clone()
                     ),
-                    policy_state_id=str(policy.checkpoint_id),
+                    policy_state_id=segment_policy_state_id,
                     gate_temperature=float(model.ppo_gate_temperature),
                     action_temperature=float(model.ppo_action_temperature),
                     continue_temperature=float(model.ppo_continue_temperature),
@@ -606,16 +736,33 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 segment_rollout["summary"] = rollout_store.summary().as_dict()
                 segment_rollout["storage_mib"] = round(rollout_store.storage_bytes() / 2**20, 3)
+                if args.ppo_update:
+                    segment_rollout["update"] = _run_segment_update(
+                        model,
+                        rollout,
+                        args=args,
+                        device=device,
+                        expected_policy_state_id=str(segment_policy_state_id),
+                        gamma=reward_config.shaping_gamma,
+                    )
 
             wall = time.perf_counter() - segment_started
+            update = None if segment_rollout is None else segment_rollout.get("update")
+            update_wall = 0.0 if update is None else float(update["wall_s"])
+            collection_wall = max(wall - update_wall, 0.0)
             for name, values in samples.items():
                 timing[name].extend(values)
             entry = {
                 "segment": segment,
                 "wall_s": wall,
+                "update_wall_s": update_wall,
+                "collection_wall_s": collection_wall,
                 "decisions": counts["decisions"],
                 "lane_decisions": counts["lane_decisions"],
                 "lane_decisions_per_s": counts["lane_decisions"] / wall if wall else 0.0,
+                "collection_lane_decisions_per_s": (
+                    counts["lane_decisions"] / collection_wall if collection_wall else 0.0
+                ),
                 "matches_per_s": (counts["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall if wall else 0.0),
                 "eligible_lane_decisions": counts["eligible_lane_decisions"],
                 "act_lane_decisions": counts["act_lane_decisions"],
@@ -631,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
                 "resets": counts["resets"],
                 "illegal_peak": illegal_peak,
                 "rollout": segment_rollout,
+                "update": update,
                 "ms": {name: (statistics.median(values) if values else 0.0) for name, values in samples.items()},
             }
             segments.append(entry)
@@ -646,6 +794,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         fault_delta = {key: value for key, value in fault_delta.items() if value}
         wall_total = sum(item["wall_s"] for item in segments)
+        collection_wall_total = sum(item["collection_wall_s"] for item in segments)
         eligible_total = totals["eligible_lane_decisions"]
         act_rate = totals["act_lane_decisions"] / eligible_total if eligible_total else 0.0
         rejected = totals["illegal_peak"] + sum(fault_delta.values())
@@ -656,12 +805,33 @@ def main(argv: list[str] | None = None) -> int:
             "time_steps": sum(int(item["time_steps"]) for item in rollout_segments),
             "rows_per_decision": len(seats) * args.count,
             "episode_starts": sum(int(item["episode_starts"]) for item in rollout_segments),
+            "mid_rollout_episode_starts": sum(int(item["mid_rollout_episode_starts"]) for item in rollout_segments),
             "terminated": sum(int(item["terminated"]) for item in rollout_segments),
             "truncated": sum(int(item["truncated"]) for item in rollout_segments),
             "storage_mib": round(sum(float(item["storage_mib"]) for item in rollout_segments), 3),
             "reward_sum": sum(float(item["summary"]["reward_sum"]) for item in rollout_segments),
             "reward_nonzero_rows": sum(int(item["summary"]["reward_nonzero_rows"]) for item in rollout_segments),
             "finite": rollout_finite,
+        }
+        update_segments = [item["update"] for item in segments if item["update"] is not None]
+        update_totals = {
+            "segments_updated": len(update_segments),
+            "time_steps": sum(int(item["time_steps"]) for item in update_segments),
+            "valid_count": sum(float(item["valid_count"]) for item in update_segments),
+            "wall_s": sum(float(item["wall_s"]) for item in update_segments),
+            "finite": all(bool(item["finite"]) for item in update_segments) if update_segments else True,
+            "mid_rollout_episode_starts": sum(int(item["mid_rollout_episode_starts"]) for item in update_segments),
+            "multiple_episodes_per_lane": any(int(item["mid_rollout_episode_starts"]) > 0 for item in update_segments),
+        }
+        update_gate = {
+            "enabled": bool(args.ppo_update),
+            **update_totals,
+            "pass": (not args.ppo_update)
+            or (
+                bool(update_segments)
+                and all(bool(item["pass"]) for item in update_segments)
+                and update_totals["finite"]
+            ),
         }
         artifact = {
             "schema": "crforge-self-play.v2",
@@ -701,8 +871,12 @@ def main(argv: list[str] | None = None) -> int:
                 "reward": reward_config.as_dict(),
                 "gae_lambda": float(args.gae_lambda),
                 "policy_state_id": str(policy.checkpoint_id),
+                "behavior_state_ids": sorted(
+                    {str(item["policy_state_id"]) for item in rollout_segments if "policy_state_id" in item}
+                ),
                 "totals": rollout_totals,
                 "segments": rollout_segments,
+                "update": update_gate,
                 "fidelity": {
                     "rows": "lane * seats + seat, the producer's interleave order",
                     "reward": (
@@ -712,10 +886,14 @@ def main(argv: list[str] | None = None) -> int:
                     "potentials": "zero at a terminal; a time-limit cut (max_ticks) carries no shaping term",
                     "reward_result_mismatches": reward_mismatches,
                     "boundary": "each segment finalizes with a bootstrap forward on the post-window observation",
+                    "behavior_identity": (
+                        "the store binds a hash of the sampling weights, not just the checkpoint id; "
+                        "an update between segments changes the next segment's identity"
+                    ),
                     "multiple_episodes_per_lane": (
-                        "a lane may carry more than one episode (autoreset); episode_start and the "
-                        "GAE trace boundary handle it, but distributed_ppo_update_v4 currently "
-                        "requires one episode per lane"
+                        "a lane may carry more than one episode (autoreset); episode_start resets "
+                        "the recurrence at that row and the GAE trace ends at the truncation, and "
+                        "the update replays each contiguous episode segment separately"
                     ),
                 },
             },
@@ -749,18 +927,25 @@ def main(argv: list[str] | None = None) -> int:
                 "act_lane_decisions": totals["act_lane_decisions"],
                 "reward_result_mismatches": reward_mismatches,
                 "rollout_finite": rollout_finite,
+                "update_pass": update_gate["pass"],
                 "pass": (
                     rejected == 0
                     and eligible_total > 0
                     and act_rate > 0.0
                     and reward_mismatches == 0
                     and rollout_finite
+                    and update_gate["pass"]
                 ),
             },
             "totals": {
                 **totals,
                 "wall_s": wall_total,
+                "update_wall_s": sum(item["update_wall_s"] for item in segments),
+                "collection_wall_s": sum(item["collection_wall_s"] for item in segments),
                 "lane_decisions_per_s": totals["lane_decisions"] / wall_total if wall_total else 0.0,
+                "collection_lane_decisions_per_s": (
+                    totals["lane_decisions"] / collection_wall_total if collection_wall_total else 0.0
+                ),
                 "matches_per_s": (
                     totals["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall_total if wall_total else 0.0
                 ),

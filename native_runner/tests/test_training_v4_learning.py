@@ -865,6 +865,68 @@ def test_world_one_chunked_distributed_ppo_updates_value_head() -> None:
     assert not torch.equal(value_parameter.detach(), before)
 
 
+def test_distributed_ppo_replays_a_mid_rollout_episode_start() -> None:
+    """A lane may autoreset inside a stored segment; replay must split there."""
+
+    torch.manual_seed(95)
+    model = _model().eval()
+    time_steps = 4
+    lanes = 2
+    batches = tuple(_batch(batch_size=lanes) for _ in range(time_steps))
+    actions = tuple(_wait_actions(lanes) for _ in range(time_steps))
+    starts = torch.zeros(time_steps, lanes, dtype=torch.bool)
+    starts[0] = True
+    # Lane 0 starts a second episode at step 2; lane 1 keeps its recurrence.
+    starts[2, 0] = True
+    initial_state = model.initial_state(lanes)
+    with torch.no_grad():
+        behavior = evaluate_recurrent_sequence(
+            model,
+            batches,
+            actions,
+            starts,
+            initial_state=initial_state,
+        )
+    rollout = StoredRolloutV4(
+        observations=tuple(batch.to_storage(float_dtype=None) for batch in batches),
+        actions=actions,
+        episode_start=starts,
+        valid_mask=torch.ones(time_steps, lanes, dtype=torch.bool),
+        behavior_log_prob=behavior.log_prob,
+        behavior_value=behavior.value,
+        next_value=torch.zeros(time_steps, lanes),
+        rewards=torch.zeros(time_steps, lanes),
+        terminated=torch.zeros(time_steps, lanes, dtype=torch.bool),
+        truncated=torch.zeros(time_steps, lanes, dtype=torch.bool),
+        initial_state=initial_state,
+        gate_temperature=model.ppo_gate_temperature,
+        action_temperature=model.ppo_action_temperature,
+        continue_temperature=model.ppo_continue_temperature,
+        policy_state_id="mid-rollout-reset",
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    metrics = distributed_ppo_update_v4(
+        model,
+        optimizer,
+        rollout,
+        epochs=1,
+        lane_minibatch_size=lanes,
+        # A chunk longer than the segment before the reset: the update must cut
+        # the chunk at step 2 rather than hand the fused replay a mid-reset.
+        sequence_chunk_steps=3,
+        config=PPOConfigV4(entropy_coefficient=0.0),
+        autocast_dtype=None,
+        expected_policy_state_id="mid-rollout-reset",
+        validate=True,
+    )
+
+    assert len(metrics) == 1
+    assert metrics[0]["valid_count"] == time_steps * lanes
+    assert metrics[0]["approx_kl"] == pytest.approx(0.0, abs=1e-4)
+    assert torch.isfinite(torch.tensor(metrics[0]["total"]))
+
+
 def test_partial_distributed_minibatches_select_only_current_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

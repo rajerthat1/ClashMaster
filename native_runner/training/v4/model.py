@@ -1061,9 +1061,12 @@ class UniversalCardPolicyV4(nn.Module):
         tuple[Tensor, Tensor, Tensor, RecurrentPolicyStateV4]
         | tuple[Tensor, Tensor, Tensor, RecurrentPolicyStateV4, Tensor]
     ):
-        """Evaluate a one-episode sequence with the fused LSTM backend.
+        """Evaluate one contiguous episode slice with the fused LSTM backend.
 
-        PPO waves contain one episode per recurrent lane.  Flattening the
+        The caller must not hand this method a slice with a mid-lane reset: the
+        fused kernel zeroes state only at row 0.  ``distributed_ppo_update_v4``
+        therefore splits a rollout at every episode boundary and carries the
+        non-resetting lanes' state across the split.  Flattening the
         independent action heads over ``T*B`` is exact, while the equivalent
         ``nn.LSTM`` kernel avoids launching one ``LSTMCell`` graph per frame.
         """

@@ -302,6 +302,44 @@ def test_store_finalizes_a_checked_ppo_record() -> None:
     assert store.storage_bytes() > 0  # the action tensors are retained
 
 
+def test_store_escapes_inference_mode_for_the_ppo_update() -> None:
+    """The producer samples under ``inference_mode``; PPO must still backprop.
+
+    ``detach``/``reshape`` alone preserve the inference-tensor kind, and
+    autograd then refuses to save the stored log-probability or value.
+    """
+
+    lanes, seats = 1, 2
+    store = CrforgeRolloutStore(
+        lanes=lanes,
+        seats=seats,
+        initial_state=_state(lanes * seats),
+        policy_state_id="test-inference",
+        gate_temperature=1.0,
+        action_temperature=1.0,
+        continue_temperature=1.0,
+    )
+    with torch.inference_mode():
+        for step in range(2):
+            store.append(
+                observation=_FakeObservation(lanes * seats),
+                actions=_sequence(lanes * seats),
+                log_prob=torch.full((lanes * seats,), -0.5),
+                value=torch.full((lanes * seats,), 0.25),
+                rewards=np.zeros((lanes, seats), dtype=np.float32),
+                episode_start=np.full(lanes, step == 0, dtype=bool),
+                terminated=np.zeros(lanes, dtype=bool),
+                truncated=np.zeros(lanes, dtype=bool),
+            )
+        boundary = torch.zeros(lanes * seats)
+    rollout = store.finalize(boundary_value=boundary)
+    assert not torch.is_inference(rollout.behavior_log_prob)
+    assert not torch.is_inference(rollout.behavior_value)
+    probe = torch.zeros((), requires_grad=True)
+    (rollout.behavior_log_prob.sum() * probe + rollout.next_value.sum() * probe).backward()
+    assert probe.grad is not None
+
+
 def test_store_rejects_rows_that_disagree() -> None:
     store = CrforgeRolloutStore(
         lanes=2,

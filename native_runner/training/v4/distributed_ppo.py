@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Sequence
+from collections.abc import Sequence
 
 import torch
 import torch.distributed as dist
@@ -162,6 +162,41 @@ def _check_temperatures(model: UniversalCardPolicyV4, rollout: StoredRolloutV4) 
             raise ValueError(f"distributed PPO {label} temperature changed")
 
 
+def _episode_segments(episode_start: Tensor) -> list[tuple[int, int]]:
+    """Split the time axis wherever any lane begins a new episode.
+
+    A lane may autoreset mid-rollout (a crforge lane cut at ``max_ticks``, for
+    example).  The fused LSTM replay zeroes a lane's recurrent state only at the
+    first step of the sequence it is given, so a chunk that contained a reset
+    after step 0 would carry the dead episode's state into the new one.  The
+    update therefore replays one contiguous segment at a time; a segment starts
+    exactly on a boundary row, where ``episode_start`` resets the lanes that
+    ended.  Lanes that did not reset keep their carried state across the split.
+    """
+
+    if episode_start.ndim != 2 or episode_start.dtype != torch.bool:
+        raise ValueError("episode_start must be bool [T,B]")
+    time_steps = int(episode_start.shape[0])
+    if time_steps == 0:
+        return []
+    boundaries = torch.nonzero(episode_start[1:].any(dim=1), as_tuple=False).flatten().tolist()
+    starts = [0, *[int(index) + 1 for index in boundaries]]
+    ends = [*starts[1:], time_steps]
+    return list(zip(starts, ends, strict=True))
+
+
+def _episode_chunks(episode_start: Tensor, sequence_chunk_steps: int) -> list[tuple[int, int]]:
+    """TBPTT chunk bounds that never straddle an episode boundary."""
+
+    if sequence_chunk_steps <= 0:
+        raise ValueError("PPO sequence chunks must be positive")
+    chunks: list[tuple[int, int]] = []
+    for segment_start, segment_end in _episode_segments(episode_start):
+        for chunk_start in range(segment_start, segment_end, sequence_chunk_steps):
+            chunks.append((chunk_start, min(segment_end, chunk_start + sequence_chunk_steps)))
+    return chunks
+
+
 def _balanced_lane_permutation(valid_mask: Tensor, *, minibatch_size: int, generator: torch.Generator) -> Tensor:
     """Shuffle lanes while balancing valid-frame work across minibatches."""
 
@@ -209,8 +244,6 @@ def distributed_ppo_update_v4(
     """
 
     rollout.validate()
-    if rollout.time_steps > 1 and torch.any(rollout.episode_start[1:]):
-        raise ValueError("distributed PPO lanes must contain one episode each")
     if rollout.time_steps > 1 and torch.any(rollout.valid_mask[1:] & ~rollout.valid_mask[:-1]):
         raise ValueError("distributed PPO lane validity must be one contiguous prefix")
     if expected_policy_state_id is not None and (rollout.policy_state_id != expected_policy_state_id):
@@ -304,8 +337,7 @@ def distributed_ppo_update_v4(
                     state = selected_initial_state.to(device)
                     selection_seconds += time.perf_counter() - selection_started
 
-                    for time_start in range(0, rollout.time_steps, sequence_chunk_steps):
-                        time_end = min(rollout.time_steps, time_start + sequence_chunk_steps)
+                    for time_start, time_end in _episode_chunks(selected_episode_start, sequence_chunk_steps):
                         chunk_steps = time_end - time_start
                         chunk_valid = selected_valid_mask[time_start:time_end]
                         active_lanes = chunk_valid.any(dim=0).nonzero(as_tuple=False).flatten()
