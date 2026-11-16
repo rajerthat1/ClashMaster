@@ -3225,3 +3225,143 @@ Evidence: `runs/crforge-c3/batched-groups.json`,
 `crforge_bridge/vector_rows.py`,
 `crforge_bridge/tests/test_vector_rows.py`,
 `tools/crforge/batched_groups.py`.
+
+### 3.48 The batched card and relation sections — C3-B continues (2026-11-19)
+
+The next two sections in C3's measured order are `_card_sets` (0.33 CPU
+ms/decision) and `_relations` (0.14). Both are now batched over a whole
+`VectorBattle` from the session-17 facts layer, with the per-lane tensorizer as
+the oracle, in the same shape as §3.47.
+
+#### Card sets
+
+`VectorCardBuilder.build(batch)` fills the actor's eight-row card set and the
+opponent's nine-row set for every lane:
+
+- the actor's deck order, roles and vocabulary come from the tensorizer's own
+  `_actor_card_layout()`, so rows cannot drift from the per-lane path;
+- `runtime_form` is the hand form for a card in hand, `FORM_NORMAL` otherwise.
+  crforge carries no evolution runtime, so a ready evolution outside the hand
+  does not exist in this envelope;
+- `revealed_cards` stays empty: the bridge's rich players are the `empty_player`
+  records and it receives no combat events, so the opponent set is eight zero
+  rows plus the masked unknown-card row carrying
+  `unknown_opponent_card_fraction = 1.0`;
+- the actor's ability runtime is empty for the same reason;
+- the **21-column** 16.635 schema adds the actor's in-flight command:
+  `pending_execution`, the target cell and `ability_pending`. A pending row's
+  point is in the **seat's frame** (`Schema.toSeatX(0, x) = width - x`), so the
+  model cell is `(18000 - pending_x) // 1000 - offset` for x and
+  `pending_y // 1000 - offset` for y, clamped to the 18×32 board. `offset` is the
+  card's footprint parity (`NativeBuildingFootprintV1.model_subcell_offset`:
+  0.5 per even dimension), because an even-sized building's command point is
+  half a tile past the cell center — a 2×2 Tesla at cell (15, 12) is at world
+  (16000, 13000), which a naive floor would read as (16, 13). The test pins both
+  the centered (troop) and offset (Tesla) cases. `pending_ticks_remaining` is
+  written and then zeroed for a checkpoint that declares
+  `neutralize_pending_ticks_remaining` (B-general-v275 does), because a live
+  receipt cannot supply it;
+- a **waiting champion ability** sets `ability_pending` on the champion's card
+  row. crforge keeps ability commands in their own header block, not in the
+  pending-card rows, so `VectorObservationBatch` now carries both seats'
+  `ability_champion` / `ability_unit` / `ability_state` / `ability_cooldown_ms`
+  / `ability_charges` / `ability_command_ticks`; a non-zero tick count is a
+  command that has been given and has not run. The oracle matches it by
+  `ability_id` against the card's static ability set.
+
+This is a real fidelity item, not just a table: the gates before this one built
+`ModelConfigV4()` with its default **16-column** card runtime schema, while
+B-general-v275's contract declares **21**. The new gate reads the checkpoint's
+own `contract.model_config`, so the pending columns are exercised (the 40-step
+run produced up to four pending rows per lane). Only
+`card_runtime_feature_dim` differs between the two profiles, so the group
+section measured in §3.47 is unchanged.
+
+#### Relation edges
+
+`VectorRelationBuilder.build(batch, cards, groups)` reproduces the bridge's
+edge set exactly:
+
+- `entity -> visible target` and the reverse, when both ends have a token;
+- `tower -> visible target` and the reverse — a tower can target an entity or
+  another tower, and a tower target is a token even though towers are not
+  entities;
+- `card -> group` for every retained group whose `(owner, source card)` is one
+  of the actor's cards or the opponent's unknown row.
+
+The bridge's envelope has no attack/projectile/capture/source runtime and no
+causal-group references, so no other edge type can occur. Edges are
+de-duplicated and sorted with one `np.unique` over a packed
+`(lane, source, target, relation)` key that orders exactly like the
+tensorizer's `sorted(edges)`; `VectorRelationSection.lane(n)` slices a lane back
+to the variable-length `(1, count)` record, so a future digest comparison is
+row-for-row, not padded.
+
+#### The oracle and the gate
+
+`reference_observation(batch, lane)` projects the player rows (hand, next card,
+hand-slot and hand-runtime metadata), the fixed tower rows (kind, owner, HP,
+target), the `PendingActionV1` rows and the reference entities from the same
+facts. The stock `_card_sets` / `_towers` / `_relations` then decide the
+section from those rows; `compare_card_section` and
+`compare_relation_section` compare every tensor field.
+
+One oracle bug mattered: the tensorizer caches players by `id(observation)`, and
+per-lane reference views are short-lived, so a recycled id could answer with
+another lane's player row. The comparison clears `_frame_players` per lane; the
+production path clears it once per decision in `tensorize`.
+
+`tools/crforge/batched_cards.py` is the gate. It reads the learner-deck
+`B-general-v275` contract for the 21-column schema, steps 256 real vector lanes,
+compares cards on every step and relations every fourth step, then times both
+paths paired.
+
+`runs/crforge-c3/batched-cards.json` (256 lanes × 40 decisions, 32 lanes
+verified after step 0):
+
+| section | batched ms/lane | oracle ms/lane | speedup |
+| --- | ---: | ---: | ---: |
+| cards | **0.00161** | 0.0718 | **44.5×** |
+| relations | **0.00984** | 0.0522 | **5.30×** |
+
+**Equivalence: pass**, `card_mismatches: []`, `relation_mismatches: []`. The
+frame held up to **14 entities**, **4 pending rows** and **40 relation edges**
+per lane.
+
+Run-to-run spread on this host is real (four full runs measured cards
+0.00122–0.00161 vs 0.0718–0.0835, i.e. 45–68×; relations 0.0098–0.0108 vs
+0.0522–0.0612, i.e. 5.2–5.7×); quote the artifact of record and compare paired
+runs, not absolute values from an hour earlier.
+
+These are section arithmetic, not an end-to-end claim. The card oracle here is
+the 0.072 ms/lane pure row build (the live profile's 0.33 includes contract
+projection around it), and the relation oracle is `_relations` alone with its
+token maps prebuilt. Replacing the live profile's 0.33 + 0.14 shares with
+0.00161 + 0.00984 projects a further **0.46 ms/decision**, before towers,
+candidates, scalars and spatial planes.
+
+#### Tests
+
+`crforge_bridge/tests/test_vector_rows.py` is now 10 tests: the five group tests
+plus a 50-decision 21-column card equivalence (which asserts a pending play was
+actually seen), a 50-decision relation equivalence, the pending-cell rule for
+a centered troop and a 2×2 Tesla (which carries the half-tile footprint
+offset), the waiting ability's `ability_pending` column, and the tracker guard.
+`test_vector_observation.py` adds a champion-slot header projection test. The
+bridge suite is **32 tests**, all passing. Ruff clean.
+
+#### What remains for C3-B
+
+`_candidates` / placement rows (0.30) are next: the facts layer already carries
+the native placement-mask view, but a candidate row also needs the hand-slot
+runtime (`effective_cost`, `form_code`, `footprint_*`, `model_subcell_offset`),
+which the bridge computes in `BattleEnvV1.action_mask` and the current facts
+layer does not yet expose. Then `_towers` (0.145), `_spatial_planes` (0.117),
+`_scalars` and the empty effects/events, and only then a facts-only `tensorize`
+returning one `UniversalSemanticBatchV4` per lane, `batch_digest`-identical to
+the per-lane path.
+
+Evidence: `runs/crforge-c3/batched-cards.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_cards.py`.

@@ -96,9 +96,9 @@ pinned `native_runner/versions/16.635.1.json` release, then verifies the live
 `vector_observation.py` is not part of the wire server: it reads a
 `VectorBattle`'s zero-copy buffers for all 256 lanes and fills a fixed-size
 `VectorObservationBatch` (both seats' headers and cards, six towers, placement
-mask views, derived `age_ms` / `velocity`). It is the input the batched V4 row
-build will consume; the bridge's per-lane `decode_rows` / `player_facts` /
-`entity_rows` are its equivalence oracle.
+mask views, champion ability slots, derived `age_ms` / `velocity`). It is the
+input the batched V4 row build will consume; the bridge's per-lane
+`decode_rows` / `player_facts` / `entity_rows` are its equivalence oracle.
 
 ```bash
 .venv/bin/python tools/crforge/vector_observation_spike.py \
@@ -128,7 +128,30 @@ a singleton). The per-lane tensorizer stays the oracle:
 
 Measured 2026-11-19: **0.0539 ms/lane** vs the 0.2207 per-lane oracle (**4.09x**),
 equivalence pass over 40 decisions (`docs/native/16.635.1/FINDINGS.md` §3.47).
-Section only: cards, candidates, relations, towers, scalars and spatial planes
+
+## Batched card and relation row build (C3-B, next sections)
+
+`VectorCardBuilder` fills the actor's eight-row card set (layout, roles,
+vocabulary and hand form) and the opponent's nine-row set (eight zero rows plus
+the masked unknown-card row) for every lane, including the 16.635 **21-column**
+pending-execution columns. `VectorRelationBuilder` fills target/reverse-target
+and card->group edges; it sorts and de-duplicates them with one packed
+`np.unique`, and `VectorRelationSection.lane(n)` slices a lane back to the
+per-lane `(1, count)` record. `reference_observation` projects the player,
+tower, pending-action and entity rows from the same facts, so the stock
+`_card_sets` / `_towers` / `_relations` remain the oracle.
+
+```bash
+.venv/bin/python tools/crforge/batched_cards.py \
+  --count 256 --steps 40 --timing-samples 8 --timing-repeats 3 --verify-lanes 32 \
+  --output runs/crforge-c3/batched-cards.json
+```
+
+The gate reads the checkpoint's own `contract.model_config` (21 card columns
+for `B-general-v275`), not the default 16-column schema. Measured 2026-11-19:
+cards **0.00161 ms/lane** vs 0.0718 (**44.5x**), relations **0.00984** vs 0.0522
+(**5.30x**), equivalence pass over 40 decisions (`FINDINGS.md` §3.48). Section
+only: candidates, towers, scalars, spatial planes and the empty effects/events
 are still per-lane, and a facts-only `tensorize` must land before the C3 gate.
 
 ## Tests

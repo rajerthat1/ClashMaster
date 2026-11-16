@@ -107,6 +107,31 @@ def test_tower_rows_follow_the_fixed_layout(crforge_runtime: None) -> None:
                 assert int(batch.tower_hp[0, entity_id]) == int(batch.own_tower_hp[0, owner, tower_index])
 
 
+def test_ability_facts_mirror_the_native_header(crforge_runtime: None) -> None:
+    """Both seats' champion slots come straight from the seat header."""
+
+    catalog = Catalog.load()
+    with _vector(count=2) as vector:
+        encoder = VectorObservationEncoder(vector, catalog)
+        batch = encoder.encode()
+        header = vector.schema.header
+        for seat in (0, 1):
+            for slot in range(vector.schema.ability_slots):
+                observation = vector.observations[0, seat]
+                assert int(batch.ability_champion_vocab[0, seat, slot]) == int(
+                    observation[header["ability_champion"][slot]]
+                )
+                assert int(batch.ability_unit[0, seat, slot]) == int(
+                    observation[header["ability_unit"][slot]]
+                )
+                assert int(batch.ability_state[0, seat, slot]) == int(
+                    observation[header["ability_state"][slot]]
+                )
+                assert int(batch.ability_ticks[0, seat, slot]) == int(
+                    observation[header["ability_command_ticks"][slot]]
+                )
+
+
 def test_derived_age_and_velocity_follow_the_frame(crforge_runtime: None) -> None:
     catalog = Catalog.load()
     with _vector(count=2) as vector:

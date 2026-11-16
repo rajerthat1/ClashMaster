@@ -1,11 +1,19 @@
-"""Batched row build, starting with the causal-group section (C3-B).
+"""Batched row build for the C3-B packet: groups, cards and relations.
 
 C3 measured the packet as ~1.0 CPU ms/decision of tensorizer and attributed
-~0.54 of it to ``_groups`` + its children, the largest section.  Session 17
-landed the vectorized facts layer (``vector_observation.py``, 0.032 ms/lane);
-this module is the first row build on top of it: the same groups and children
-the per-lane ``UniversalObservationTensorizerV4._groups`` emits, computed for
-every lane of a ``VectorBattle`` in one pass over fixed-size NumPy arrays.
+~0.54 of it to ``_groups`` + its children, the largest section, then ~0.33 to
+``_card_sets`` and ~0.14 to ``_relations``.  Session 17 landed the vectorized
+facts layer (``vector_observation.py``, 0.032 ms/lane); this module is the row
+build on top of it: the same rows the per-lane
+``UniversalObservationTensorizerV4`` emits, computed for every lane of a
+``VectorBattle`` in one pass over fixed-size NumPy arrays.
+
+Sections here:
+
+* :class:`VectorGroupBuilder` — causal groups and children;
+* :class:`VectorCardBuilder` — the actor's and opponent's card sets, including
+  the 16.635 21-column pending-execution columns;
+* :class:`VectorRelationBuilder` — target/reverse-target and card→group edges.
 
 Scope is deliberately narrow, and the scope is the bridge's no-event envelope
 ``VectorObservationBatch`` carries:
@@ -15,18 +23,19 @@ Scope is deliberately narrow, and the scope is the bridge's no-event envelope
 * the bridge's raw ``entity_kind`` rule: the card spec's kind for a resolved
   card, ``effect`` for a row with no card id, ``unknown`` otherwise.  Towers
   are not entities (they are the separate six-row tower section);
-* no attack/movement/projectile/visibility/evolution runtime, no ability
-  sources and no combat events, exactly as the bridge's minimal rich player
-  envelope supplies them;
+* no attack/movement/projectile/visibility/evolution/ability runtime, no source
+  entities, no captures and no combat events, exactly as the bridge's minimal
+  rich player envelope supplies them;
+* ``revealed_cards`` stays empty (the bridge receives no events), so the
+  opponent card set is the eight zero rows plus the unknown-card row;
 * seat 0 (the facts layer reads ``VectorBattle.observations`` seat 0).
 
-The per-lane tensorizer stays the oracle.  ``reference_entities`` builds the
-``EntityStateV1`` rows the oracle consumes from the same facts, and the gate
-tool compares every group/child tensor against
-``UniversalObservationTensorizerV4._groups`` on those entities.  The oracle
-takes its archetype/child-kind/extent/radius/runtime-form decisions through the
-tensorizer's own helper methods, so a mismatch means this batched table is
-wrong, not that both sides share a shortcut.
+The per-lane tensorizer stays the oracle.  ``reference_observation`` projects
+the ``EntityStateV1``/player/tower/pending rows the oracle consumes from the
+same facts, and each gate compares the whole section against the stock method.
+The oracle resolves archetypes, forms, tokens and edge order through its own
+helpers, so a mismatch means this batched build is wrong, not that both sides
+share a shortcut.
 
 Nothing here validates or freezes a contract, and nothing here may be used to
 replace the validated evaluator/parity path.
@@ -41,11 +50,25 @@ from typing import Any
 import numpy as np
 import torch
 
-from native_runner.arena import WORLD_HEIGHT, WORLD_WIDTH, native_building_footprint
-from native_runner.contracts import CardKind, EntityStateV1, construct_contract
+from native_runner.arena import GRID_HEIGHT, GRID_WIDTH, WORLD_HEIGHT, WORLD_WIDTH, native_building_footprint
+from native_runner.contracts import (
+    ActionKind,
+    ActionV1,
+    CardKind,
+    EntityStateV1,
+    PendingActionV1,
+    TargetKind,
+    construct_contract,
+)
+from native_runner.cr_native_env import LIVE_COMMAND_AGE_TICKS
 from native_runner.training.v4.catalog import UNKNOWN_CARD_VOCAB_ID
-from native_runner.training.v4.config import CHILD_FEATURE_NAMES, GROUP_FEATURE_NAMES
-from native_runner.training.v4.tensors import BattleGroupSetV4
+from native_runner.training.v4.config import (
+    CARD_RUNTIME_FEATURE_NAMES,
+    CARD_RUNTIME_FEATURE_NAMES_V2,
+    CHILD_FEATURE_NAMES,
+    GROUP_FEATURE_NAMES,
+)
+from native_runner.training.v4.tensors import BattleGroupSetV4, CardSetV4, RelationEdgesV4
 
 from .catalog import FORM_HERO
 from .observe import _nearest_card_id
@@ -99,6 +122,23 @@ _C_X = CHILD_FEATURE_NAMES.index("x_over_board_width")
 _C_Y = CHILD_FEATURE_NAMES.index("y_over_board_height")
 _C_VELOCITY_X = CHILD_FEATURE_NAMES.index("velocity_x_over_10")
 _C_VELOCITY_Y = CHILD_FEATURE_NAMES.index("velocity_y_over_10")
+
+# Card runtime columns (the 16-column schema; the 16.635 21-column schema adds
+# the five pending-execution columns at the end).
+_CD_IN_HAND = CARD_RUNTIME_FEATURE_NAMES.index("in_hand")
+_CD_NEXT = CARD_RUNTIME_FEATURE_NAMES.index("is_next_card")
+_CD_UNKNOWN_FRACTION = CARD_RUNTIME_FEATURE_NAMES.index("unknown_opponent_card_fraction")
+_CD_PENDING = CARD_RUNTIME_FEATURE_NAMES_V2.index("pending_execution")
+_CD_PENDING_TICKS = CARD_RUNTIME_FEATURE_NAMES_V2.index("pending_ticks_remaining_over_20")
+_CD_PENDING_X = CARD_RUNTIME_FEATURE_NAMES_V2.index("pending_target_x_over_board_width")
+_CD_PENDING_Y = CARD_RUNTIME_FEATURE_NAMES_V2.index("pending_target_y_over_board_height")
+_CD_PENDING_ABILITY = CARD_RUNTIME_FEATURE_NAMES_V2.index("ability_pending")
+
+# Relation vocabularies (``native_runner/training/v4/tensorizer.py``).
+REL_TARGETS = 1
+REL_TARGETED_BY = 2
+REL_CARD_REPRESENTS_GROUP = 7
+RELATION_TYPES = 14
 
 
 def _kind_rule(card_id: int, card_specs: dict[int, Any]) -> str:
@@ -636,6 +676,735 @@ class VectorGroupBuilder:
         )
 
 
+class VectorCardBuilder:
+    """Fill the own and opponent card sets for a whole vector batch in one pass.
+
+    The bridge envelope this reproduces is deliberately narrow:
+
+    * the actor's deck layout, roles and vocabulary come from the tensorizer's
+      own cached layout, so the rows cannot drift from the per-lane path;
+    * a card's runtime form is its hand form when it is in hand and the normal
+      form otherwise — crforge carries no evolution runtime, so the tensorizer
+      never sees a ready evolution outside the hand;
+    * ``revealed_cards`` stays empty: the bridge receives no combat events, so
+      the opponent set is eight zero rows plus the unknown-card row with the
+      ``unknown_opponent_card_fraction`` term, exactly as the per-lane builder
+      emits it from an empty reveal set;
+    * the actor's own ability runtime is empty for the same reason.
+
+    The 16.635 21-column schema adds the actor's in-flight command: a pending
+    play sets ``pending_execution``, the target cell and (unless the checkpoint
+    neutralises it) the remaining ticks.  The pending row's point is in the
+    seat's frame, so the model cell is recovered with the same mirror the
+    native decoder applies.
+    """
+
+    def __init__(self, tensorizer: Any) -> None:
+        self.tensorizer = tensorizer
+        self.config = tensorizer.config
+        if int(tensorizer.actor_owner) != 0:
+            raise ValueError("the vector facts layer currently carries seat 0 only")
+        if tensorizer.tracker is not None:
+            raise ValueError(
+                "the batched card build needs the bridge's no-event envelope; a tracker would invent reveals"
+            )
+        own_order, card_to_row, own_roles, own_vocab = tensorizer._actor_card_layout()
+        self.own_order = tuple(int(card_id) for card_id in own_order)
+        self.card_to_row = dict(card_to_row)
+        self.own_roles = [tuple(bool(bit) for bit in role) for role in own_roles]
+        self.own_vocab = tuple(int(value) for value in own_vocab)
+        self.own_count = int(self.config.max_own_cards)
+        self.opponent_count = int(self.config.max_opponent_cards)
+        self.feature_dim = int(self.config.card_runtime_feature_dim)
+        self._subcell_offsets = self._card_subcell_offsets(tensorizer)
+        if self.own_count != len(self.own_order):
+            raise ValueError(f"actor deck layout has {len(self.own_order)} rows, expected {self.own_count}")
+        if self.feature_dim not in {len(CARD_RUNTIME_FEATURE_NAMES), len(CARD_RUNTIME_FEATURE_NAMES_V2)}:
+            raise ValueError(f"card runtime schema of {self.feature_dim} columns is not a V4 profile")
+        if self.opponent_count != 9:
+            raise ValueError("the opponent card set is eight cards plus the unknown row")
+
+    @staticmethod
+    def _card_subcell_offsets(tensorizer: Any) -> dict[int, tuple[float, float]]:
+        """Policy-cell offset from the cell center, per deploying card.
+
+        ``NativeBuildingFootprintV1.model_subcell_offset`` puts an even-sized
+        footprint half a tile past the cell center, so the native command point
+        for a 2×2 building is one cell over from the cell it names.  Recovering
+        the model cell from a pending point therefore needs the same per-card
+        offset; non-buildings are centered and use ``(0, 0)``.
+        """
+
+        offsets: dict[int, tuple[float, float]] = {}
+        for card_id, spec in tensorizer.card_specs.items():
+            footprint = native_building_footprint(spec)
+            if footprint is not None:
+                offsets[int(card_id)] = (
+                    0.5 if footprint.width_tiles % 2 == 0 else 0.0,
+                    0.5 if footprint.height_tiles % 2 == 0 else 0.0,
+                )
+        return offsets
+
+    def build(self, batch: VectorObservationBatch) -> VectorCardSection:
+        lanes = int(batch.count)
+        seat = 0
+        hand_ids = batch.hand_card_id[:, seat, :]
+        hand_present = batch.hand_vocab[:, seat, :] >= 0
+        next_card = batch.next_card_id[:, seat]
+
+        own_ids = np.asarray(self.own_order, dtype=np.int32)
+        own_vocab = np.asarray(self.own_vocab, dtype=np.int64)
+        matches = (hand_ids[:, None, :] == own_ids[None, :, None]) & hand_present[:, None, :]
+        in_hand = matches.any(axis=2)
+        slot = matches.argmax(axis=2)
+        hand_form = np.take_along_axis(batch.hand_form[:, seat, :], slot, axis=1)
+        runtime_form = np.where(in_hand, hand_form, 0).astype(np.int64)
+
+        features = np.zeros((lanes, self.own_count, self.feature_dim), dtype=np.float32)
+        features[..., _CD_IN_HAND] = in_hand.astype(np.float32)
+        features[..., _CD_NEXT] = (next_card[:, None] == own_ids[None, :]).astype(np.float32)
+        if self.feature_dim == len(CARD_RUNTIME_FEATURE_NAMES_V2):
+            self._pending_features(batch, features, own_ids, seat=seat)
+
+        own = CardSetV4(
+            card_vocab_id=torch.from_numpy(np.broadcast_to(own_vocab[None, :], (lanes, self.own_count)).copy()),
+            runtime_form=torch.from_numpy(runtime_form),
+            role_bits=torch.from_numpy(
+                np.broadcast_to(np.asarray(self.own_roles, dtype=bool)[None, :, :], (lanes, self.own_count, 2)).copy()
+            ),
+            runtime_features=torch.from_numpy(features),
+            mask=torch.ones((lanes, self.own_count), dtype=torch.bool),
+        )
+
+        # Eight zero rows (not revealed) followed by the unknown-card row.  The
+        # per-lane builder sorts the reveal set by vocabulary id; with no
+        # reveal set every slot is a zero placeholder and the unknown row is
+        # the only masked-in row.
+        opponent_vocab = np.zeros((lanes, self.opponent_count), dtype=np.int64)
+        opponent_vocab[:, -1] = UNKNOWN_CARD_VOCAB_ID
+        opponent_mask = np.zeros((lanes, self.opponent_count), dtype=bool)
+        opponent_mask[:, -1] = True
+        opponent_features = np.zeros((lanes, self.opponent_count, self.feature_dim), dtype=np.float32)
+        opponent_features[:, -1, _CD_UNKNOWN_FRACTION] = 1.0
+        opponent = CardSetV4(
+            card_vocab_id=torch.from_numpy(opponent_vocab),
+            runtime_form=torch.zeros((lanes, self.opponent_count), dtype=torch.long),
+            role_bits=torch.zeros((lanes, self.opponent_count, 2), dtype=torch.bool),
+            runtime_features=torch.from_numpy(opponent_features),
+            mask=torch.from_numpy(opponent_mask),
+        )
+        return VectorCardSection(own=own, opponent=opponent, card_to_row=dict(self.card_to_row))
+
+    def _pending_features(
+        self, batch: VectorObservationBatch, features: np.ndarray, own_ids: np.ndarray, *, seat: int
+    ) -> None:
+        """The actor's in-flight command for each own card token.
+
+        ``pending_x`` is in the seat's frame (the arena is mirrored for seat 0),
+        so the model cell is ``(width - pending_x) // tile`` for x and
+        ``pending_y // tile`` for y — the same transform the decoder applies in
+        reverse.  A building placement's subcell offset moves the point by less
+        than half a tile, so its floor is still the target cell.  A waiting row
+        whose card is not one of the actor's deck cards is an ability command;
+        crforge keeps those in the champion-slot block, and
+        :meth:`_ability_pending_features` covers them.
+        """
+
+        if not batch.pending_rows:
+            return
+        tile_x = float(WORLD_WIDTH) / float(self.config.board_width)
+        tile_y = float(WORLD_HEIGHT) / float(self.config.board_height)
+        card_ids = batch.pending_card_id[:, seat, :]
+        live = card_ids > 0
+        offset_x, offset_y = self._pending_offsets(card_ids)
+        pending_x = (float(WORLD_WIDTH) - batch.pending_x[:, seat, :].astype(np.float64)) / tile_x - offset_x
+        pending_y = batch.pending_y[:, seat, :].astype(np.float64) / tile_y - offset_y
+        cell_x = np.clip(np.floor(pending_x).astype(np.int64), 0, GRID_WIDTH - 1)
+        cell_y = np.clip(np.floor(pending_y).astype(np.int64), 0, GRID_HEIGHT - 1)
+        ticks = batch.pending_ticks[:, seat, :].astype(np.float64)
+        normalized_x = cell_x.astype(np.float32) / float(max(1, self.config.board_width - 1))
+        normalized_y = cell_y.astype(np.float32) / float(max(1, self.config.board_height - 1))
+        for row, card_id in enumerate(own_ids):
+            match = live & (card_ids == card_id)
+            has_pending = match.any(axis=1)
+            if not has_pending.any():
+                continue
+            take = match.argmax(axis=1)
+            features[:, row, _CD_PENDING] = has_pending.astype(np.float32)
+            remaining = np.take_along_axis(ticks, take[:, None], axis=1)[:, 0]
+            features[:, row, _CD_PENDING_TICKS] = np.where(
+                has_pending, remaining / float(LIVE_COMMAND_AGE_TICKS), 0.0
+            ).astype(np.float32)
+            features[:, row, _CD_PENDING_X] = np.where(
+                has_pending, np.take_along_axis(normalized_x, take[:, None], axis=1)[:, 0], 0.0
+            )
+            features[:, row, _CD_PENDING_Y] = np.where(
+                has_pending, np.take_along_axis(normalized_y, take[:, None], axis=1)[:, 0], 0.0
+            )
+            if self.config.neutralize_pending_ticks_remaining:
+                # The real receipt cannot supply this column live, so every
+                # checkpoint that declares the 21-column schema neutralises it.
+                features[:, row, _CD_PENDING_TICKS] = 0.0
+        self._ability_pending_features(batch, features, own_ids, seat=seat)
+
+    def _pending_offsets(self, card_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per-pending-row subcell offset (0 for cards without a footprint)."""
+
+        if not self._subcell_offsets:
+            zeros = np.zeros(card_ids.shape, dtype=np.float64)
+            return zeros, zeros
+        keys = np.fromiter(sorted(self._subcell_offsets), dtype=np.int64)
+        table = np.asarray([self._subcell_offsets[int(key)] for key in keys], dtype=np.float64)
+        positions = np.searchsorted(keys, card_ids)
+        clipped = np.clip(positions, 0, keys.size - 1)
+        found = (positions < keys.size) & (keys[clipped] == card_ids)
+        offset_x = np.where(found, table[clipped, 0], 0.0)
+        offset_y = np.where(found, table[clipped, 1], 0.0)
+        return offset_x, offset_y
+
+    def _ability_pending_features(
+        self, batch: VectorObservationBatch, features: np.ndarray, own_ids: np.ndarray, *, seat: int
+    ) -> None:
+        """A waiting champion ability sets ``ability_pending`` on its card row.
+
+        The engine keeps ability commands in their own header block (not the
+        pending-card rows); a non-zero ``ability_command_ticks`` is a command
+        that has been given and has not run.  The per-lane builder matches it by
+        ``ability_id`` against the card's static ability set, so the card token
+        is the champion's.
+        """
+
+        if batch.ability_slots <= 0:
+            return
+        champion = batch.ability_champion_id[:, seat, :]
+        waiting = (champion > 0) & (batch.ability_ticks[:, seat, :] > 0)
+        ticks = batch.ability_ticks[:, seat, :].astype(np.float64)
+        for row, card_id in enumerate(own_ids):
+            match = waiting & (champion == card_id)
+            has_pending = match.any(axis=1)
+            if not has_pending.any():
+                continue
+            take = match.argmax(axis=1)
+            features[:, row, _CD_PENDING_ABILITY] = has_pending.astype(np.float32)
+            if not self.config.neutralize_pending_ticks_remaining:
+                remaining = np.take_along_axis(ticks, take[:, None], axis=1)[:, 0]
+                features[:, row, _CD_PENDING_TICKS] = np.where(
+                    has_pending, remaining / float(LIVE_COMMAND_AGE_TICKS), 0.0
+                ).astype(np.float32)
+
+
+class VectorRelationBuilder:
+    """Fill the target/card/group relation edges for a whole vector batch.
+
+    The bridge's entity envelope has no attack/projectile/capture/source runtime
+    and no causal-group references, so the edge set is exactly:
+
+    * ``entity -> its visible target`` and the reverse, when both ends have a
+      token (a target may be a tower, which is a token even though it is not an
+      entity);
+    * ``tower -> its visible target`` and the reverse;
+    * ``card -> group`` for every retained group whose (owner, source card) is
+      one of the actor's cards or the opponent's unknown row.
+
+    The tensorizer sorts and de-duplicates the edge set, so this build does the
+    same with one ``np.unique`` over lane-tagged keys.  A lane's edges are
+    variable-length; :meth:`VectorRelationSection.lane` slices one lane back to
+    the exact ``(1, count)`` tensors the per-lane path emits.
+    """
+
+    def __init__(self, tensorizer: Any) -> None:
+        self.tensorizer = tensorizer
+        self.config = tensorizer.config
+        self.group_start = int(self.config.max_towers + self.config.max_own_cards + self.config.max_opponent_cards)
+        self.own_start = int(self.config.max_towers)
+        self.opponent_start = self.own_start + int(self.config.max_own_cards)
+        self.tower_count = int(self.config.max_towers)
+        token_count = self.group_start + int(self.config.max_battle_groups)
+        if token_count > 128:
+            # The packed sort key gives ``source``/``target`` seven bits.
+            raise ValueError(f"relation token space {token_count} exceeds the 128-token packing")
+
+    def build(
+        self, batch: VectorObservationBatch, cards: VectorCardSection, groups: VectorGroupSection
+    ) -> VectorRelationSection:
+        lanes = int(batch.count)
+        lane_axis = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], batch.entity_id.shape)
+        group_rank = groups.group_index.astype(np.int64)
+        valid_entity = batch.entity_valid & ~batch.entity_is_tower
+        entity_id = np.where(valid_entity, batch.entity_id, -1).astype(np.int64)
+        group_token = np.where(valid_entity & (group_rank >= 0), self.group_start + group_rank, -1)
+        raw_target = np.where(batch.entity_valid, batch.entity_target, -1).astype(np.int64)
+
+        # Targets can name a tower (ids 0..5) or another entity; resolve both
+        # through one lane-tagged sorted-key search.
+        target_id = np.where(valid_entity, raw_target, -1)
+        lane_offsets = (np.arange(lanes, dtype=np.int64) << 32)[:, None]
+        id_keys = (lane_offsets | (entity_id & 0xFFFFFFFF)).ravel()
+        token_values = group_token.ravel()
+        useful = token_values >= 0
+        order = np.argsort(id_keys[useful], kind="stable")
+        lookup_keys = id_keys[useful][order]
+        lookup_values = token_values[useful][order]
+
+        def resolve(ids: np.ndarray) -> np.ndarray:
+            keys = (lane_offsets | (ids.astype(np.int64) & 0xFFFFFFFF)).ravel()
+            if lookup_keys.size:
+                positions = np.searchsorted(lookup_keys, keys)
+                clipped = np.clip(positions, 0, lookup_keys.size - 1)
+                matched = (positions < lookup_keys.size) & (lookup_keys[clipped] == keys)
+                resolved = np.where(matched, lookup_values[clipped], -1).reshape(ids.shape)
+            else:
+                resolved = np.full(ids.shape, -1, dtype=np.int64)
+            # A tower target is a token regardless of whether it is an entity row.
+            tower_target = (ids >= 0) & (ids < self.tower_count)
+            return np.where(tower_target, ids, resolved)
+
+        target_token = resolve(target_id)
+
+        edges: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+
+        source_ok = (group_token >= 0) & (target_token >= 0) & (target_token != group_token)
+        edges.append(
+            (
+                lane_axis[source_ok],
+                group_token[source_ok],
+                target_token[source_ok],
+                np.full(int(source_ok.sum()), REL_TARGETS, dtype=np.int64),
+            )
+        )
+        edges.append(
+            (
+                lane_axis[source_ok],
+                target_token[source_ok],
+                group_token[source_ok],
+                np.full(int(source_ok.sum()), REL_TARGETED_BY, dtype=np.int64),
+            )
+        )
+
+        # Tower sources: the fixed six-row section, whose visible target lives
+        # on the shared entity row for that tower id.  A tower can target an
+        # entity as well as another tower.
+        tower_slot = self._tower_slots(batch)
+        tower_row_target = np.take_along_axis(raw_target, np.maximum(tower_slot, 0), axis=1)
+        tower_valid = (tower_slot >= 0) & (tower_row_target >= 0)
+        tower_ids = np.broadcast_to(np.arange(self.tower_count, dtype=np.int64)[None, :], tower_valid.shape)
+        tower_resolved = resolve(np.where(tower_valid, tower_row_target, -1))
+        tower_edges = tower_valid & (tower_resolved >= 0) & (tower_resolved != tower_ids)
+        tower_lanes = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], tower_valid.shape)
+        edges.append(
+            (
+                tower_lanes[tower_edges],
+                tower_ids[tower_edges],
+                tower_resolved[tower_edges],
+                np.full(int(tower_edges.sum()), REL_TARGETS, dtype=np.int64),
+            )
+        )
+        edges.append(
+            (
+                tower_lanes[tower_edges],
+                tower_resolved[tower_edges],
+                tower_ids[tower_edges],
+                np.full(int(tower_edges.sum()), REL_TARGETED_BY, dtype=np.int64),
+            )
+        )
+
+        # Card -> group: a static (owner, card vocabulary) token table.
+        own_map = self._card_token_map(cards.own.card_vocab_id[0].numpy(), cards.own.mask[0].numpy(), self.own_start)
+        enemy_map = self._card_token_map(
+            cards.opponent.card_vocab_id[0].numpy(), cards.opponent.mask[0].numpy(), self.opponent_start
+        )
+        group_mask = groups.groups.mask.numpy()
+        group_owner = groups.groups.owner_type.numpy()
+        group_source = groups.groups.source_card_vocab_id.numpy()
+        card_token = np.where(
+            group_owner == OWNER_SELF,
+            self._lookup_token(own_map, group_source),
+            np.where(group_owner == OWNER_ENEMY, self._lookup_token(enemy_map, group_source), -1),
+        )
+        group_rows = np.broadcast_to(np.arange(group_mask.shape[1], dtype=np.int64)[None, :], group_mask.shape)
+        group_lanes = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], group_mask.shape)
+        card_edges = group_mask & (card_token >= 0)
+        edges.append(
+            (
+                group_lanes[card_edges],
+                card_token[card_edges],
+                (self.group_start + group_rows)[card_edges],
+                np.full(int(card_edges.sum()), REL_CARD_REPRESENTS_GROUP, dtype=np.int64),
+            )
+        )
+        return self._pack(lanes, edges)
+
+    @staticmethod
+    def _tower_slots(batch: VectorObservationBatch) -> np.ndarray:
+        """Tower id -> its shared entity-row slot, or -1 when the row is absent."""
+
+        slots = np.full((int(batch.count), 6), -1, dtype=np.int64)
+        rows = np.flatnonzero(batch.entity_valid.ravel() & batch.entity_is_tower.ravel())
+        if rows.size:
+            lanes, columns = np.unravel_index(rows, batch.entity_valid.shape)
+            for lane, column in zip(lanes.tolist(), columns.tolist(), strict=True):
+                entity_id = int(batch.entity_id[lane, column])
+                if 0 <= entity_id < 6:
+                    slots[lane, entity_id] = column
+        return slots
+
+    def _card_token_map(self, vocab: np.ndarray, mask: np.ndarray, start: int) -> np.ndarray:
+        table = np.full(int(self.tensorizer.catalog.vocab_size), -1, dtype=np.int64)
+        for row in np.flatnonzero(mask):
+            value = int(vocab[row])
+            if 0 <= value < table.size:
+                table[value] = start + int(row)
+        return table
+
+    @staticmethod
+    def _lookup_token(table: np.ndarray, vocab: np.ndarray) -> np.ndarray:
+        safe = np.clip(vocab, 0, max(0, table.size - 1))
+        values = table[safe] if table.size else np.full(vocab.shape, -1, dtype=np.int64)
+        return np.where((vocab >= 0) & (vocab < table.size), values, -1)
+
+    def _pack(
+        self, lanes: int, edges: Sequence[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+    ) -> VectorRelationSection:
+        """Sort and de-duplicate the lane-tagged edge set into padded arrays."""
+
+        flat_lanes = np.concatenate([edge[0] for edge in edges]) if edges else np.zeros(0, dtype=np.int64)
+        flat_sources = np.concatenate([edge[1] for edge in edges]) if edges else np.zeros(0, dtype=np.int64)
+        flat_targets = np.concatenate([edge[2] for edge in edges]) if edges else np.zeros(0, dtype=np.int64)
+        flat_kinds = np.concatenate([edge[3] for edge in edges]) if edges else np.zeros(0, dtype=np.int64)
+
+        # ``source``/``target`` are token ids below ~100 and ``relation`` is a
+        # 4-bit code, so one int64 key orders exactly like the tensorizer's
+        # ``sorted(edges)`` tuple order.
+        key = (((flat_sources * 128) + flat_targets) * 16) + flat_kinds
+        lane_key = flat_lanes * (128 * 128 * 16) + key
+        if lane_key.size:
+            lane_key = np.unique(lane_key)
+            flat_lanes = lane_key // (128 * 128 * 16)
+            key = lane_key % (128 * 128 * 16)
+            flat_kinds = key % 16
+            key = key // 16
+            flat_targets = key % 128
+            flat_sources = key // 128
+
+        counts = np.bincount(flat_lanes, minlength=lanes).astype(np.int64)
+        width = max(1, int(counts.max(initial=0)))
+        source = np.zeros((lanes, width), dtype=np.int64)
+        target = np.zeros((lanes, width), dtype=np.int64)
+        relation = np.zeros((lanes, width), dtype=np.int64)
+        mask = np.zeros((lanes, width), dtype=bool)
+        if flat_lanes.size:
+            starts = np.concatenate([[0], np.cumsum(counts)])
+            for lane in np.flatnonzero(counts):
+                begin, end = int(starts[lane]), int(starts[lane + 1])
+                source[lane, : end - begin] = flat_sources[begin:end]
+                target[lane, : end - begin] = flat_targets[begin:end]
+                relation[lane, : end - begin] = flat_kinds[begin:end]
+                mask[lane, : end - begin] = True
+        return VectorRelationSection(
+            source=torch.from_numpy(source),
+            target=torch.from_numpy(target),
+            relation_type=torch.from_numpy(relation),
+            mask=torch.from_numpy(mask),
+        )
+
+
+@dataclass(frozen=True)
+class VectorRelationSection:
+    """Padded relation edges for every lane.
+
+    ``lane(n)`` slices one lane back to the variable-length ``(1, count)``
+    record the per-lane tensorizer emits, so a batch digest can be compared
+    row for row.
+    """
+
+    source: torch.Tensor
+    target: torch.Tensor
+    relation_type: torch.Tensor
+    mask: torch.Tensor
+
+    def count(self, lane: int) -> int:
+        return int(self.mask[int(lane)].sum())
+
+    def lane(self, lane: int) -> RelationEdgesV4:
+        count = max(1, self.count(lane))
+        return RelationEdgesV4(
+            source=self.source[int(lane) : int(lane) + 1, :count].clone(),
+            target=self.target[int(lane) : int(lane) + 1, :count].clone(),
+            relation_type=self.relation_type[int(lane) : int(lane) + 1, :count].clone(),
+            mask=self.mask[int(lane) : int(lane) + 1, :count].clone(),
+        )
+
+
+@dataclass(frozen=True)
+class VectorCardSection:
+    """The batched ``_card_sets`` output for every lane."""
+
+    own: CardSetV4
+    opponent: CardSetV4
+    card_to_row: dict[int, int]
+
+
+class _PlayerView:
+    """The player attributes ``_card_sets`` / ``_card_runtime_features`` read."""
+
+    def __init__(self, owner: int, *, hand: Sequence[int], next_card: int | None, metadata: dict[str, Any]) -> None:
+        self.owner = int(owner)
+        self.hand = tuple(int(value) for value in hand)
+        self.next_card = next_card
+        self.revealed_cards: tuple[int, ...] = ()
+        self.evolution_runtime_states: tuple[Any, ...] = ()
+        self.ability_runtime_states: tuple[Any, ...] = ()
+        self.metadata = metadata
+
+
+class _TowerView:
+    """The tower attributes ``_towers`` / ``_relations`` read."""
+
+    def __init__(
+        self,
+        *,
+        entity_id: int,
+        owner: int,
+        tower_kind: str,
+        position: tuple[int, int],
+        hitpoints: float,
+        max_hitpoints: float,
+        active: bool,
+        tower_troop_id: int | None,
+        visible_target: int | None,
+    ) -> None:
+        self.entity_id = int(entity_id)
+        self.owner = int(owner)
+        self.tower_kind = tower_kind
+        self.position = (float(position[0]), float(position[1]))
+        self.hitpoints = float(hitpoints)
+        self.max_hitpoints = float(max_hitpoints)
+        self.shield = 0.0
+        self.active = bool(active)
+        self.status: tuple[str, ...] = ()
+        self.tower_troop_id = tower_troop_id
+        self.tower_troop_runtime = None
+        self.visible_target = visible_target
+        self.attack_state = None
+
+
+_TOWER_KIND_NAMES = ("king", "princess_left", "princess_right")
+
+
+def reference_pending_actions(
+    batch: VectorObservationBatch, lane: int, *, tensorizer: Any, seat: int = 0
+) -> tuple[PendingActionV1, ...]:
+    """The actor's waiting plays as `ActionV1`/`PendingActionV1` rows.
+
+    ``pending_x`` is the seat-frame point the command carries; the model cell is
+    the mirror the native decoder applies in reverse.  Only plays of the actor's
+    deck cards are emitted, which is what the bridge envelope can carry.
+    """
+
+    config = tensorizer.config
+    tick = int(batch.tick[int(lane), int(seat)])
+    tile_x = float(WORLD_WIDTH) / float(config.board_width)
+    tile_y = float(WORLD_HEIGHT) / float(config.board_height)
+    actions: list[PendingActionV1] = []
+    for row in range(int(batch.pending_rows)):
+        card_id = int(batch.pending_card_id[int(lane), int(seat), row])
+        if card_id <= 0:
+            continue
+        remaining = max(0, int(batch.pending_ticks[int(lane), int(seat), row]))
+        spec = tensorizer.card_specs.get(card_id)
+        footprint = native_building_footprint(spec) if spec is not None else None
+        # The native command point for an even-sized building sits half a tile
+        # past the cell center, so undo the same per-card offset the mask used.
+        offset_x = 0.5 if footprint is not None and footprint.width_tiles % 2 == 0 else 0.0
+        offset_y = 0.5 if footprint is not None and footprint.height_tiles % 2 == 0 else 0.0
+        cell_x = int(
+            (float(WORLD_WIDTH) - float(batch.pending_x[int(lane), int(seat), row])) // tile_x - offset_x
+        )
+        cell_y = int(float(batch.pending_y[int(lane), int(seat), row]) // tile_y - offset_y)
+        cell = (min(max(cell_x, 0), GRID_WIDTH - 1), min(max(cell_y, 0), GRID_HEIGHT - 1))
+        action = construct_contract(
+            ActionV1,
+            owner=int(seat),
+            kind=ActionKind.PLAY_CARD,
+            hand_slot=0,
+            card_id=card_id,
+            target_kind=TargetKind.GRID,
+            target_grid=cell,
+        )
+        actions.append(
+            construct_contract(
+                PendingActionV1, action=action, requested_tick=tick, expected_execution_tick=tick + remaining
+            )
+        )
+    for slot in range(int(batch.ability_slots)):
+        card_id = int(batch.ability_champion_id[int(lane), int(seat), slot])
+        remaining = int(batch.ability_ticks[int(lane), int(seat), slot])
+        if card_id <= 0 or remaining <= 0:
+            continue
+        ability_ids = tensorizer.ability_ids_by_card.get(card_id)
+        if not ability_ids:
+            continue
+        source = int(batch.ability_unit[int(lane), int(seat), slot])
+        action = construct_contract(
+            ActionV1,
+            owner=int(seat),
+            kind=ActionKind.ACTIVATE_ABILITY,
+            source_entity=max(0, source),
+            ability_id=min(ability_ids),
+            target_kind=TargetKind.NONE,
+        )
+        actions.append(
+            construct_contract(
+                PendingActionV1, action=action, requested_tick=tick, expected_execution_tick=tick + remaining
+            )
+        )
+    return tuple(actions)
+
+
+def reference_observation(
+    batch: VectorObservationBatch,
+    lane: int,
+    *,
+    tables: VectorEntityTables,
+    tensorizer: Any,
+    seat: int = 0,
+    tower_troop_id: int | None = None,
+) -> Any:
+    """The per-lane oracle input, projected from the same facts.
+
+    The tensorizer's own ``_card_sets`` / ``_towers`` / ``_relations`` decide
+    everything from these rows, so a mismatch means a batched table is wrong,
+    not that both sides share a shortcut.  Only the attributes those sections
+    read are supplied.
+    """
+
+    if seat != 0:
+        raise ValueError("the vector facts layer currently carries seat 0 only")
+    lane = int(lane)
+    entities = reference_entities(batch, lane, tables=tables, tensorizer=tensorizer, seat=seat)
+
+    metadata: dict[str, Any] = {"hand_slot_by_card": {}, "hand_runtime_by_slot": {}}
+    hand: list[int] = []
+    for slot in range(int(batch.hand_slots)):
+        if int(batch.hand_vocab[lane, seat, slot]) < 0:
+            continue
+        card_id = int(batch.hand_card_id[lane, seat, slot])
+        hand.append(card_id)
+        metadata["hand_slot_by_card"][str(card_id)] = slot
+        metadata["hand_runtime_by_slot"][str(slot)] = {"form_code": int(batch.hand_form[lane, seat, slot])}
+    next_id = int(batch.next_card_id[lane, seat])
+    players = (
+        _PlayerView(seat, hand=hand, next_card=next_id if next_id > 0 else None, metadata=metadata),
+        _PlayerView(1 - seat, hand=(), next_card=None, metadata={}),
+    )
+
+    tower_slots = VectorRelationBuilder._tower_slots(batch)
+    towers = []
+    for entity_id in range(int(batch.tower_rows)):
+        slot = int(tower_slots[lane, entity_id]) if entity_id < tower_slots.shape[1] else -1
+        if slot < 0:
+            continue
+        owner = int(batch.tower_owner[lane, entity_id])
+        kind = _TOWER_KIND_NAMES[int(batch.tower_kind[lane, entity_id])]
+        hp = float(batch.tower_hp[lane, entity_id])
+        max_hp = float(batch.tower_max_hp[lane, entity_id])
+        target = int(batch.entity_target[lane, slot])
+        towers.append(
+            _TowerView(
+                entity_id=entity_id,
+                owner=owner,
+                tower_kind=kind,
+                position=(int(batch.entity_x[lane, slot]), int(batch.entity_y[lane, slot])),
+                hitpoints=hp,
+                max_hitpoints=max_hp,
+                active=bool(batch.tower_valid[lane, entity_id] and hp > 0),
+                tower_troop_id=(int(tower_troop_id) if tower_troop_id else None),
+                visible_target=target if target >= 0 else None,
+            )
+        )
+
+    return _ObservationView(
+        entities,
+        players=players,
+        towers=tuple(towers),
+        pending=reference_pending_actions(batch, lane, tensorizer=tensorizer, seat=seat),
+        tick=int(batch.tick[lane, seat]),
+    )
+
+
+def compare_card_section(
+    section: VectorCardSection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """Own and opponent card tensors, lane by lane, against the oracle."""
+
+    if tensorizer.tracker is not None:
+        raise ValueError("the card oracle needs the bridge's no-event envelope (tracker=None)")
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer)
+        # ``_player`` caches by ``id(observation)``; a per-lane view is freed
+        # after each lane, so a reused id could answer with another lane's row.
+        tensorizer._frame_players.clear()
+        own, opponent, card_to_row = tensorizer._card_sets(observation)
+        for label, expected, actual in (("own", own, section.own), ("opponent", opponent, section.opponent)):
+            for name in ("card_vocab_id", "runtime_form", "role_bits", "runtime_features", "mask"):
+                if not torch.equal(getattr(actual, name)[lane], getattr(expected, name)[0]):
+                    mismatches.append(f"{label}.{name} lane={lane}")
+        if dict(section.card_to_row) != {int(key): int(value) for key, value in card_to_row.items()}:
+            mismatches.append(f"card_to_row lane={lane}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
+
+
+def compare_relation_section(
+    section: VectorRelationSection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    tower_troop_id: int | None = None,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """Every relation edge, lane by lane, against the oracle sections."""
+
+    if tensorizer.tracker is not None:
+        raise ValueError("the relation oracle needs the bridge's no-event envelope (tracker=None)")
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        observation = reference_observation(
+            batch, lane, tables=tables, tensorizer=tensorizer, tower_troop_id=tower_troop_id
+        )
+        tensorizer._frame_players.clear()
+        own, opponent, _card_to_row = tensorizer._card_sets(observation)
+        _towers, tower_index = tensorizer._towers(observation)
+        groups, group_index, _child_index, _group_overflow, _child_overflow = oracle_groups(
+            tensorizer, observation.entities
+        )
+        expected = tensorizer._relations(
+            observation,
+            group_index_by_entity=group_index,
+            tower_token_by_entity=tower_index,
+            own_cards=own,
+            opponent_cards=opponent,
+            groups=groups,
+        )
+        actual = section.lane(lane)
+        for name in ("source", "target", "relation_type", "mask"):
+            if not torch.equal(getattr(actual, name), getattr(expected, name)):
+                mismatches.append(f"relations.{name} lane={lane}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
+
+
 def reference_entities(
     batch: VectorObservationBatch, lane: int, *, tables: VectorEntityTables, tensorizer: Any, seat: int = 0
 ) -> tuple[EntityStateV1, ...]:
@@ -692,10 +1461,22 @@ def reference_entities(
 
 
 class _ObservationView:
-    """The two attributes ``_groups`` reads from an ``ObservationV1``."""
+    """The observation attributes the batched-section oracles read."""
 
-    def __init__(self, entities: Sequence[EntityStateV1]) -> None:
+    def __init__(
+        self,
+        entities: Sequence[EntityStateV1],
+        *,
+        players: Sequence[Any] = (),
+        towers: Sequence[Any] = (),
+        pending: Sequence[PendingActionV1] = (),
+        tick: int = 0,
+    ) -> None:
         self.entities = tuple(entities)
+        self.players = tuple(players)
+        self.towers = tuple(towers)
+        self.pending_actions = tuple(pending)
+        self.tick = int(tick)
         self.action_mask = _MaskView()
 
 
@@ -780,10 +1561,18 @@ def compare_group_section(
 
 
 __all__ = [
+    "VectorCardBuilder",
+    "VectorCardSection",
     "VectorEntityTables",
     "VectorGroupBuilder",
     "VectorGroupSection",
+    "VectorRelationBuilder",
+    "VectorRelationSection",
+    "compare_card_section",
     "compare_group_section",
+    "compare_relation_section",
     "oracle_groups",
     "reference_entities",
+    "reference_observation",
+    "reference_pending_actions",
 ]

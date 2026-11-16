@@ -99,6 +99,7 @@ class VectorObservationBatch:
     hand_slots: int
     deck_size: int
     pending_rows: int
+    ability_slots: int
     actions: int
     cols: int
     rows: int
@@ -151,6 +152,18 @@ class VectorObservationBatch:
     pending_x: np.ndarray = field(init=False)
     pending_y: np.ndarray = field(init=False)
     pending_ticks: np.ndarray = field(init=False)
+
+    # ---- champion ability slots --------------------------------------------
+    # The king's two champion slots: the champion's card, the live unit, the
+    # native button state/cooldown/charges, and the ticks until a waiting
+    # ability command runs (0 when none is waiting).
+    ability_champion_vocab: np.ndarray = field(init=False)
+    ability_champion_id: np.ndarray = field(init=False)
+    ability_unit: np.ndarray = field(init=False)
+    ability_state: np.ndarray = field(init=False)
+    ability_cooldown_ms: np.ndarray = field(init=False)
+    ability_charges: np.ndarray = field(init=False)
+    ability_ticks: np.ndarray = field(init=False)
 
     # ---- shared scene ------------------------------------------------------
     entity_valid: np.ndarray = field(init=False)
@@ -239,6 +252,14 @@ class VectorObservationBatch:
         self.pending_x = np.zeros((c, s, p), dtype=np.int32)
         self.pending_y = np.zeros((c, s, p), dtype=np.int32)
         self.pending_ticks = np.zeros((c, s, p), dtype=np.int32)
+        a = self.ability_slots
+        self.ability_champion_vocab = np.full((c, s, a), -1, dtype=np.int32)
+        self.ability_champion_id = np.zeros((c, s, a), dtype=np.int32)
+        self.ability_unit = np.full((c, s, a), -1, dtype=np.int32)
+        self.ability_state = np.zeros((c, s, a), dtype=np.int32)
+        self.ability_cooldown_ms = np.zeros((c, s, a), dtype=np.int32)
+        self.ability_charges = np.zeros((c, s, a), dtype=np.int32)
+        self.ability_ticks = np.zeros((c, s, a), dtype=np.int32)
 
         entity = (c, e)
         self.entity_valid = np.zeros(entity, dtype=bool)
@@ -345,6 +366,7 @@ class VectorObservationEncoder:
             "hand_slots": s.hand_slots,
             "deck_size": s.deck_size,
             "pending_rows": s.pending_rows,
+            "ability_slots": s.ability_slots,
             "actions": s.actions,
             "cols": s.cols,
             "rows": s.rows,
@@ -457,6 +479,8 @@ class VectorObservationEncoder:
         batch.pending_y[...] = np.where(pending_live, batch.pending_y, 0)
         batch.pending_ticks[...] = np.where(pending_live, batch.pending_ticks, 0)
 
+        self._encode_abilities(batch)
+
         self._encode_entities(batch, obs, raw_tick)
         self._encode_towers(batch)
         # The mask is the vector's own direct buffer; keep the view.
@@ -503,6 +527,25 @@ class VectorObservationEncoder:
             | ((np.clip(batch.hand_cost, 0, 15) & 0xF) << 28)
         ).astype(np.uint32)
         batch.hand_parameter[...] = np.where(present, packed, 0)
+
+    def _encode_abilities(self, batch: VectorObservationBatch) -> None:
+        """Both seats' champion slots: card, live unit, button state and wait ticks."""
+
+        vector = self.vector
+        obs = vector.observations
+        H = self.schema.header
+
+        def columns(name: str) -> np.ndarray:
+            return obs[:, :, list(H[name])]
+
+        raw_champion = columns("ability_champion")
+        batch.ability_champion_vocab[...] = raw_champion
+        batch.ability_champion_id[...] = _safe_lookup(self._lookup, np.where(raw_champion >= 0, raw_champion, 0))
+        batch.ability_unit[...] = columns("ability_unit")
+        batch.ability_state[...] = columns("ability_state")
+        batch.ability_cooldown_ms[...] = columns("ability_cooldown_ms")
+        batch.ability_charges[...] = columns("ability_charges")
+        batch.ability_ticks[...] = columns("ability_command_ticks")
 
     def _encode_entities(
         self,
