@@ -136,6 +136,14 @@ different game. Record the value in the run artifact and add a test where possib
   the tables; write the lock commit and table hash into the checkpoint artifact.
 - **Version:** 16.635.8 tables on the 16.635.1 client pin. Do not mix 15.535 and
   16.635 contracts in one run; the trainer fails closed on a mismatch.
+- **Coordinate frame:** the model input is **game coordinates** (the native
+  probe's frame). Engine masks/actions/pending points are **seat-framed**
+  (`Schema.toSeatX(0, x) = width - x`, `toSeatY(1, y) = height - y`); the
+  perspective transform is what maps game -> model per actor. Crforge emitted
+  the seat frame for observations until 2026-11-19, which mirrored every
+  crforge board horizontally; the fix is in the session-23 working tree.
+  Every vector-fact or bridge coordinate change re-runs the native cross-check
+  (one deploy, compare the observed point) before a bulk run.
 - **Row-build envelope (C3-B):** every batched section reproduces the bridge's
   no-event envelope — empty `revealed_cards`, no evolution/ability runtime,
   singleton causal groups, empty tower `status`, a static `tower_troop_id`, and

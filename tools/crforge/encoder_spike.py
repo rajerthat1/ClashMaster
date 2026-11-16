@@ -70,6 +70,7 @@ from crforge_env.vector import LadderConfig, SideSetup, VectorBattle
 from crforge_bridge.catalog import FORM_EVOLVED, FORM_HERO, Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.observe import decode_rows, entity_rows, player_facts
+from native_runner.arena import WORLD_HEIGHT, WORLD_WIDTH
 
 # The locked learner deck (HANDOFF.md 2026-11-15).  Evolution/hero forms are
 # selected by slot flags on the base card, not by naming the form row.
@@ -486,15 +487,15 @@ class VectorEncoder:
         # a real card, so keep the invalid slots at the per-lane sentinel.
         frame.entity_row_vocab[:, 0, :] = np.where(valid, row_vocab, 0)
         frame.entity_card_id[:, 0, :] = np.where(valid, _safe_lookup(self.lookup, row_vocab), 0)
-        frame.entity_x[:, 0, :] = rows[..., E["x"]]
-        frame.entity_y[:, 0, :] = rows[..., E["y"]]
+        frame.entity_x[:, 0, :] = np.where(valid, WORLD_WIDTH - rows[..., E["x"]], 0)
+        frame.entity_y[:, 0, :] = np.where(valid, rows[..., E["y"]], 0)
         frame.entity_hp[:, 0, :] = rows[..., E["hp"]]
         frame.entity_max_hp[:, 0, :] = rows[..., E["max_hp"]]
         frame.entity_shield[:, 0, :] = np.where(rows[..., E["shield"]] > 0, rows[..., E["shield"]], 0)
         frame.entity_level[:, 0, :] = rows[..., E["level"]]
         frame.entity_target[:, 0, :] = rows[..., E["target"]]
-        frame.entity_target_x[:, 0, :] = rows[..., E["target_x"]]
-        frame.entity_target_y[:, 0, :] = rows[..., E["target_y"]]
+        frame.entity_target_x[:, 0, :] = np.where(valid, WORLD_WIDTH - rows[..., E["target_x"]], 0)
+        frame.entity_target_y[:, 0, :] = np.where(valid, rows[..., E["target_y"]], 0)
         frame.entity_flags[:, 0, :] = rows[..., E["flags"]]
         frame.entity_deploy_ms[:, 0, :] = rows[..., E["deploy_ms"]]
 
@@ -562,8 +563,13 @@ class PerLaneEncoder:
                         observation[schema.H_PENDING + index * schema.PENDING_INTS]
                     )
                     frame.pending_card_id[lane, seat, index] = int(pending["cardId"])
-                    frame.pending_x[lane, seat, index] = int(pending["x"])
-                    frame.pending_y[lane, seat, index] = int(pending["y"])
+                    # Facts are game-frame: seat 0 mirrors x, seat 1 mirrors y.
+                    frame.pending_x[lane, seat, index] = (
+                        WORLD_WIDTH - int(pending["x"]) if seat == 0 else int(pending["x"])
+                    )
+                    frame.pending_y[lane, seat, index] = (
+                        int(pending["y"]) if seat == 0 else WORLD_HEIGHT - int(pending["y"])
+                    )
                     frame.pending_ticks[lane, seat, index] = int(pending["ticksUntilRun"])
             objects, _rich, visible_rows = entity_rows(seat0, schema, vocabulary, catalog)
             for obj, row in zip(objects, visible_rows, strict=True):

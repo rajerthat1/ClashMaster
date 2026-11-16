@@ -53,11 +53,11 @@ def release_config() -> ModelConfigV4:
 
 
 def _tensorizer(
-    config: ModelConfigV4 | None = None, *, horizontal_mirror: bool = False
+    config: ModelConfigV4 | None = None, *, horizontal_mirror: bool = False, actor_owner: int = 0
 ) -> UniversalObservationTensorizerV4:
     bundle = production_semantic_bundle(RELEASE)
     return UniversalObservationTensorizerV4(
-        actor_owner=0,
+        actor_owner=actor_owner,
         card_catalog=bundle.card_catalog,
         ability_catalog=bundle.ability_catalog,
         entity_archetype_catalog=bundle.entity_archetype_catalog,
@@ -203,13 +203,19 @@ def test_reference_entities_carry_the_frame_facts(crforge_runtime: None) -> None
                     assert entity.velocity is None
 
 
-def test_reference_entities_refuse_a_nonzero_seat(crforge_runtime: None) -> None:
-    tensorizer = _tensorizer()
+def test_reference_entities_refuse_a_seat_mismatch(crforge_runtime: None) -> None:
+    """The oracle project must agree with the tensorizer's actor seat."""
+
+    tensorizer = _tensorizer(actor_owner=1)
     with _vector(count=1) as vector:
         _, tables = _builder(tensorizer, vector)
         batch = VectorObservationEncoder(vector, Catalog.load()).encode()
-        with pytest.raises(ValueError, match="seat 0"):
-            reference_entities(batch, 0, tables=tables, tensorizer=tensorizer, seat=1)
+        with pytest.raises(ValueError, match="does not match facts seat 0"):
+            reference_entities(batch, 0, tables=tables, tensorizer=tensorizer, seat=0)
+        # Seat 1 itself is supported: the fact layer is shared and the actor
+        # perspective supplies the model frame.  A reset scene is towers only,
+        # which the entity projection excludes.
+        assert reference_entities(batch, 0, tables=tables, tensorizer=tensorizer, seat=1) == ()
 
 
 def test_batched_cards_match_the_per_lane_oracle(crforge_runtime: None) -> None:
@@ -270,7 +276,7 @@ def test_pending_card_cell_is_the_seat_frame_mirror(crforge_runtime: None) -> No
         card_id = int(cards_builder.own_order[0])
         batch.pending_count[:, 0] = 1
         batch.pending_card_id[:, 0, 0] = card_id
-        batch.pending_x[:, 0, 0] = 2500  # seat frame: native x 15500
+        batch.pending_x[:, 0, 0] = 15500  # game frame
         batch.pending_y[:, 0, 0] = 12500
         batch.pending_ticks[:, 0, 0] = 8
         section = cards_builder.build(batch)
@@ -286,12 +292,12 @@ def test_pending_card_cell_is_the_seat_frame_mirror(crforge_runtime: None) -> No
         assert compare_card_section(section, tensorizer, batch, tables=tables) == []
 
         # An even-sized building's command point sits half a tile past the
-        # cell center: Tesla (2x2) at cell (15, 12) is world (16000, 13000),
-        # i.e. seat-frame (2000, 13000), and must still read as (15, 12).
+        # cell center: Tesla (2x2) at cell (15, 12) is game world (16000, 13000)
+        # and must still read as (15, 12).
         tesla = 27000006
         tesla_row = cards_builder.own_order.index(tesla)
         batch.pending_card_id[:, 0, 0] = tesla
-        batch.pending_x[:, 0, 0] = 2000
+        batch.pending_x[:, 0, 0] = 16000
         batch.pending_y[:, 0, 0] = 13000
         section = cards_builder.build(batch)
         assert float(section.own.runtime_features[0, tesla_row, 18]) == pytest.approx(15 / 17)
@@ -538,12 +544,9 @@ def test_tower_troop_is_a_static_build_input(crforge_runtime: None) -> None:
         assert bare.towers.tower_troop_type.tolist() == [[0] * 6]
         with pytest.raises(ValueError, match="not a competitive Tower Troop"):
             VectorTowerBuilder(tensorizer, tower_troop_id=123)
-        tensorizer.actor_owner = 1
-        try:
-            with pytest.raises(ValueError, match="seat 0"):
-                VectorTowerBuilder(tensorizer)
-        finally:
-            tensorizer.actor_owner = 0
+        # Seat 1 builds the same six rows for the other actor.
+        seat1 = VectorTowerBuilder(_tensorizer(actor_owner=1), tower_troop_id=TOWER_TROOP).build(batch)
+        assert seat1.towers.tower_troop_type.tolist() == [[1] * 6]
 
 
 def test_destroyed_and_missing_towers_keep_the_oracle_shape(crforge_runtime: None) -> None:
@@ -604,8 +607,12 @@ def _play_card(vector, encoder, card_id: int, *, lane: int = 0, seat: int = 0, a
             if not cells.size:
                 continue
             y, x = (int(value) for value in cells[len(cells) // 2])
+            # ``placement_rows`` is game-frame; an engine action names a cell in
+            # the seat's frame (seat 0 mirrors x, seat 1 mirrors y).
+            action_x = cols - 1 - x if seat == 0 else x
+            action_y = y if seat == 0 else rows - 1 - y
             actions = wait.copy()
-            actions[lane, seat] = 1 + slot * rows * cols + y * cols + x
+            actions[lane, seat] = 1 + slot * rows * cols + action_y * cols + action_x
             vector.step(actions)
             return True
         vector.step(wait)
@@ -844,11 +851,11 @@ def test_batched_empty_effects_and_events_match_the_per_lane_oracle(crforge_runt
             encoder.encode(batch)
 
 
-def test_empty_section_builder_refuses_a_nonzero_seat(crforge_runtime: None) -> None:
+def test_empty_section_builder_refuses_an_invalid_seat(crforge_runtime: None) -> None:
     tensorizer = _tensorizer()
-    tensorizer.actor_owner = 1
+    tensorizer.actor_owner = 2
     try:
-        with pytest.raises(ValueError, match="seat 0"):
+        with pytest.raises(ValueError, match="is not a seat"):
             VectorEmptySectionBuilder(tensorizer)
     finally:
         tensorizer.actor_owner = 0

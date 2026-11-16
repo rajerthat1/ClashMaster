@@ -55,8 +55,8 @@ replace the validated evaluator/parity path.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -183,6 +183,15 @@ REL_TARGETS = 1
 REL_TARGETED_BY = 2
 REL_CARD_REPRESENTS_GROUP = 7
 RELATION_TYPES = 14
+
+
+def _actor_seat(tensorizer: Any) -> int:
+    """The actor seat the tensorizer builds for; both seats are supported."""
+
+    seat = int(tensorizer.actor_owner)
+    if seat not in (0, 1):
+        raise ValueError(f"tensorizer actor owner {seat} is not a seat")
+    return seat
 
 
 def _kind_rule(card_id: int, card_specs: dict[int, Any]) -> str:
@@ -803,8 +812,8 @@ class VectorCardBuilder:
     def __init__(self, tensorizer: Any) -> None:
         self.tensorizer = tensorizer
         self.config = tensorizer.config
-        if int(tensorizer.actor_owner) != 0:
-            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.seat = _actor_seat(tensorizer)
+        self.perspective = tensorizer.perspective
         if tensorizer.tracker is not None:
             raise ValueError(
                 "the batched card build needs the bridge's no-event envelope; a tracker would invent reveals"
@@ -848,7 +857,7 @@ class VectorCardBuilder:
 
     def build(self, batch: VectorObservationBatch) -> VectorCardSection:
         lanes = int(batch.count)
-        seat = 0
+        seat = self.seat
         hand_ids = batch.hand_card_id[:, seat, :]
         hand_present = batch.hand_vocab[:, seat, :] >= 0
         next_card = batch.next_card_id[:, seat]
@@ -901,14 +910,14 @@ class VectorCardBuilder:
     ) -> None:
         """The actor's in-flight command for each own card token.
 
-        ``pending_x`` is in the seat's frame (the arena is mirrored for seat 0),
-        so the model cell is ``(width - pending_x) // tile`` for x and
-        ``pending_y // tile`` for y — the same transform the decoder applies in
-        reverse.  A building placement's subcell offset moves the point by less
-        than half a tile, so its floor is still the target cell.  A waiting row
-        whose card is not one of the actor's deck cards is an ability command;
-        crforge keeps those in the champion-slot block, and
-        :meth:`_ability_pending_features` covers them.
+        ``pending_x`` / ``pending_y`` are game coordinates (the fact layer
+        converts each seat's frame once).  The native command point carries the
+        owner-signed building subcell offset, so the native cell is
+        ``(point - sign * offset) // tile``; the model cell is that native cell
+        through the actor perspective (``flip_x`` / ``flip_y``), exactly as the
+        decoder applies it in reverse.  A waiting row whose card is not one of
+        the actor's deck cards is an ability command; crforge keeps those in the
+        champion-slot block, and :meth:`_ability_pending_features` covers them.
         """
 
         if not batch.pending_rows:
@@ -918,10 +927,15 @@ class VectorCardBuilder:
         card_ids = batch.pending_card_id[:, seat, :]
         live = card_ids > 0
         offset_x, offset_y = self._pending_offsets(card_ids)
-        pending_x = (float(WORLD_WIDTH) - batch.pending_x[:, seat, :].astype(np.float64)) / tile_x - offset_x
-        pending_y = batch.pending_y[:, seat, :].astype(np.float64) / tile_y - offset_y
-        cell_x = np.clip(np.floor(pending_x).astype(np.int64), 0, GRID_WIDTH - 1)
-        cell_y = np.clip(np.floor(pending_y).astype(np.int64), 0, GRID_HEIGHT - 1)
+        # ``card_placement_mask`` moves a building's native anchor by
+        # ``model_subcell_offset * (+1 owner 0 / -1 owner 1)``.
+        sign = 1.0 if int(seat) == 0 else -1.0
+        native_x = batch.pending_x[:, seat, :].astype(np.float64) / tile_x - offset_x * sign
+        native_y = batch.pending_y[:, seat, :].astype(np.float64) / tile_y - offset_y * sign
+        native_cell_x = np.clip(np.floor(native_x).astype(np.int64), 0, GRID_WIDTH - 1)
+        native_cell_y = np.clip(np.floor(native_y).astype(np.int64), 0, GRID_HEIGHT - 1)
+        cell_x = GRID_WIDTH - 1 - native_cell_x if self.perspective.flip_x else native_cell_x
+        cell_y = GRID_HEIGHT - 1 - native_cell_y if self.perspective.flip_y else native_cell_y
         ticks = batch.pending_ticks[:, seat, :].astype(np.float64)
         normalized_x = cell_x.astype(np.float32) / float(max(1, self.config.board_width - 1))
         normalized_y = cell_y.astype(np.float32) / float(max(1, self.config.board_height - 1))
@@ -1058,9 +1072,7 @@ class VectorTowerBuilder:
 
         self.tensorizer = tensorizer
         self.config = tensorizer.config
-        self.actor = int(tensorizer.actor_owner)
-        if self.actor != 0:
-            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.actor = _actor_seat(tensorizer)
         self.max_towers = int(self.config.max_towers)
         if self.max_towers != 6:
             raise ValueError(f"the batched tower build assumes six tower rows, config has {self.max_towers}")
@@ -1200,9 +1212,7 @@ class VectorSpatialPlaneBuilder:
         self.tables = tables
         self.config = tensorizer.config
         self.perspective = tensorizer.perspective
-        self.actor = int(tensorizer.actor_owner)
-        if self.actor != 0:
-            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.actor = _actor_seat(tensorizer)
         self.channels = int(self.config.explicit_spatial_channels)
         if self.channels != 14:
             raise ValueError(f"the spatial plane build assumes 14 channels, config has {self.channels}")
@@ -1346,8 +1356,7 @@ class VectorEmptySectionBuilder:
     def __init__(self, tensorizer: Any) -> None:
         self.tensorizer = tensorizer
         self.config = tensorizer.config
-        if int(tensorizer.actor_owner) != 0:
-            raise ValueError("the vector facts layer currently carries seat 0 only")
+        _actor_seat(tensorizer)
         self.effect_feature_dim = len(ACTIVE_EFFECT_RUNTIME_FEATURE_NAMES)
         self.event_rows = int(self.config.max_recent_events)
         self.event_feature_dim = int(self.config.event_feature_dim)
@@ -1411,9 +1420,7 @@ class VectorScalarBuilder:
     def __init__(self, tensorizer: Any, *, timeline: Any, native_tick_offset: int = 0) -> None:
         self.tensorizer = tensorizer
         self.config = tensorizer.config
-        self.actor = int(tensorizer.actor_owner)
-        if self.actor != 0:
-            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.actor = _actor_seat(tensorizer)
         if tensorizer.tracker is not None:
             raise ValueError(
                 "the batched scalar build needs the bridge's no-event envelope; a tracker would invent a belief"
@@ -1440,26 +1447,27 @@ class VectorScalarBuilder:
     ) -> VectorScalarSection:
         lanes = int(batch.count)
         scalars = np.zeros((lanes, len(MATCH_SCALAR_NAMES)), dtype=np.float32)
-        canonical = batch.tick[:, 0].astype(np.int64)
+        seat = self.actor
+        canonical = batch.tick[:, seat].astype(np.int64)
         phase_tick = np.clip(canonical + self.native_tick_offset, 0, self.max_tick)
         remaining_ms = np.maximum(0, NATIVE_GAMEPLAY_END_TICK - canonical) * TICK_MS
         entity_count = (batch.entity_valid & ~batch.entity_is_tower).sum(axis=1)
-        elixir_exact = batch.elixir_raw[:, 0].astype(np.float64) / 10_000.0
-        reserved = batch.elixir_reserved_raw[:, 0].astype(np.float64) / 10_000.0
+        elixir_exact = batch.elixir_raw[:, seat].astype(np.float64) / 10_000.0
+        reserved = batch.elixir_reserved_raw[:, seat].astype(np.float64) / 10_000.0
 
         scalars[:, 0] = remaining_ms.astype(np.float64) / 300_000.0
         scalars[:, 1] = self.multiplier[phase_tick] / 3.0
         scalars[:, 2] = self.overtime[phase_tick]
         scalars[:, 3] = self.tiebreak[phase_tick]
         scalars[:, 4] = elixir_exact / 10.0
-        scalars[:, 5] = batch.crowns[:, 0] / 3.0
-        scalars[:, 6] = batch.crowns_enemy[:, 0] / 3.0
+        scalars[:, 5] = batch.crowns[:, seat] / 3.0
+        scalars[:, 6] = batch.crowns_enemy[:, seat] / 3.0
         scalars[:, 7] = entity_count / float(self.config.max_children_total)
         # No events in the bridge envelope.
         scalars[:, 8] = 0.0
         scalars[:, 9] = groups.group_overflow / float(self.config.max_battle_groups)
         scalars[:, 10] = groups.child_overflow / float(self.config.max_children_total)
-        scalars[:, 11] = batch.entity_overflow[:, 0].astype(np.float64) / float(self.config.max_children_total)
+        scalars[:, 11] = batch.entity_overflow[:, seat].astype(np.float64) / float(self.config.max_children_total)
         scalars[:, 12] = 0.0
         scalars[:, 13] = candidates.count / float(self.config.max_action_candidates)
         scalars[:, 14] = reserved / 10.0
@@ -1554,8 +1562,8 @@ class VectorCandidateBuilder:
     def __init__(self, tensorizer: Any) -> None:
         self.tensorizer = tensorizer
         self.config = tensorizer.config
-        if int(tensorizer.actor_owner) != 0:
-            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.seat = _actor_seat(tensorizer)
+        self.perspective = tensorizer.perspective
         self.max_candidates = int(self.config.max_action_candidates)
         self.rows_shape = (int(self.config.board_height), int(self.config.board_width))
         if self.rows_shape != (GRID_HEIGHT, GRID_WIDTH):
@@ -1612,9 +1620,10 @@ class VectorCandidateBuilder:
         vocab = np.where(found, self.deck_vocab[clipped], -1)
         return rows, vocab
 
-    def hand_slots(self, batch: VectorObservationBatch, *, seat: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    def hand_slots(self, batch: VectorObservationBatch, *, seat: int | None = None) -> tuple[np.ndarray, np.ndarray]:
         """The model-view hand mask and the effective elixir ``_candidates`` reads."""
 
+        seat = self.seat if seat is None else int(seat)
         if int(batch.hand_slots) != HAND_SLOTS:
             raise ValueError(f"the candidate build assumes {HAND_SLOTS} hand slots, batch has {batch.hand_slots}")
         cost_raw = batch.hand_cost[:, seat, :].astype(np.int64) * 10_000
@@ -1629,7 +1638,17 @@ class VectorCandidateBuilder:
         )
         return legal, effective_raw.astype(np.float64) / 10_000.0
 
-    def build(self, batch: VectorObservationBatch, *, seat: int = 0) -> VectorCandidateSection:
+    def _model_grid(self, grid: np.ndarray) -> np.ndarray:
+        """Game-frame placement rows -> the actor's model grid."""
+
+        if self.perspective.flip_y:
+            grid = grid[:, :, ::-1, :]
+        if self.perspective.flip_x:
+            grid = grid[:, :, :, ::-1]
+        return grid
+
+    def build(self, batch: VectorObservationBatch, *, seat: int | None = None) -> VectorCandidateSection:
+        seat = self.seat if seat is None else int(seat)
         lanes = int(batch.count)
         c = self.max_candidates
         legal, effective_elixir = self.hand_slots(batch, seat=seat)
@@ -1653,7 +1672,7 @@ class VectorCandidateBuilder:
             raise ValueError(f"legal hand card {missing} is not in the actor deck")
         geometry_index = np.searchsorted(self.deck_ids, card_ids)
         form = batch.hand_form[:, seat, :][lane_rows, slot_rows].astype(np.int64)
-        placement = batch.placement_rows(seat)[lane_rows, slot_rows].astype(bool)
+        placement = self._model_grid(batch.placement_rows(seat))[lane_rows, slot_rows].astype(bool)
 
         # Padding matches the oracle's arena defaults, so a lane slice can be
         # compared field for field without re-masking.
@@ -2046,28 +2065,34 @@ _CANDIDATE_FIELDS = (
 )
 
 
+@dataclass
 class _PlayerView:
-    """The player attributes ``_card_sets`` / ``_scalars`` read."""
+    """The player attributes ``_card_sets`` / ``_scalars`` read.
 
-    def __init__(
-        self,
-        owner: int,
-        *,
-        hand: Sequence[int],
-        next_card: int | None,
-        metadata: dict[str, Any],
-        crowns: int = 0,
-        elixir_exact: float | None = None,
-    ) -> None:
-        self.owner = int(owner)
-        self.hand = tuple(int(value) for value in hand)
-        self.next_card = next_card
-        self.revealed_cards: tuple[int, ...] = ()
-        self.evolution_runtime_states: tuple[Any, ...] = ()
-        self.ability_runtime_states: tuple[Any, ...] = ()
-        self.metadata = metadata
-        self.crowns = int(crowns)
-        self.elixir_exact = elixir_exact
+    A dataclass because the stock perspective transform copies the actor player
+    when a seat-1 oracle is built (``dataclasses.fields`` is how it does that).
+    """
+
+    owner: int
+    hand: tuple[int, ...] = ()
+    next_card: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    crowns: int = 0
+    elixir_exact: float | None = None
+    deck: tuple[int, ...] = ()
+    revealed_cards: tuple[int, ...] = ()
+    evolution_runtime_states: tuple[Any, ...] = ()
+    ability_runtime_states: tuple[Any, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.owner = int(self.owner)
+        self.hand = tuple(int(value) for value in self.hand)
+        self.deck = tuple(int(value) for value in self.deck)
+        self.metadata = dict(self.metadata)
+        self.crowns = int(self.crowns)
+        self.revealed_cards = ()
+        self.evolution_runtime_states = ()
+        self.ability_runtime_states = ()
 
 
 class _TowerView:
@@ -2110,15 +2135,19 @@ def reference_pending_actions(
 ) -> tuple[PendingActionV1, ...]:
     """The actor's waiting plays as `ActionV1`/`PendingActionV1` rows.
 
-    ``pending_x`` is the seat-frame point the command carries; the model cell is
-    the mirror the native decoder applies in reverse.  Only plays of the actor's
-    deck cards are emitted, which is what the bridge envelope can carry.
+    ``pending_x`` / ``pending_y`` are game coordinates (the fact layer converts
+    each seat's frame once).  The native command point carries the owner-signed
+    building subcell offset, so the native cell is ``(point - sign*offset)/tile``.
+    This projects the *native* (game) grid, which is what the per-lane tensorizer
+    receives before its perspective transform.  Only plays of the actor's deck
+    cards are emitted, which is what the bridge envelope can carry.
     """
 
     config = tensorizer.config
     tick = int(batch.tick[int(lane), int(seat)])
     tile_x = float(WORLD_WIDTH) / float(config.board_width)
     tile_y = float(WORLD_HEIGHT) / float(config.board_height)
+    sign = 1.0 if int(seat) == 0 else -1.0
     actions: list[PendingActionV1] = []
     for row in range(int(batch.pending_rows)):
         card_id = int(batch.pending_card_id[int(lane), int(seat), row])
@@ -2129,11 +2158,9 @@ def reference_pending_actions(
         footprint = native_building_footprint(spec) if spec is not None else None
         # The native command point for an even-sized building sits half a tile
         # past the cell center, so undo the same per-card offset the mask used.
-        offset_x = 0.5 if footprint is not None and footprint.width_tiles % 2 == 0 else 0.0
-        offset_y = 0.5 if footprint is not None and footprint.height_tiles % 2 == 0 else 0.0
-        cell_x = int(
-            (float(WORLD_WIDTH) - float(batch.pending_x[int(lane), int(seat), row])) // tile_x - offset_x
-        )
+        offset_x = (0.5 if footprint is not None and footprint.width_tiles % 2 == 0 else 0.0) * sign
+        offset_y = (0.5 if footprint is not None and footprint.height_tiles % 2 == 0 else 0.0) * sign
+        cell_x = int(float(batch.pending_x[int(lane), int(seat), row]) // tile_x - offset_x)
         cell_y = int(float(batch.pending_y[int(lane), int(seat), row]) // tile_y - offset_y)
         cell = (min(max(cell_x, 0), GRID_WIDTH - 1), min(max(cell_y, 0), GRID_HEIGHT - 1))
         action = construct_contract(
@@ -2197,8 +2224,8 @@ def reference_observation(
     entry point (the section oracles never read it).
     """
 
-    if seat != 0:
-        raise ValueError("the vector facts layer currently carries seat 0 only")
+    if seat not in (0, 1):
+        raise ValueError(f"facts seat {seat} is not a seat")
     lane = int(lane)
     entities = reference_entities(batch, lane, tables=tables, tensorizer=tensorizer, seat=seat)
 
@@ -2253,7 +2280,7 @@ def reference_observation(
         entities,
         players=players,
         towers=tuple(towers),
-        pending=reference_pending_actions(batch, lane, tensorizer=tensorizer, seat=seat),
+        pending_actions=reference_pending_actions(batch, lane, tensorizer=tensorizer, seat=seat),
         tick=int(batch.tick[lane, seat]),
         action_mask=action_mask,
         owner=int(seat),
@@ -2299,7 +2326,7 @@ def reference_scalar_observation(
         base.entities,
         players=base.players,
         towers=base.towers,
-        pending=base.pending_actions,
+        pending_actions=base.pending_actions,
         tick=base.tick,
         action_mask=base.action_mask,
         time=_TimeView(remaining_ms=remaining, elixir_multiplier=multiplier),
@@ -2428,6 +2455,7 @@ def reference_action_mask(
     *,
     tensorizer: Any,
     seat: int = 0,
+    model_frame: bool = True,
 ) -> _MaskView:
     """The per-lane ``action_mask`` projection ``_candidates`` reads.
 
@@ -2439,18 +2467,27 @@ def reference_action_mask(
     offset, and ``row_major`` as the ``[32][18]`` sequence the tensorizer
     validates.
 
+    ``model_frame=True`` applies the actor perspective to ``row_major`` (for a
+    direct section oracle); ``False`` leaves the native/game grid intact, which
+    is what ``tensorize`` transforms itself.  The two differ only for seat 1.
+
     A slot is open under the environment's rule — in hand, its play not already
     waiting to run, affordable at this decision's elixir, and at least one legal
     tile — which is why the floor of the projected grid is all it contributes.
     """
 
-    if seat != 0:
-        raise ValueError("the vector facts layer currently carries seat 0 only")
+    if seat not in (0, 1):
+        raise ValueError(f"facts seat {seat} is not a seat")
     lane = int(lane)
     elixir_raw = int(batch.elixir_raw[lane, seat])
     reserved_raw = int(batch.elixir_reserved_raw[lane, seat])
     effective_elixir = max(0, elixir_raw - reserved_raw) / 10_000.0
     placement = batch.placement_rows(seat)[lane]
+    if model_frame:
+        if tensorizer.perspective.flip_y:
+            placement = placement[:, ::-1, :]
+        if tensorizer.perspective.flip_x:
+            placement = placement[:, :, ::-1]
     slots: list[bool] = []
     entries: dict[str, Any] = {}
     for slot in range(int(batch.hand_slots)):
@@ -2693,8 +2730,8 @@ def reference_entities(
     extent, radius and runtime form, so a batched mismatch is a table bug.
     """
 
-    if seat != 0:
-        raise ValueError("the vector facts layer currently carries seat 0 only")
+    if seat not in (0, 1):
+        raise ValueError(f"facts seat {seat} is not a seat")
     if int(tensorizer.actor_owner) != seat:
         raise ValueError(
             f"tensorizer actor {int(tensorizer.actor_owner)} does not match facts seat {seat}"
@@ -2739,44 +2776,42 @@ def reference_entities(
     return tuple(entities)
 
 
+@dataclass
 class _ObservationView:
     """The observation attributes the batched-section oracles read.
 
     ``owner`` / ``episode_id`` / ``tier`` exist so the stock ``tensorize``
-    entry point accepts a projection for a full-batch digest gate; the section
-    oracles never read them.
+    entry point accepts a projection for a full-record digest gate, and the
+    class is a dataclass so the stock perspective transform can copy it for a
+    seat-1 oracle.  The section oracles never read the identity fields.
     """
 
-    def __init__(
-        self,
-        entities: Sequence[EntityStateV1],
-        *,
-        players: Sequence[Any] = (),
-        towers: Sequence[Any] = (),
-        pending: Sequence[PendingActionV1] = (),
-        tick: int = 0,
-        action_mask: Any | None = None,
-        time: Any | None = None,
-        phase: str = "normal",
-        metadata: Mapping[str, Any] | None = None,
-        events: Sequence[Any] = (),
-        owner: int = 0,
-        episode_id: str = "",
-        tier: ObservationTier = ObservationTier.FAIR,
-    ) -> None:
-        self.entities = tuple(entities)
-        self.players = tuple(players)
-        self.towers = tuple(towers)
-        self.pending_actions = tuple(pending)
-        self.tick = int(tick)
-        self.action_mask = action_mask if action_mask is not None else _MaskView()
-        self.time = time
-        self.phase = phase
-        self.metadata = dict(metadata or {})
-        self.events = tuple(events)
-        self.owner = int(owner)
-        self.episode_id = str(episode_id)
-        self.tier = tier
+    entities: tuple[EntityStateV1, ...] = ()
+    players: tuple[Any, ...] = ()
+    towers: tuple[Any, ...] = ()
+    pending_actions: tuple[PendingActionV1, ...] = ()
+    tick: int = 0
+    action_mask: Any | None = None
+    time: Any | None = None
+    phase: str = "normal"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    events: tuple[Any, ...] = ()
+    owner: int = 0
+    episode_id: str = ""
+    tier: ObservationTier = ObservationTier.FAIR
+
+    def __post_init__(self) -> None:
+        self.entities = tuple(self.entities)
+        self.players = tuple(self.players)
+        self.towers = tuple(self.towers)
+        self.pending_actions = tuple(self.pending_actions)
+        self.tick = int(self.tick)
+        if self.action_mask is None:
+            self.action_mask = _MaskView()
+        self.metadata = dict(self.metadata)
+        self.events = tuple(self.events)
+        self.owner = int(self.owner)
+        self.episode_id = str(self.episode_id)
 
 
 class _TimeView:
@@ -2787,21 +2822,24 @@ class _TimeView:
         self.elixir_multiplier = float(elixir_multiplier)
 
 
+@dataclass
 class _MaskView:
-    """The ``ActionMaskV1`` attributes the tensorizer reads, without the contract."""
+    """The ``ActionMaskV1`` attributes the tensorizer reads, without the contract.
 
-    def __init__(
-        self,
-        *,
-        hand_slots: Sequence[bool] = (False, False, False, False),
-        placement_masks: Mapping[str, Any] | None = None,
-        ability_sources: Sequence[int] = (),
-        reasons: Mapping[str, Any] | None = None,
-    ) -> None:
-        self.hand_slots = tuple(bool(value) for value in hand_slots)
-        self.placement_masks = dict(placement_masks or {})
-        self.ability_sources = tuple(int(value) for value in ability_sources)
-        self.reasons = dict(reasons or {})
+    A dataclass so the stock perspective transform can copy it for a seat-1
+    digest oracle (``dataclasses.fields``).
+    """
+
+    hand_slots: tuple[bool, ...] = (False, False, False, False)
+    placement_masks: dict[str, Any] = field(default_factory=dict)
+    ability_sources: tuple[int, ...] = ()
+    reasons: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.hand_slots = tuple(bool(value) for value in self.hand_slots)
+        self.placement_masks = dict(self.placement_masks)
+        self.ability_sources = tuple(int(value) for value in self.ability_sources)
+        self.reasons = dict(self.reasons)
 
 
 

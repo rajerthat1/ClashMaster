@@ -723,9 +723,10 @@ class Engine:
         exact for live entities; unmatched rows (projectiles, areas) keep a
         stable synthetic id that no ability can name.
 
-        The observation is in the seat's frame: side 0's x is mirrored and side
-        1's y is mirrored. Convert rows back to game coordinates before matching
-        the live holder.
+        The seat rows are already in game coordinates (``observe.entity_rows``
+        inverts ``Schema.toSeatX/toSeatY``), so the match key is the row point
+        as it stands.  ``side`` is the seat's owner field, which is relative for
+        seat 1.
         """
 
         if self._battle is None:
@@ -751,8 +752,8 @@ class Engine:
         matched: dict[int, Any] = {}
         for item in objects:
             side = int(item["owner"]) if int(seat) == 0 else 1 - int(item["owner"])
-            x = int(self._schema.toSeatX(int(seat), int(item["x"])))
-            y = int(self._schema.toSeatY(int(seat), int(item["y"])))
+            x = int(item["x"])
+            y = int(item["y"])
             key = (side, _row_name(item), x, y)
             candidates = bucket.get(key)
             if candidates:

@@ -41,6 +41,7 @@ from typing import Any
 
 import numpy as np
 
+from native_runner.arena import WORLD_HEIGHT, WORLD_WIDTH
 from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
 
 from .catalog import FORM_BASE, FORM_EVOLVED, FORM_HERO, Catalog
@@ -308,12 +309,15 @@ class VectorObservationBatch:
 
         This is a view of ``masks`` for the play-tile block of each slot, with
         the same ``[row][col]`` orientation the bridge's
-        ``placement_masks[...]["row_major"]`` uses.  It is a view, so a later
-        ``encode()`` refreshes it in place.
+        ``placement_masks[...]["row_major"]`` uses **after** converting the
+        seat's frame to game coordinates: seat 0 mirrors x, seat 1 mirrors y.
+        The result is still a view (negative stride), so ``encode()`` refreshes
+        it in place and no per-decision copy is made.
         """
 
         play = self.masks[:, seat, 1 : 1 + self.hand_slots * self.cols * self.rows]
-        return play.reshape(self.count, self.hand_slots, self.rows, self.cols)
+        rows = play.reshape(self.count, self.hand_slots, self.rows, self.cols)
+        return rows[:, :, :, ::-1] if int(seat) == 0 else rows[:, :, ::-1, :]
 
 
 # Tower provenance: the arena is fixed for competitive 1v1.  These ids are the
@@ -467,8 +471,15 @@ class VectorObservationEncoder:
 
         raw_pending_vocab = columns("pending_card")
         batch.pending_card_vocab[...] = raw_pending_vocab
-        batch.pending_x[...] = columns("pending_x")
-        batch.pending_y[...] = columns("pending_y")
+        # Each seat's pending point is in that seat's frame (seat 0 mirrors x,
+        # seat 1 mirrors y).  Store game coordinates so every builder applies
+        # exactly one perspective transform for its actor.
+        raw_pending_x = columns("pending_x").astype(np.int32)
+        raw_pending_y = columns("pending_y").astype(np.int32)
+        batch.pending_x[...] = raw_pending_x
+        batch.pending_y[...] = raw_pending_y
+        batch.pending_x[:, 0, :] = WORLD_WIDTH - raw_pending_x[:, 0, :]
+        batch.pending_y[:, 1, :] = WORLD_HEIGHT - raw_pending_y[:, 1, :]
         batch.pending_ticks[...] = columns("pending_ticks")
         pending_index = np.arange(s.pending_rows, dtype=np.int32)
         pending_live = pending_index[None, None, :] < batch.pending_count[..., None]
@@ -576,7 +587,11 @@ class VectorObservationEncoder:
         batch.entity_side[...] = rows[..., E["side"]]
         batch.entity_row_vocab[...] = np.where(valid, row_vocab, 0)
         batch.entity_card_id[...] = np.where(valid, _safe_lookup(self._lookup, row_vocab), 0)
-        batch.entity_x[...] = np.where(valid, rows[..., E["x"]], 0)
+        # The seat-0 scene is seat-framed (``Schema.toSeatX(0, x) = width - x``);
+        # the model and the native probe use game coordinates.  Store game x and
+        # derive velocity from it, so the builders need only the actor
+        # perspective (``flip_x`` / ``flip_y``) to reach the model frame.
+        batch.entity_x[...] = np.where(valid, WORLD_WIDTH - rows[..., E["x"]].astype(np.int64), 0)
         batch.entity_y[...] = np.where(valid, rows[..., E["y"]], 0)
         batch.entity_hp[...] = np.where(valid, rows[..., E["hp"]], UNKNOWN)
         batch.entity_max_hp[...] = np.where(valid, rows[..., E["max_hp"]], UNKNOWN)
@@ -586,7 +601,9 @@ class VectorObservationEncoder:
         batch.entity_state[...] = np.where(valid, rows[..., E["state"]], 0)
         batch.entity_flags[...] = np.where(valid, rows[..., E["flags"]], 0)
         batch.entity_target[...] = np.where(valid, rows[..., E["target"]], UNKNOWN)
-        batch.entity_target_x[...] = np.where(valid, rows[..., E["target_x"]], 0)
+        batch.entity_target_x[...] = np.where(
+            valid, WORLD_WIDTH - rows[..., E["target_x"]].astype(np.int64), 0
+        )
         batch.entity_target_y[...] = np.where(valid, rows[..., E["target_y"]], 0)
         batch.entity_deploy_ms[...] = np.where(valid, rows[..., E["deploy_ms"]], 0)
 

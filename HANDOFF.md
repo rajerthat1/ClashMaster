@@ -6,6 +6,33 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — BLOCKER: crforge observations are seat-framed; the native model is game-framed
+
+While starting seat 1, a coordinate-frame divergence surfaced that is more
+important than the seat-1 work. The native path feeds the model **game**
+coordinates; the crforge bridge and the vector facts layer feed the **seat
+frame**, which for seat 0 mirrors x (`Schema.toSeatX(0, x) = width - x`).
+
+Evidence measured today:
+
+- Native x86_64 16.635.1 engine (`crx_engine_host.py`, `CR_NATIVE_BUILD_ABI=x86_64`):
+  a Skeletons play on game cell `(6, 10)` observes the units at
+  **(6500, 10500)** — the commanded game point.
+- The same play on `CrforgeResidentEnv` observes them at
+  **(11002–12003, ~10212–11079)**, i.e. `18000 - x`: the seat-0 frame.
+- The vector pending header for that play is `pending_x = 11501` for game
+  `6500`, so the engine's pending/mask/action space is seat-framed while
+  `BattleEnvV1.action_mask` builds model masks in game coordinates.
+
+Consequence: a policy trained on the native path sees a horizontally mirrored
+board and a differently-framed placement mask during crforge training, and every
+crforge evaluation to date was mirrored. C0/C2's bridge-vs-bridge evidence is
+still valid for legality/parity, but it does not validate the native frame. This
+must be fixed before C4 and before seat 1 can be gated.
+
+**Fix in progress (uncommitted at session end)** — see the session-23 section
+below for the exact files and remaining steps.
+
 ### 2026-11-19 — C3-B closed: the batched packet is 8.5× the stock tensorizer
 
 The facts-only path now produces the whole `UniversalSemanticBatchV4` for every
@@ -269,6 +296,94 @@ do not start another R0 run.
 
 ---
 
+## Session 23 (partial, uncommitted at wrap-up) — seat 1 and the game-frame fix
+
+**Read first:** this section, the blocker entry at the top, and
+`FINDINGS.md` §3.55 (to be written — the evidence is in this section for now).
+
+The session started on seat 1 and immediately found a frame divergence that has
+to land first. The changes below are a coherent checkpoint (the full bridge
+suite passes and the seat-0 digest gate re-passes), but seat 1's digest gate and
+the full 256-lane measurement are **not** done.
+
+### The finding
+
+The native model input is **game coordinates**; the crforge bridge and the
+vector facts layer were feeding the **seat frame**. Measured:
+
+| path | play | observed unit |
+| --- | --- | --- |
+| native x86_64 (`CR_NATIVE_BUILD_ABI=x86_64`) | Skeletons on game cell `(6,10)` | **(6500, 10500)** |
+| crforge resident | same play via `BattleEnvV1` | **(11002–12003, ~10212–11079)** |
+
+The vector pending header for the same play is `pending_x = 11501` for game
+`6500`, and the engine's action/mask space is seat-framed
+(`Schema.toSeatX(0, x) = 18000 - x`). `BattleEnvV1.action_mask` builds model masks
+in game coordinates, so the crforge model was seeing a mirrored board with an
+unmirrored mask. C0/C2's bridge-vs-bridge parity is unaffected as a legality
+record; its model-frame claim was never valid.
+
+### What changed (in the working tree)
+
+- **`crforge_bridge/observe.py`** — `entity_rows(..., seat=0)` converts each
+  seat's rows to game coordinates (`x`, `targetX`; seat 1 converts `y`,
+  `targetY`). There is one conversion point for the bridge.
+- **`crforge_bridge/engine.py`** — `_bind_holder_identity` uses the now-game
+  rows directly (the old `toSeatX/toSeatY` un-mirror was the workaround for the
+  wrong frame).
+- **`crforge_bridge/vector_observation.py`** — the facts layer writes **game
+  coordinates**: entity `x` (and target x) are `WORLD_WIDTH - seat0_x`; derived
+  velocity follows; each seat's pending point is converted once (seat 0 x, seat
+  1 y); `placement_rows(seat)` returns the seat's mask flipped to the game frame
+  (still a view).
+- **`crforge_bridge/vector_rows.py`** — all row builders are actor-seat aware
+  (`_actor_seat(tensorizer)`, no more seat-0 refusals). Card pending cells apply
+  the owner-signed subcell offset and the actor perspective; candidate placement
+  applies `flip_x` / `flip_y`; scalars read the actor seat's elixir, crowns and
+  overflow. `reference_*` take `seat`; `reference_action_mask(...,
+  model_frame=False)` leaves the native game grid for the stock `tensorize`
+  (which applies the perspective itself), while the section oracles keep the
+  default model-frame grid. `_PlayerView` / `_ObservationView` / `_MaskView` are
+  now dataclasses so the stock perspective transform can copy them for a
+  seat-1 digest oracle.
+- **`tools/crforge/encoder_spike.py`** — the per-lane control converts pending
+  and entity/target x too, so the C1 spike still compares like with like.
+- **tests** — the seat-0-only refusal tests became seat-mismatch/invalid-seat
+  tests; the pending-cell fixture is game-frame; the Tesla play helper converts
+  its chosen game cell back to the engine's seat-frame action index.
+
+### Status
+
+- `crforge_bridge/tests`: **52 passed** (includes the 4 `test_vector_tensorize`
+  tests).
+- Seat-0 digest spot-check after the change (64 lanes × 12 decisions, verify 8):
+  **152/152 digest-identical**, 0.105 ms/lane tensorize, **0.148 ms/lane** end to
+  end, 6.65× (`/tmp/opencode/seat0-after-frame.json`).
+- **Not done:** the 256 × 40 seat-0 artifact in
+  `runs/crforge-c3/batched-tensorize.json` predates the frame change and must be
+  re-run; `tools/crforge/batched_tensorize.py` has no `--seats` yet, so no
+  seat-1 digest, no two-seat timing, and `FINDINGS.md` §3.55 is not written.
+  The session-22 numbers in this file still describe the old (seat-framed)
+  facts; requote them after the re-run.
+
+### Next session (session 24) — finish the frame fix, then C4
+
+1. **Add `--seats 0 1`** to `batched_tensorize.py`: one `VectorTensorizer` and
+   one stock tensorizer per actor, per-seat `reference_scalar_observation(...,
+   seat=...)` and `reference_action_mask(..., seat=..., model_frame=False)`, and
+   a combined end-to-end cost (facts once + both tensorizes + both records).
+2. **Gate seat 1** against the stock actor-1 tensorizer on the same facts. This
+   is the first test of the dataclass-perspective path; expect the stock
+   `_card_sets`/`_candidates` pending and mask transforms to be the fragile
+   parts.
+3. **Re-run 256 × 40 for both seats** and replace the session-22 artifact
+   numbers. Add a native cross-check to the gate: a position from the x86 engine
+   and crforge must agree (the one-off used here is not a test yet).
+4. **Then C4** with the producer's per-lane pair replaced by the stacked
+   `VectorTensorizer` call. Do not scale lanes/GPUs before the two-seat gate.
+5. **Parity cadence:** unchanged — 50–150 native matches every N updates and
+   after every adapter change; never promote on crforge.
+
 ## Session 22 results (2026-11-19) — C3-B closed: the facts-only tensorize clears the gate
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
@@ -339,6 +454,12 @@ guard). The bridge suite is **52 tests**, all passing; ruff clean on the new
 files.
 
 ### Next session (session 23) — C4's batched self-play loop
+
+> **Session 23 started item 1 and stopped on a blocker:** seat 1 uncovered that
+> crforge observations were seat-framed while the native model is game-framed.
+> The fix is in the working tree (facts + bridge + seat-aware builders, 52 tests
+> pass); seat 1's digest gate and the re-measurement are still open. See the
+> session-23 section above.
 
 1. **Seat 1 is the open scope item.** The facts layer and every builder are
    seat 0 only, but self-play tensorizes both owners of each lane. Add a seat

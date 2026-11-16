@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from native_runner.arena import WORLD_HEIGHT, WORLD_WIDTH
+
 from .catalog import FORM_BASE, FORM_EVOLVED, FORM_HERO, Catalog, pack_card_parameter
 
 UNKNOWN = -1
@@ -185,12 +187,25 @@ def _nearest_card_id(catalog: Catalog, row_name: str) -> int | None:
 
 
 def entity_rows(
-    observation: list[int], schema, vocabulary, catalog: Catalog, *, rows: list[Row] | None = None
+    observation: list[int],
+    schema,
+    vocabulary,
+    catalog: Catalog,
+    *,
+    rows: list[Row] | None = None,
+    seat: int = 0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[Row]]:
     """Decode one seat's objects into (ordinary facts, rich facts, rows).
 
     ``rows`` lets a caller that already decoded the same observation (the
-    bridge's ``_capture``) skip the second full row decode.
+    bridge's ``_capture``) skip the second full row decode instead of walking
+    the seat vector twice.
+
+    Coordinates are converted from the seat's frame to **game** coordinates,
+    which is the frame the model and the native probe use: seat 0's x is
+    mirrored and seat 1's y is mirrored in ``Schema.toSeatX/toSeatY``.  Emitting
+    the seat frame here made every crforge observation horizontally mirrored
+    relative to the native path (see ``FINDINGS.md`` §3.55).
     """
 
     if rows is None:
@@ -220,6 +235,11 @@ def entity_rows(
             # Schema exposes only the current shield, so `max` is not claimed:
             # the rich adapter accepts the current value on its own.
             shield = {"current": row.shield, "max": row.shield, "status": "authoritative"}
+        # ``Schema.toSeatX/toSeatY`` map game -> seat; this is the inverse.
+        game_x = WORLD_WIDTH - int(row.x) if int(seat) == 0 else int(row.x)
+        game_y = int(row.y) if int(seat) == 0 else WORLD_HEIGHT - int(row.y)
+        target_x = WORLD_WIDTH - int(row.target_x) if int(seat) == 0 else int(row.target_x)
+        target_y = int(row.target_y) if int(seat) == 0 else WORLD_HEIGHT - int(row.target_y)
         common = {
             "slot": row.slot,
             "nativeObjectId": native_id,
@@ -227,10 +247,10 @@ def entity_rows(
             "owner": row.side,
             "cardId": row.card_id or 0,
             "dataGlobalId": max(1, row.card_id or 0),
-            "x": row.x,
-            "y": row.y,
-            "targetX": row.target_x,
-            "targetY": row.target_y,
+            "x": game_x,
+            "y": game_y,
+            "targetX": target_x,
+            "targetY": target_y,
             "targetEntityKey": target_key,
             "targetEntityValidated": target_key is not None,
             "objectIndex": row.slot,
