@@ -6,6 +6,22 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — C4's action path is closed, and there is no producer yet
+
+The model's sampled `ActionSequenceV4` now decodes straight into the vector
+engine's flat action index for both seats, in one NumPy pass:
+`crforge_bridge/vector_actions.py`, gated at **3,008/3,008 lane-decisions**
+against the stock per-lane decoder, **0.000232 ms/lane-decision**, **0 engine
+rejects** (`runs/crforge-c4/vector-decode.json`, `FINDINGS.md` §3.56). Frames:
+model → game follows the tensorizer perspective, game → engine follows
+`Schema.toSeatX/toSeatY`; the composition is one x flip for both seats.
+
+**This also corrects session 24's next-session note.** There is no crforge
+producer to wire the stacked tensorizer into: `producer.py` is the **IL**
+producer over native `ObservationV1` lanes, and the PPO worker is native too. C4
+needs a new crforge self-play loop, and the two halves it needs are now gated —
+stacked tensorize (C3-B) and stacked decode. See the session-25 section below.
+
 ### 2026-11-19 — the game-frame fix is closed; both actor seats pass the digest gate
 
 The native model consumes **game** coordinates; crforge fed the **seat frame**,
