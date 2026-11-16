@@ -6,6 +6,42 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — upstream PR #12 (visual decks, exact offline duels) merged
+
+`FirstLight_CR#12` (SeiShonagon520) is in `main` as `f5d9485`. What it changes
+for us:
+
+- **Exact offline AI duels.** `cr_native_env.queue_hand_action_next_tick` now
+  resumes the renderer only if it found it running, and the duel loop enables
+  `synchronize_native_render_steps`, so both policies decide on the same
+  observation boundary and each round advances exactly five ticks instead of
+  following wall-clock inference. A model play is queued on the frozen clock
+  rather than through the pause/resume helper.
+- **Duel diagnostics.** The decision log gains full decision ms and elixir, the
+  result gains rejected-action counts and mean decision ms, and a failed duel
+  writes `result.json` with the error instead of only a traceback.
+- **Model warmup in duels** (`policy_session.warmup`): kernels are primed during
+  the paused setup, then the recurrent state and action history are reset.
+- **Deck UI and art.** A visual deck picker (`visual_deck.py`, bundled card
+  images, 7.5 MB), duel-mode configuration (`duel_modes.py`), and searchable card
+  library in `user_interface.py`. Not used by training; harmless.
+- **`deck_roles_from_form_availability`** projects a deck that exceeds the V4
+  role contract (≤2 heroes, ≤2 evolutions, ≤3 total) instead of raising, and
+  warns. The locked learner deck is inside the contract (one hero, two
+  evolutions), so training inputs are unchanged; special modes are marked
+  experimental.
+
+Conflicts (2) were resolved to keep both sides: our `HandActionRejected` →
+`action_rejected` event wraps the PR's synchronized-step branch in
+`battle_env.py`, and our ruleset-manifest/combat-ring gate stays beside the PR's
+explicit `mode_timeline` in `offline_duel.py`.
+
+**Unchanged blocker:** native-render on 16.635.1 still SIGSEGVs in the render
+gate (§3.31), so `offline_agent`/`offline_duel` remain headless-only here until
+that is fixed; this PR is the right code for when it is. The headless
+evaluator, PPO and crforge paths are untouched. Validated: 106 native tests
+across the touched modules + the 66-test crforge suite.
+
 ### 2026-11-19 — C4's producer loop runs; the forward is the whole packet
 
 `tools/crforge/self_play.py` is the first crforge self-play producer: one
