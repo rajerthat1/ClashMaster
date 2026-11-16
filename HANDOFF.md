@@ -6,6 +6,19 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — C3-B closed: the batched packet is 8.5× the stock tensorizer
+
+The facts-only path now produces the whole `UniversalSemanticBatchV4` for every
+lane: `crforge_bridge/vector_tensorize.py` (stacked record + batched previous
+action), gated by `tools/crforge/batched_tensorize.py` on 256 learner-deck lanes
+× 40 decisions. **1,504/1,504 lane-decisions are `batch_digest`-identical** to
+the per-lane tensorizer, field by field, with sampled actions recorded on both
+paths. Timing per lane: **facts 0.0315 + tensorize 0.0807 + record 0.0060 =
+0.118 ms** — ~8,460 decisions/s per process, under C1's 0.5 ms/lane gate and a
+**7.75×** speedup on the tensorizer half. C3-B is done; **C4's batched self-play
+loop is next**, starting with seat 1 (the facts layer and builders are seat 0
+only). Evidence: `runs/crforge-c3/batched-tensorize.json`, `FINDINGS.md` §3.54.
+
 ### 2026-11-15 — crforge is the bulk trainer; the native engine is the gate
 
 The native path is not the throughput path, and the reason is the **Python
@@ -256,6 +269,92 @@ do not start another R0 run.
 
 ---
 
+## Session 22 results (2026-11-19) — C3-B closed: the facts-only tensorize clears the gate
+
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
+`FINDINGS.md` §3.54.
+
+### What changed
+
+The last C3-B piece was the wiring: a `tensorize` that assembles the per-lane row
+sections into the record the model consumes, with no contracts, no observation
+projection and no per-lane Python. `crforge_bridge/vector_tensorize.py`:
+
+- **`VectorTensorizer`** compiles `VectorEntityTables` and every section builder
+  once (cards, groups, towers, effects/events, candidates, relations, spatial
+  planes, scalars) and `tensorize(batch)` calls them in the tensorizer's own
+  order, returning one `UniversalSemanticBatchV4` with **lanes as the batch
+  dimension**. Sections already carry the lane axis, so the join is a reference,
+  not a stack; only relations keep their common padded width and mask.
+- **The previous-action record is batched.** `record_action(sequence, batch)`
+  takes lanes as rows, resolves each sampled UID against that lane's candidate
+  rows and fills one `PreviousActionV4` for every lane, replacing it wholesale
+  (the same snapshot semantics as the stock method).
+- **`lane_batch(batch, lane)`** slices the stacked record back to the exact
+  one-row tensors the per-lane path emits (relations trimmed to the live count,
+  every fixed section at V4 capacity). That slice is the digest projection, not
+  a training path.
+- **`batch_digest`** now lives here (one definition for the gate and the C3
+  profiler) and `compare_semantic_batches` names the first differing field when a
+  digest differs.
+- `reference_observation` / `reference_scalar_observation` gained
+  `episode_id` / `owner` / `tier` and pass `tower_troop_id` through, so the stock
+  `tensorize` entry point can be driven from the same facts; the section oracles
+  are unchanged.
+- `VectorGroupSection.lane` / `VectorCardSection.lane` complete the lane slice
+  set (towers, planes, scalars, effects/events, candidates and relations already
+  had one).
+
+Scope is unchanged: seat 0 and the bridge's no-event envelope. This is the
+packet assembly, not a widened envelope.
+
+### Measured (256 lanes, learner deck, 40 decisions, verify 32 after step 0)
+
+`runs/crforge-c3/batched-tensorize.json`:
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| stacked facts-only `tensorize` | **20.65 ms** | **0.0807** |
+| per-lane stock `tensorize` (prebuilt references) | 159.95 ms | 0.6248 |
+
+**Equivalence: pass, 1,504/1,504 lane-decisions** (256 at step 0 + 39 × 32
+after), compared field by field including dtype and shape, and
+`batch_digest`-identical. A sampled deploy action was recorded on both paths
+every step, so `previous_action` was exercised, and the stacked record ran the
+stock `UniversalSemanticBatchV4.validate` at step 0. Busiest lane: 14 active
+groups, 42 relation edges, 4 candidates.
+
+**End to end: 0.118 ms/lane** — facts layer 0.0315 + tensorize 0.0807 + batched
+`record_action` 0.0060 — i.e. **~8,460 decisions/s per process** against the
+0.5 ms/lane gate, a **7.75×** speedup on the tensorizer half. A second seed
+(`--seed 2`) reproduced it: 1,504/1,504, 0.0803 ms/lane, 8.0×, 0.117 ms/lane
+end to end. This is the measurement the C1/C3 record was waiting for: the
+≤0.5 ms/lane claim is now supported by a digest gate, not by section
+arithmetic.
+
+`crforge_bridge/tests/test_vector_tensorize.py` adds 4 tests (10-decision played
+digest equivalence with recorded actions, relation-only trimming at fixed V4
+capacity, per-lane previous-action resolution, and a broken-lane comparison
+guard). The bridge suite is **52 tests**, all passing; ruff clean on the new
+files.
+
+### Next session (session 23) — C4's batched self-play loop
+
+1. **Seat 1 is the open scope item.** The facts layer and every builder are
+   seat 0 only, but self-play tensorizes both owners of each lane. Add a seat
+   parameter (or a second `VectorTensorizer` with `actor_owner=1`) and gate its
+   digest the same way before the loop uses it.
+2. **Wire the stacked batch into the C4 producer.** `producer.py` calls
+   `tensorize`/`record_action` per lane per owner today; the batched
+   `VectorTensorizer` replaces that pair with one call per decision, and the
+   batched `ActionSequenceV4` is the natural row source.
+3. **C4 gate, unchanged:** 8 lanes/process, 2–4 processes, 10 segments,
+   `rejected 0`, `eligible_act_rate > 0`, native eval not degrading; log
+   env-steps/s, tensorize ms, inference ms. Include NVIDIA MPS (the RoyaleFish
+   `ever_*` recipe).
+4. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
 ## Session 21 results (2026-11-19) — C3-B's row build is complete
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
@@ -407,6 +506,13 @@ Every named row section now has a batched build and a gate. Only the wiring
 remains.
 
 ### Next session (session 22) — C3-B's last piece
+
+> **Session 22 did item 1:** `crforge_bridge/vector_tensorize.py` assembles the
+> stacked `UniversalSemanticBatchV4` and
+> `tools/crforge/batched_tensorize.py` proves **1,504/1,504 lane-decisions
+> digest-identical** (values, shapes, dtypes) at **0.118 ms/lane end to end**.
+> C3-B is closed; the next work is C4. See the session-22 section above and
+> `FINDINGS.md` §3.54.
 
 1. **Wire it up:** a facts-only `tensorize` returning one
    `UniversalSemanticBatchV4` per lane, `batch_digest`-identical to the per-lane

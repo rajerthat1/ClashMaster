@@ -70,6 +70,7 @@ from native_runner.contracts import (
     ActionV1,
     CardKind,
     EntityStateV1,
+    ObservationTier,
     PendingActionV1,
     TargetKind,
     construct_contract,
@@ -390,6 +391,33 @@ class VectorGroupSection:
     child_index: np.ndarray
     group_overflow: np.ndarray
     child_overflow: np.ndarray
+
+    def lane(self, lane: int) -> BattleGroupSetV4:
+        """One lane back to the exact one-row record the stock method emits."""
+
+        index = int(lane)
+
+        def rows(value: torch.Tensor) -> torch.Tensor:
+            return value[index : index + 1].clone()
+
+        return BattleGroupSetV4(
+            source_card_vocab_id=rows(self.groups.source_card_vocab_id),
+            group_type=rows(self.groups.group_type),
+            owner_type=rows(self.groups.owner_type),
+            runtime_form=rows(self.groups.runtime_form),
+            features=rows(self.groups.features),
+            position=rows(self.groups.position),
+            extent=rows(self.groups.extent),
+            mask=rows(self.groups.mask),
+            child_archetype_id=rows(self.groups.child_archetype_id),
+            child_group_index=rows(self.groups.child_group_index),
+            child_type=rows(self.groups.child_type),
+            child_features=rows(self.groups.child_features),
+            child_position=rows(self.groups.child_position),
+            child_extent=rows(self.groups.child_extent),
+            child_radius=rows(self.groups.child_radius),
+            child_mask=rows(self.groups.child_mask),
+        )
 
 
 class VectorGroupBuilder:
@@ -1945,6 +1973,22 @@ class VectorCardSection:
     opponent: CardSetV4
     card_to_row: dict[int, int]
 
+    def lane(self, lane: int) -> tuple[CardSetV4, CardSetV4]:
+        """One lane back to the exact one-row card sets the stock method emits."""
+
+        index = int(lane)
+
+        def card_set(value: CardSetV4) -> CardSetV4:
+            return CardSetV4(
+                card_vocab_id=value.card_vocab_id[index : index + 1].clone(),
+                runtime_form=value.runtime_form[index : index + 1].clone(),
+                role_bits=value.role_bits[index : index + 1].clone(),
+                runtime_features=value.runtime_features[index : index + 1].clone(),
+                mask=value.mask[index : index + 1].clone(),
+            )
+
+        return card_set(self.own), card_set(self.opponent)
+
 
 @dataclass(frozen=True)
 class VectorCandidateSection:
@@ -2140,6 +2184,7 @@ def reference_observation(
     seat: int = 0,
     tower_troop_id: int | None = None,
     action_mask: Any | None = None,
+    episode_id: str | None = None,
 ) -> Any:
     """The per-lane oracle input, projected from the same facts.
 
@@ -2148,6 +2193,8 @@ def reference_observation(
     not that both sides share a shortcut.  Only the attributes those sections
     read are supplied.  ``action_mask`` is the projected mask a caller needs for
     ``_candidates``; a missing one is the empty mask the other sections see.
+    ``episode_id`` is only for a caller that drives the stock ``tensorize``
+    entry point (the section oracles never read it).
     """
 
     if seat != 0:
@@ -2209,6 +2256,8 @@ def reference_observation(
         pending=reference_pending_actions(batch, lane, tensorizer=tensorizer, seat=seat),
         tick=int(batch.tick[lane, seat]),
         action_mask=action_mask,
+        owner=int(seat),
+        episode_id=str(episode_id) if episode_id is not None else "",
     )
 
 
@@ -2222,6 +2271,8 @@ def reference_scalar_observation(
     native_tick_offset: int = 0,
     seat: int = 0,
     action_mask: Any | None = None,
+    episode_id: str | None = None,
+    tower_troop_id: int | None = None,
 ) -> _ObservationView:
     """The per-lane observation ``_scalars`` reads, with the timeline facts.
 
@@ -2232,7 +2283,14 @@ def reference_scalar_observation(
     """
 
     base = reference_observation(
-        batch, lane, tables=tables, tensorizer=tensorizer, seat=seat, action_mask=action_mask
+        batch,
+        lane,
+        tables=tables,
+        tensorizer=tensorizer,
+        seat=seat,
+        action_mask=action_mask,
+        episode_id=episode_id,
+        tower_troop_id=tower_troop_id,
     )
     canonical = int(batch.tick[int(lane), int(seat)])
     phase, multiplier = timeline.phase(max(0, canonical + int(native_tick_offset)))
@@ -2247,6 +2305,9 @@ def reference_scalar_observation(
         time=_TimeView(remaining_ms=remaining, elixir_multiplier=multiplier),
         phase=phase,
         metadata={"entity_overflow_count": int(batch.entity_overflow[int(lane), int(seat)])},
+        owner=base.owner,
+        episode_id=base.episode_id,
+        tier=base.tier,
     )
 
 
@@ -2679,7 +2740,12 @@ def reference_entities(
 
 
 class _ObservationView:
-    """The observation attributes the batched-section oracles read."""
+    """The observation attributes the batched-section oracles read.
+
+    ``owner`` / ``episode_id`` / ``tier`` exist so the stock ``tensorize``
+    entry point accepts a projection for a full-batch digest gate; the section
+    oracles never read them.
+    """
 
     def __init__(
         self,
@@ -2694,6 +2760,9 @@ class _ObservationView:
         phase: str = "normal",
         metadata: Mapping[str, Any] | None = None,
         events: Sequence[Any] = (),
+        owner: int = 0,
+        episode_id: str = "",
+        tier: ObservationTier = ObservationTier.FAIR,
     ) -> None:
         self.entities = tuple(entities)
         self.players = tuple(players)
@@ -2705,6 +2774,9 @@ class _ObservationView:
         self.phase = phase
         self.metadata = dict(metadata or {})
         self.events = tuple(events)
+        self.owner = int(owner)
+        self.episode_id = str(episode_id)
+        self.tier = tier
 
 
 class _TimeView:

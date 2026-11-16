@@ -49,7 +49,6 @@ import statistics
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +70,8 @@ from bridge_session import (
     build_episode,
     initial_elixir,
 )
+
+from crforge_bridge.vector_tensorize import batch_digest
 
 # Methods on the tensorizer are the sections C3 can attack.
 _TENSORIZER_SECTIONS = (
@@ -144,32 +145,6 @@ def _capture(
     return captured, starting_elixir, entity_counts
 
 
-def _batch_digest(batch: Any) -> str:
-    """A stable SHA-256 over every tensor in a tensorized batch.
-
-    Used to prove that a candidate fast path is bit-identical to the stock
-    tensorizer on the same decision sequence, not merely "same shape".
-    """
-
-    hasher = hashlib.sha256()
-
-    def walk(value: Any) -> None:
-        if isinstance(value, torch.Tensor):
-            hasher.update(str(value.dtype).encode())
-            hasher.update(str(tuple(value.shape)).encode())
-            hasher.update(value.detach().cpu().contiguous().numpy().tobytes())
-            return
-        if is_dataclass(value) and not isinstance(value, type):
-            for field in fields(value):
-                hasher.update(field.name.encode())
-                walk(getattr(value, field.name))
-            return
-        hasher.update(repr(value).encode())
-
-    walk(batch)
-    return hasher.hexdigest()
-
-
 def _capture_digest(captured: Sequence[tuple[Any, Any]]) -> dict[str, Any]:
     """A cheap identity for a captured sequence, so an A/B replay is provable."""
 
@@ -199,7 +174,7 @@ def _replay(
     for observation, actions in captured:
         batch = tensorizer.tensorize(observation, validate=False)
         if digests is not None:
-            digests.append(_batch_digest(batch))
+            digests.append(batch_digest(batch))
         if actions is not None:
             tensorizer.record_action(actions, batch, row=0, validate=False)
 
