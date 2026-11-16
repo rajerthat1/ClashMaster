@@ -6,6 +6,43 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — the C4 producer is a training loop: one optimizer, a stated state policy
+
+`crforge_bridge/training.py` replaces the per-segment gate update with a real
+loop, and `tools/crforge/self_play.py --ppo-update` drives it:
+
+- **One AdamW for the whole run.** It is created once, steps in place, and its
+  moments survive every segment and wave. The seed checkpoint
+  (`B-general-v275`) carries no optimizer state, so a fresh Adam is the honest
+  start; `--save-checkpoint` writes the optimizer and the loop counters with the
+  weights.
+- **The update boundary is a flag, not an accident.** `--update-state-policy`
+  is `reset` (default: zero the recurrent state after each update — the LSTM
+  never holds state from weights it no longer has), `carry` (keep it; the
+  deployed inference shape and what session 28 measured), or `wave` (freeze the
+  behaviour weights for `--wave-segments` segments, update at the wave end, then
+  reset — the native collect-then-update cadence).
+- **The learning rate is the native one.** The first loop default was `1e-4`,
+  ten times the native trainer's `1e-5`; four updates at that rate collapsed ACT
+  from 45 to 0 of ~1,000 eligible lane-decisions per segment. At `1e-5` the ACT
+  rate stays at the seed policy's level. AdamW `eps 1e-5`, weight decay 0, clip
+  0.1, value coefficient 0.5, entropy 0, as the native path.
+- **The gate is two consecutive finite updates.** `training.trace` records
+  reward/return/value/KL/clip/gradient per update plus the behaviour hash before
+  and after, and `training.pass` needs `updates >= 2`, every row finite, and the
+  saved checkpoint to reload to the same weight bytes
+  (`distinct_behaviour_ids` shows the policy moved). A partial wave at the run
+  end is flushed and recorded.
+- **The artifact is `crforge-self-play.v3`.** Per-segment `updates` replace the
+  singular `update`, and a top-level `training` block carries the config, the
+  trace, the behaviour ids and the checkpoint record. `rollout.update` is the
+  aggregate the old gate read.
+- **Still open:** CUDA/MPS throughput (this host is CPU-only), a resumed run
+  (the checkpoint has the optimizer state; the loader path is not wired yet) and
+  the native parity cadence.
+
+See the session-29 section below and `FINDINGS.md` §3.60.
+
 ### 2026-11-19 — C4's rollout can be updated, including a mid-segment autoreset
 
 `distributed_ppo_update_v4` no longer requires one episode per recurrent lane.
@@ -455,6 +492,129 @@ do not start another R0 run.
 
 ---
 
+## Session 29 results (2026-11-19) — the C4 loop trains: one optimizer, a stated state policy
+
+**Read first:** this section, `FINDINGS.md` §3.60, and the session-28 section
+below.
+
+### What landed
+
+- **`crforge_bridge/training.py` — `CrforgeTrainer`.** One AdamW for the whole
+  run (it is created once and never rebuilt), an explicit update-boundary
+  policy, a reward/return trace per update, the two-update gate, and the
+  loop-counter block a checkpoint saves. `tools/crforge/self_play.py` now only
+  collects, steps, and asks the trainer to advance.
+- **`--update-state-policy {carry,reset,wave}`.** `reset` (default) zeroes the
+  recurrent state after each update; `carry` keeps it (deployed inference shape,
+  session-28 behaviour); `wave` freezes the behaviour weights for
+  `--wave-segments` segments, updates at the wave end, then resets. A partial
+  wave at the run end is flushed and recorded. Each stored segment still gets
+  its own update, because a segment cut is a truncation with its own bootstrap.
+- **The gate is two consecutive finite updates.** `training.trace` records
+  `reward_sum`, `return_mean/std`, value explained variance, `approx_kl`,
+  `clip_fraction`, `gradient_norm`, the optimizer step and the behaviour hash
+  before/after; `training.pass` needs `updates >= 2`, every row finite, every
+  identity check passed, and the checkpoint (when saved) to reload to the same
+  weight bytes. `training.behaviour_ids` and `distinct_behaviour_ids` show the
+  policy moved.
+- **`--save-checkpoint` writes a V4 checkpoint** with the persistent optimizer,
+  `update_step = source + updates` and `training_stage="crforge-c4-ppo"`, then
+  reloads it with `load_policy_v4` and compares weight digests. 203 MB per save
+  (weights + Adam moments), so it is a local `runs/` artifact.
+- **New PPO knobs** (`--ppo-value-coefficient`, `--ppo-entropy-coefficient`,
+  `--ppo-max-grad-norm`, `--ppo-adam-eps`, `--ppo-weight-decay`) with the native
+  trainer's values, and `--ppo-learning-rate` now defaults to the native
+  **1e-5**.
+- **Artifact schema `crforge-self-play.v3`**: per-segment `updates` replace the
+  singular `update`, and a top-level `training` block carries the config, trace,
+  behaviour ids and checkpoint record. `rollout.update` stays as the aggregate
+  the old gate read.
+- **Tests:** `native_runner/tests/test_training_v4_crforge_trainer.py` (7
+  tests). `test_training_v4_learning.py` plus the new file: **40 passed / 4
+  skipped**; bridge suite **74 passed**; ruff clean.
+
+### Measured
+
+Reset policy (the default), `runs/crforge-c4/self-play-train-reset.json`, 8
+lanes × 4 segments × 64 decisions:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions / ACT | **4,096 / 139 of 3,987 (3.49 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| updates / optimizer steps / behaviour ids | **4 / 4 / 4** |
+| collection rate | 47.6 lane-decisions/s |
+| update wall | 44.6 / 46.0 / 45.1 / 44.9 s |
+| `return_mean` trace | 0.227 → 0.258 → 0.296 → 0.256 |
+| `value_explained_variance` trace | −0.001, −1.03, 0.258, 0.304 |
+| checkpoint update step / reload | **279** / **digest match** |
+
+Wave policy, `runs/crforge-c4/self-play-train-wave.json`, 8 lanes × 4 segments ×
+48 decisions, `--wave-segments 2`:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions / ACT | **3,072 / 103 of 2,944 (3.50 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| updates / optimizer steps / behaviour ids | **4 / 4 / 4** |
+| collection under one frozen id | **2 ids** (`fb4acf…` updates 1–2, `b85a91…` 3–4) |
+| update wall | 66.9 s at seg 1, 65.9 s at seg 3; 0 at seg 0/2 |
+| `return_mean` trace | 0.253 → 0.198 → 0.263 → 0.278 |
+| `approx_kl` / `clip_fraction` | 4.1e-5, **−7.8e-4**, 9e-6, **−1.4e-3** / 0, **4.7 %**, 0, **4.8 %** |
+
+Autoreset lanes with `carry`, `runs/crforge-c4/self-play-train-autoreset-carry.json`,
+4 lanes × 2 segments × 60 decisions, `--max-ticks 600`:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions / ACT | **960 / 28 of 795 (3.52 %)** |
+| mid-rollout `episode_start` / truncations / resets | **8 / 8 / 4** |
+| updates / behaviour ids | **2 / 2** |
+| `return_mean` / value explained variance | 0.248 → 0.159 / −0.194, 0.109 |
+| `approx_kl` / `clip_fraction` | 6.1e-5 / 4e-6, 0 / 0 |
+| rejected | **0** |
+
+Forced probe in the gate set, `runs/crforge-c4/self-play-two-micro-probe.json`
+(8 lanes × 40 decisions, `--force-second-micro alternate --no-rollout`): **22
+forced, 18 shifted, 4 dropped, 0 illegal, gate pass**, and `training.enabled`
+false because it stores no rollout.
+
+### Found by running it
+
+1. **The learning rate default was the whole collapse.** `1e-4` (10× the native
+   trainer) took ACT from 45 → 14 → 0 → 0 of ~1,000 eligible lane-decisions in
+   four updates. The loop was correct; the rate was not the native one. The
+   `1e-4` artifact is kept as evidence
+   (`runs/crforge-c4/self-play-train-reset-lr1e-4.json`).
+2. **A wave is slightly off-policy by construction.** The two updates in a wave
+   share the sampled weights, but the second replays data the first already
+   moved away from: KL −7.8e-4 and clip fraction 4.7 % in wave 1. Small, real,
+   and the price of one optimizer over batched segments.
+3. **The checkpoint reload is a cheap, strong gate.** The saved payload carries
+   the Adam moments (~203 MB); reloading it and comparing weight bytes is what
+   proves `--save-checkpoint` wrote the trained policy and not the seed.
+4. **Wave mode holds rollouts in memory.** Two 48-decision segments at 16 rows
+   are ~86 MiB pending per wave; the update wall then lands in one segment's
+   ledger (the artifact keeps the collection and update clocks separate).
+
+### Next session (session 30)
+
+1. **Resume a run.** The checkpoint carries the optimizer and loop counters;
+   load it with `load_actor_critic_checkpoint`, continue `update_step`, and gate
+   a resumed run on the same two-update trace.
+2. **CUDA path + throughput.** Still CPU-only here (`torch 2.5.1+cpu`, no
+   `nvidia-smi`). On the A6000, run the reset gate shape at 8 and 32 rows and log
+   lane-decisions/s plus the update's forward/backward split (the update, not
+   collection, is now the larger wall).
+3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
+   and after every adapter change; crforge is never a promotion gate.
+4. **Keep the forced probe in the gate set** (`--force-second-micro`, paired with
+   `--no-rollout`): the sampled policy still emits one micro-action.
+5. **Decide the wave/update cadence for real training.** The wave buys frozen
+   behaviour data and pays with in-wave off-policy drift; the reset policy buys
+   clean identity and pays with a recurrence cut every segment. Pick one from
+   measurement, not from this gate.
+
 ## Session 28 results (2026-11-19) — C4's rollout goes through the update
 
 **Read first:** this section, `FINDINGS.md` §3.59, and the session-27 section
@@ -559,17 +719,25 @@ lane takes when the engine cuts and autoresets it mid-segment.
 
 ### Next session (session 29) — make it a training loop
 
+> **Session 29 did items 1 and 4** (`FINDINGS.md` §3.60): `crforge_bridge/training.py`
+> keeps one AdamW for the run, `--update-state-policy` states the recurrence
+> boundary (`reset`/`carry`/`wave`), and the gate is two consecutive finite
+> updates with a reward/return trace and a checkpoint reload. Item 2 (CUDA) needs
+> a GPU box; item 3 (parity cadence) is unchanged. See the session-29 section
+> above.
+
 1. **Persistent optimizer + state policy.** Keep one AdamW across segments, and
    choose explicitly between resetting the recurrence at an update boundary and
    collecting whole waves with a frozen behaviour model. Gate: two consecutive
-   updates and a finite reward/return trace.
+   updates and a finite reward/return trace. **Done 2026-11-19.**
 2. **CUDA path + throughput.** Still CPU-only here (`torch 2.5.1+cpu`, no
    `nvidia-smi`). On the A6000, run the same gate shape at 8 and 32 rows and log
    lane-decisions/s plus the update's forward/backward split.
 3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
    and after every adapter change; crforge is never a promotion gate.
 4. **Keep the forced probe in the gate set** (`--force-second-micro`, paired with
-   `--no-rollout`): the sampled policy still emits one micro-action.
+   `--no-rollout`): the sampled policy still emits one micro-action. **Done
+   2026-11-19** (22 forced, 18 shifted, 4 dropped, 0 illegal).
 
 ## Session 27 results (2026-11-19) — C4 stores a rollout; the native reward and the second micro-action
 

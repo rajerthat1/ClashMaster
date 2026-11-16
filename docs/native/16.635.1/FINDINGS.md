@@ -4475,3 +4475,195 @@ Evidence: `crforge_bridge/rollout.py`, `tools/crforge/self_play.py`,
 `crforge_bridge/tests/test_rollout.py`, `runs/crforge-c4/self-play-rollout.json`,
 `runs/crforge-c4/self-play-autoreset-rollout.json`,
 `runs/crforge-c4/self-play-two-micro.json`.
+
+### 3.60 The C4 loop becomes a trainer: one optimizer, a stated state policy (2026-11-19)
+
+§3.59 ran one PPO update per stored segment with a **fresh AdamW each time** and
+carried the recurrent state across the update. Both choices were gate shortcuts:
+momentum never spanned a segment, and the LSTM state was produced by weights the
+update had already replaced. This section turns the gate into a loop:
+`crforge_bridge/training.py` owns one persistent optimizer, an explicit
+recurrence policy at an update boundary, a reward/return trace, and the
+two-update gate; `tools/crforge/self_play.py` only collects, steps and asks the
+trainer to advance.
+
+#### The optimizer is created once
+
+`CrforgeTrainer` builds `AdamW` (`lr`, `eps`, `weight_decay`; native defaults
+`1e-5 / 1e-5 / 0`) in its constructor and never rebuilds it. The pinned
+`B-general-v275` seed carries `optimizer_state_dict: None`, so a fresh Adam *is*
+the honest continuation point; a checkpoint saved by this loop stores the
+optimizer state, and `--save-checkpoint` records both the loop counters and the
+weight digest. Every update is one `distributed_ppo_update_v4` call, so a
+single-minibatch update is one optimizer step; `training.optimizer_steps` counts
+the steps, `training.updates` counts the calls.
+
+#### The boundary policy is a flag, not an accident
+
+`--update-state-policy` names what happens to the recurrent state when the
+weights move:
+
+* `carry` — keep it. This is the deployed inference shape (one state for a whole
+  match) and what §3.59 measured; the cost is that the state was computed by the
+  pre-update weights.
+* `reset` (default) — zero it after every update. The game continues on the
+  engine; only the model's memory is cut, so the LSTM never holds state from
+  weights it no longer has.
+* `wave` — keep the behaviour weights frozen for `--wave-segments` segments,
+  apply their updates at the wave end, then reset. This is the native trainer's
+  collect-then-update cadence and the only mode where every stored segment in a
+  group was sampled by the same weights.
+
+The wave is about *when* the optimizer steps, not what one update sees: each
+segment still updates separately, because each ends in a truncation with its own
+boundary bootstrap and GAE must not cross it. A run that ends mid-wave flushes
+the partial wave and records `training.partial_wave_segments_flushed`.
+
+#### The gate is two consecutive finite updates
+
+`training.trace` holds one row per update: `reward_sum`, `reward_mean`,
+`return_mean`/`return_std`, `value_explained_variance`, `approx_kl`,
+`clip_fraction`, `gradient_norm`, the optimizer step index and the behaviour
+hash before and after. `training.pass` needs at least **two** updates, every
+trace row finite, every rollout identity check passed and — when a checkpoint is
+saved — its reload digest to match. One update proves the mechanics; two show
+the loop advances a policy and keeps collecting after it
+(`distinct_behaviour_ids`).
+
+#### Measured — reset policy, `runs/crforge-c4/self-play-train-reset.json`
+
+8 lanes × 2 seats × 4 segments × 64 decisions, `--ppo-update
+--update-state-policy reset --save-checkpoint`, CPU:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions | **4,096** |
+| ACT lane-decisions / eligible | **139 / 3,987 (3.49 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| updates / optimizer steps | **4 / 4** |
+| distinct behaviour ids | **4** |
+| per-segment update wall | 44.6 / 46.0 / 45.1 / 44.9 s |
+| collection wall / rate | 86.0 s / **47.6 lane-decisions/s** |
+| full wall | 266.7 s |
+| `return_mean` trace | 0.227 → 0.258 → 0.296 → 0.256 |
+| `value_explained_variance` trace | −0.001, −1.03, 0.258, 0.304 |
+| `approx_kl` trace | 2.9e-5, −4e-6, −3e-6, 6e-6 |
+| `clip_fraction` | 0 on every update |
+| checkpoint update step / reload | **279** / **digest match** |
+
+The first chosen default was `--ppo-learning-rate 1e-4`, ten times the native
+trainer's `1e-5`. Four updates at that rate collapsed the gate: ACT fell
+45 → 14 → 0 → 0 of ~1,000 eligible lane-decisions per segment
+(`runs/crforge-c4/self-play-train-reset-lr1e-4.json`). The loop was correct; the
+learning rate was not the native one. At 1e-5 the ACT rate stays at the seed
+policy's level (3.49 % vs §3.58's 4.34 %) and the value head starts explaining
+returns by segment 2. That is a stability observation on one 4-update run, not a
+learning claim.
+
+#### Measured — wave policy, `runs/crforge-c4/self-play-train-wave.json`
+
+8 lanes × 4 segments × 48 decisions, `--update-state-policy wave
+--wave-segments 2`:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions | **3,072** |
+| ACT lane-decisions / eligible | **103 / 2,944 (3.50 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| updates / optimizer steps | **4 / 4** |
+| distinct behaviour ids | **4** |
+| `policy_state_id_before` per wave | **2 ids** (`fb4acf…` updates 1–2, `b85a91…` updates 3–4) |
+| update wall (at the wave ends) | 66.9 s (seg 1) + 65.9 s (seg 3) |
+| collection wall / rate | 67.9 s / **45.2 lane-decisions/s** |
+| full wall | 200.8 s |
+| `return_mean` trace | 0.253 → 0.198 → 0.263 → 0.278 |
+| `value_explained_variance` trace | 0.014, −0.166, 0.034, −0.333 |
+| `approx_kl` trace | 4.1e-5, **−7.8e-4**, 9e-6, **−1.4e-3** |
+| `clip_fraction` trace | 0, **0.047**, 0, **0.048** |
+
+That is the wave's proof and its cost in one table. Both segments of a wave were
+sampled by the same weights — updates 1 and 2 share `policy_state_id_before`, as
+do updates 3 and 4 — and the optimizer did not step until the wave closed
+(segments 0 and 2 record `updates: []`, a 17.9 s / 16.4 s collection wall). But
+the second update in a wave replays data the first update has already moved away
+from: KL goes from 4.1e-5 to −7.8e-4 and the clip fraction from 0 to 4.7 % within
+wave 1. The drift is small, and it is the actual price of one optimizer over a
+batch of segments; a trainer that wants strict on-policy data has to update once
+per wave over the concatenated record (which the truncation boundary forbids) or
+keep waves short. Recorded, not hidden.
+
+#### Measured — autoreset lanes with `carry`, `runs/crforge-c4/self-play-train-autoreset-carry.json`
+
+4 lanes × 2 segments × 60 decisions, `--max-ticks 600 --ppo-update
+--update-state-policy carry`:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions | **960** |
+| ACT lane-decisions / eligible | **28 / 795 (3.52 %)** |
+| mid-rollout `episode_start` rows | **8** (4 lanes × 2 seats) |
+| mid-rollout truncations / resets | **8 / 4** |
+| updates / distinct behaviour ids | **2 / 2** |
+| `return_mean` trace | 0.248 → 0.159 |
+| `value_explained_variance` trace | −0.194, 0.109 |
+| `approx_kl` / `clip_fraction` | 6.1e-5 / 4e-6, 0 / 0 |
+| collection wall / rate | 29.2 s / 32.9 lane-decisions/s |
+| update wall | 38.9 s |
+| rejected | **0** |
+
+This is the multi-episode lane through the *loop*: the engine autoresets four
+lanes, the store records eight truncations and eight `episode_start` rows, the
+update replays each contiguous episode slice, and `carry` keeps the recurrent
+state across the segment boundary. `rollout.update.multiple_episodes_per_lane`
+is true, and both updates are finite.
+
+#### The forced probe stays in the gate set
+
+`--force-second-micro alternate --no-rollout`, 8 lanes × 40 decisions
+(`runs/crforge-c4/self-play-two-micro-probe.json`): **22 forced second
+micro-actions, 18 shifted, 4 dropped, 0 illegal, 0 rejected**, gate pass. The
+sampled policy still emits one micro-action, so this remains the only run that
+exercises the collision/drop path end to end; it is a timing probe and stores no
+rollout (`training.enabled` false).
+
+#### Tests
+
+`native_runner/tests/test_training_v4_crforge_trainer.py` (7 tests): the config's
+wave/policy validation, two consecutive updates with one optimizer object and an
+advancing weight digest, the one-update gate failing, a wave that does not step
+the optimizer until both segments are collected (and both bind the same frozen
+behaviour id), a partial wave at the run end, `carry`/`reset` on a non-zero
+recurrent state, and the digest's stability/weight sensitivity. Native learning
+suite plus the new file **40 passed / 4 skipped**; bridge suite **74 passed**; the touched files
+are ruff clean.
+
+#### Pins
+
+* **One update per stored segment, even in wave mode.** A segment cut is a
+  truncation with its own boundary value; concatenating two segments into one
+  update would either lose the bootstrap or let GAE cross a cut. The wave's
+  second update is therefore mildly off-policy (see the clip fraction above).
+* **A stored rollout's identity is the weights, not the checkpoint file.** The
+  trace records `policy_state_id_before` / `_after` per update, so a run can show
+  both that a wave was collected under frozen weights and that the optimizer
+  moved the policy (`distinct_behaviour_ids`).
+* **`--save-checkpoint` writes `training_stage="crforge-c4-ppo"`,
+  `update_step = source update step + updates`, and the persistent optimizer.**
+  The save is followed by a `load_policy_v4` reload and a weight-byte comparison;
+  a mismatch fails `training.pass`. The payload is ~203 MB (weights + Adam
+  moments) per save, so it is a local `runs/` artifact, not a committed file.
+* **CUDA is unchanged:** this host is CPU-only (`torch 2.5.1+cpu`, no
+  `nvidia-smi`), so the loop's device flag is exercised only on CPU. The forward
+  is still the packet (§3.57), so GPU throughput stays the next lever.
+* **The learning rate is the native one.** `1e-5` AdamW with `eps 1e-5`,
+  `weight_decay 0`, clip `0.1`, value coefficient `0.5`, entropy `0.0` — the
+  native trainer's PPO config, not a crforge invention. `1e-4` is recorded above
+  as the rate that collapsed ACT.
+
+Evidence: `crforge_bridge/training.py`, `tools/crforge/self_play.py`,
+`native_runner/tests/test_training_v4_crforge_trainer.py`,
+`runs/crforge-c4/self-play-train-reset.json`,
+`runs/crforge-c4/self-play-train-reset-lr1e-4.json`,
+`runs/crforge-c4/self-play-train-wave.json`,
+`runs/crforge-c4/self-play-train-autoreset-carry.json`,
+`runs/crforge-c4/self-play-two-micro-probe.json`.
