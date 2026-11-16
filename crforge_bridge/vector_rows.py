@@ -1,10 +1,10 @@
-"""Batched row build for the C3-B packet: groups, cards and relations.
+"""Batched row build for the C3-B packet: groups, cards, candidates and relations.
 
 C3 measured the packet as ~1.0 CPU ms/decision of tensorizer and attributed
 ~0.54 of it to ``_groups`` + its children, the largest section, then ~0.33 to
-``_card_sets`` and ~0.14 to ``_relations``.  Session 17 landed the vectorized
-facts layer (``vector_observation.py``, 0.032 ms/lane); this module is the row
-build on top of it: the same rows the per-lane
+``_card_sets``, ~0.30 to ``_candidates`` and ~0.14 to ``_relations``.  Session
+17 landed the vectorized facts layer (``vector_observation.py``, 0.032 ms/lane);
+this module is the row build on top of it: the same rows the per-lane
 ``UniversalObservationTensorizerV4`` emits, computed for every lane of a
 ``VectorBattle`` in one pass over fixed-size NumPy arrays.
 
@@ -13,6 +13,8 @@ Sections here:
 * :class:`VectorGroupBuilder` — causal groups and children;
 * :class:`VectorCardBuilder` — the actor's and opponent's card sets, including
   the 16.635 21-column pending-execution columns;
+* :class:`VectorCandidateBuilder` — the actor's legal deploy candidates, with
+  the native placement grid and the static building geometry the decoder needs;
 * :class:`VectorRelationBuilder` — target/reverse-target and card→group edges.
 
 Scope is deliberately narrow, and the scope is the bridge's no-event envelope
@@ -28,14 +30,17 @@ Scope is deliberately narrow, and the scope is the bridge's no-event envelope
   rich player envelope supplies them;
 * ``revealed_cards`` stays empty (the bridge receives no events), so the
   opponent card set is the eight zero rows plus the unknown-card row;
+* deploy candidates only: ``players.abilityRuntime`` is ``null`` in this
+  envelope, so no ability source exists and no ABILITY row is emitted.  Mirror
+  is refused (it needs the actor-private runtime contract the frame lacks);
 * seat 0 (the facts layer reads ``VectorBattle.observations`` seat 0).
 
-The per-lane tensorizer stays the oracle.  ``reference_observation`` projects
-the ``EntityStateV1``/player/tower/pending rows the oracle consumes from the
-same facts, and each gate compares the whole section against the stock method.
-The oracle resolves archetypes, forms, tokens and edge order through its own
-helpers, so a mismatch means this batched build is wrong, not that both sides
-share a shortcut.
+The per-lane tensorizer stays the oracle.  ``reference_observation`` /
+``reference_action_mask`` project the ``EntityStateV1``/player/tower/pending/mask
+rows the oracle consumes from the same facts, and each gate compares the whole
+section against the stock method.  The oracle resolves archetypes, forms,
+tokens, placement rows and edge order through its own helpers, so a mismatch
+means this batched build is wrong, not that both sides share a shortcut.
 
 Nothing here validates or freezes a contract, and nothing here may be used to
 replace the validated evaluator/parity path.
@@ -43,7 +48,7 @@ replace the validated evaluator/parity path.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +56,7 @@ import numpy as np
 import torch
 
 from native_runner.arena import GRID_HEIGHT, GRID_WIDTH, WORLD_HEIGHT, WORLD_WIDTH, native_building_footprint
+from native_runner.building_placement_profiles import building_placement_profile
 from native_runner.contracts import (
     ActionKind,
     ActionV1,
@@ -68,9 +74,18 @@ from native_runner.training.v4.config import (
     CHILD_FEATURE_NAMES,
     GROUP_FEATURE_NAMES,
 )
-from native_runner.training.v4.tensors import BattleGroupSetV4, CardSetV4, RelationEdgesV4
+from native_runner.training.v4.decoding import candidate_uid_v4
+from native_runner.training.v4.native_actions import MIRROR_CARD_ID
+from native_runner.training.v4.tensors import (
+    CANDIDATE_DEPLOY,
+    TARGET_GRID,
+    ActionCandidatesV4,
+    BattleGroupSetV4,
+    CardSetV4,
+    RelationEdgesV4,
+)
 
-from .catalog import FORM_HERO
+from .catalog import FORM_EVOLVED, FORM_HERO
 from .observe import _nearest_card_id
 from .vector_observation import VectorObservationBatch
 
@@ -94,6 +109,8 @@ OWNER_NEUTRAL = 2
 
 FORM_NORMAL = 0
 UNKNOWN_ARCHETYPE_VOCAB_ID = 1
+# The native hand is four indexed slots; ``hand_slot_by_card`` addresses them.
+HAND_SLOTS = 4
 
 # Feature indices, named so the build reads like the tensorizer's assignments.
 _G_MEMBERS = GROUP_FEATURE_NAMES.index("member_count_over_16")
@@ -893,6 +910,258 @@ class VectorCardBuilder:
                 ).astype(np.float32)
 
 
+@dataclass(frozen=True)
+class CandidateGeometry:
+    """Static placement facts for one card, as ``BattleEnvV1``'s mask entry carries them.
+
+    ``_cached_placement_entry`` builds these from ``card_placement_mask``: the
+    footprint comes from the native-probed building lattice
+    (``native_building_footprint``), the subcell offset from that footprint's
+    even-size rule, and ``is_building`` from a stationary collision profile.
+    They are card-static, so the vector path compiles them once instead of
+    rebuilding a 32x18 grid per lane; the live legality of a tile is the
+    vector's own mask view.
+    """
+
+    is_building: bool = False
+    width_tiles: float = 0.0
+    height_tiles: float = 0.0
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+
+    @property
+    def half_width(self) -> float:
+        return self.width_tiles / 2.0 if self.is_building else 0.0
+
+    @property
+    def half_height(self) -> float:
+        return self.height_tiles / 2.0 if self.is_building else 0.0
+
+
+def candidate_geometry(tensorizer: Any, card_id: int, form_code: int = 0) -> CandidateGeometry:
+    """The placement facts for one card and policy form.
+
+    Base and evolution forms share the deployment lattice, exactly as
+    ``native_building_footprint`` documents; the form is still passed so a
+    future divergence surfaces here rather than in a stale table.
+    """
+
+    spec = tensorizer.card_specs.get(int(card_id))
+    if spec is None:
+        return CandidateGeometry()
+    form = "evolution" if int(form_code) == FORM_EVOLVED else "base"
+    footprint = native_building_footprint(spec, form=form)
+    profile = building_placement_profile(int(card_id)) if spec.kind == CardKind.BUILDING else None
+    is_building = bool(
+        spec.kind == CardKind.BUILDING and profile is not None and profile.stationary_collision_rectangle
+    )
+    if footprint is None:
+        return CandidateGeometry(is_building=is_building)
+    offset_x, offset_y = footprint.model_subcell_offset
+    return CandidateGeometry(
+        is_building=is_building,
+        width_tiles=float(footprint.width_tiles),
+        height_tiles=float(footprint.height_tiles),
+        offset_x=float(offset_x),
+        offset_y=float(offset_y),
+    )
+
+
+class VectorCandidateBuilder:
+    """Fill the deploy-candidate section for a whole vector batch in one pass.
+
+    ``_candidates`` walks the actor's legal hand slots and emits one row each:
+    the card token and its runtime form, the deck row it addresses, the runtime
+    cost, the native placement grid, and the building geometry the decoder uses
+    to turn a model cell back into a native command point.
+
+    The vector envelope supplies all of that as facts — the hand header carries
+    the card, cost, form and pending flag, and ``VectorBattle.masks`` carries the
+    play tiles — so the only per-card work is the static geometry table above.
+    A slot is a candidate under ``BattleEnvV1``'s rule: the card is in hand, its
+    play is not already waiting to run, its runtime cost fits this decision's
+    effective elixir, and the native mask opens at least one tile.
+
+    Scope: deploy rows only.  The bridge envelope carries no per-unit ability
+    runtime (``players.abilityRuntime`` is ``null``), so ``ability_sources`` is
+    empty on both paths and no ABILITY row exists to reproduce.  Mirror is out of
+    scope: it needs the actor-private hand/placement runtime contract to name the
+    copied card, which the vector frame does not carry.
+    """
+
+    def __init__(self, tensorizer: Any) -> None:
+        self.tensorizer = tensorizer
+        self.config = tensorizer.config
+        if int(tensorizer.actor_owner) != 0:
+            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.max_candidates = int(self.config.max_action_candidates)
+        self.rows_shape = (int(self.config.board_height), int(self.config.board_width))
+        if self.rows_shape != (GRID_HEIGHT, GRID_WIDTH):
+            raise ValueError(
+                f"candidate placement is {GRID_HEIGHT}x{GRID_WIDTH}, config is {self.rows_shape}"
+            )
+        # The same layout the card section rows use, so ``own_card_row`` cannot
+        # address a different column than the one the model reads.
+        _own_order, card_to_row, _roles, _vocab = tensorizer._actor_card_layout()
+        deck = sorted(int(card_id) for card_id in card_to_row)
+        if MIRROR_CARD_ID in deck:
+            raise ValueError("the vector candidate build does not model the Mirror runtime contract")
+        self.deck_ids = np.asarray(deck, dtype=np.int64)
+        self.deck_rows = np.asarray([int(card_to_row[card_id]) for card_id in deck], dtype=np.int64)
+        self.deck_vocab = np.asarray(
+            [
+                int(tensorizer.catalog.require_vocab_id(card_id, context="legal deployment card"))
+                for card_id in deck
+            ],
+            dtype=np.int64,
+        )
+        geometry = [candidate_geometry(tensorizer, card_id) for card_id in deck]
+        self.deck_is_building = np.asarray([item.is_building for item in geometry], dtype=bool)
+        self.deck_half_width = np.asarray([item.half_width for item in geometry], dtype=np.float32)
+        self.deck_half_height = np.asarray([item.half_height for item in geometry], dtype=np.float32)
+        self.deck_offset_x = np.asarray([item.offset_x for item in geometry], dtype=np.float32)
+        self.deck_offset_y = np.asarray([item.offset_y for item in geometry], dtype=np.float32)
+        # The UID is a stable hash of (variant, visible, effective, native slot);
+        # the deck is static, so every candidate the build can emit is one of
+        # at most ``deck x hand_slots`` identities.
+        self.deck_uid = np.asarray(
+            [
+                [
+                    candidate_uid_v4(
+                        variant=CANDIDATE_DEPLOY,
+                        visible_card_vocab_id=int(vocab_id),
+                        effective_card_vocab_id=int(vocab_id),
+                        native_hand_slot=slot,
+                    )
+                    for slot in range(HAND_SLOTS)
+                ]
+                for vocab_id in self.deck_vocab
+            ],
+            dtype=np.int64,
+        )
+
+    def _deck_columns(self, card_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Deck row and vocabulary id per card id, or -1 outside the actor deck."""
+
+        positions = np.searchsorted(self.deck_ids, card_ids)
+        clipped = np.clip(positions, 0, self.deck_ids.size - 1)
+        found = (positions < self.deck_ids.size) & (self.deck_ids[clipped] == card_ids)
+        rows = np.where(found, self.deck_rows[clipped], -1)
+        vocab = np.where(found, self.deck_vocab[clipped], -1)
+        return rows, vocab
+
+    def hand_slots(self, batch: VectorObservationBatch, *, seat: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        """The model-view hand mask and the effective elixir ``_candidates`` reads."""
+
+        if int(batch.hand_slots) != HAND_SLOTS:
+            raise ValueError(f"the candidate build assumes {HAND_SLOTS} hand slots, batch has {batch.hand_slots}")
+        cost_raw = batch.hand_cost[:, seat, :].astype(np.int64) * 10_000
+        effective_raw = np.maximum(batch.elixir_raw[:, seat].astype(np.int64) - batch.elixir_reserved_raw[:, seat], 0)
+        placement = batch.placement_rows(seat)
+        occupied = placement.any(axis=(2, 3))
+        legal = (
+            (batch.hand_vocab[:, seat, :] >= 0)
+            & (batch.hand_pending[:, seat, :] == 0)
+            & (cost_raw <= effective_raw[:, None])
+            & occupied
+        )
+        return legal, effective_raw.astype(np.float64) / 10_000.0
+
+    def build(self, batch: VectorObservationBatch, *, seat: int = 0) -> VectorCandidateSection:
+        lanes = int(batch.count)
+        c = self.max_candidates
+        legal, effective_elixir = self.hand_slots(batch, seat=seat)
+        count = legal.sum(axis=1).astype(np.int64)
+        if int(count.max(initial=0)) > c:
+            raise ValueError("live legal candidate set exceeds V4 capacity")
+
+        # Rows are packed in hand-slot order, which is the order ``_candidates``
+        # walks ``player.hand`` in.
+        column = np.cumsum(legal, axis=1, dtype=np.int64) - 1
+        lane_rows, slot_rows = np.nonzero(legal)
+        target = column[lane_rows, slot_rows]
+
+        hand_ids = batch.hand_card_id[:, seat, :].astype(np.int64)
+        card_ids = hand_ids[lane_rows, slot_rows]
+        if np.any(card_ids == MIRROR_CARD_ID):
+            raise ValueError("the vector candidate build does not model the Mirror runtime contract")
+        deck_row, vocab_id = self._deck_columns(card_ids)
+        if np.any(deck_row < 0):
+            missing = int(card_ids[deck_row < 0][0])
+            raise ValueError(f"legal hand card {missing} is not in the actor deck")
+        geometry_index = np.searchsorted(self.deck_ids, card_ids)
+        form = batch.hand_form[:, seat, :][lane_rows, slot_rows].astype(np.int64)
+        placement = batch.placement_rows(seat)[lane_rows, slot_rows].astype(bool)
+
+        # Padding matches the oracle's arena defaults, so a lane slice can be
+        # compared field for field without re-masking.
+        template = ActionCandidatesV4(
+            mask=np.zeros((lanes, c), dtype=bool),
+            elixir=np.zeros(lanes, dtype=np.float32),
+            uid=np.zeros((lanes, c), dtype=np.int64),
+            variant=np.zeros((lanes, c), dtype=np.int64),
+            visible_card_vocab_id=np.zeros((lanes, c), dtype=np.int64),
+            effective_card_vocab_id=np.zeros((lanes, c), dtype=np.int64),
+            effective_form=np.zeros((lanes, c), dtype=np.int64),
+            own_card_row=np.full((lanes, c), -1, dtype=np.int64),
+            source_group_index=np.full((lanes, c), -1, dtype=np.int64),
+            source_child_index=np.full((lanes, c), -1, dtype=np.int64),
+            ability_vocab_id=np.zeros((lanes, c), dtype=np.int64),
+            cost=np.zeros((lanes, c), dtype=np.float32),
+            runtime_features=np.zeros((lanes, c, int(self.config.candidate_runtime_feature_dim)), dtype=np.float32),
+            target_mode=np.zeros((lanes, c), dtype=np.int64),
+            placement=np.zeros((lanes, c, *self.rows_shape), dtype=bool),
+            is_building=np.zeros((lanes, c), dtype=bool),
+            building_half_width=np.zeros((lanes, c), dtype=np.float32),
+            building_half_height=np.zeros((lanes, c), dtype=np.float32),
+            building_offset_x=np.zeros((lanes, c), dtype=np.float32),
+            building_offset_y=np.zeros((lanes, c), dtype=np.float32),
+            exclusion_group_id=np.full((lanes, c), -1, dtype=np.int64),
+            native_hand_slot=np.full((lanes, c), -1, dtype=np.int64),
+            native_source_entity=np.full((lanes, c), -1, dtype=np.int64),
+            native_visible_card_id=np.full((lanes, c), -1, dtype=np.int64),
+        )
+        rows = (lane_rows, target)
+        template.mask[rows] = True
+        template.elixir[...] = effective_elixir.astype(np.float32)
+        template.variant[rows] = CANDIDATE_DEPLOY
+        template.visible_card_vocab_id[rows] = vocab_id
+        template.effective_card_vocab_id[rows] = vocab_id
+        template.effective_form[rows] = form
+        template.own_card_row[rows] = deck_row
+        template.cost[rows] = batch.hand_cost[:, seat, :][lane_rows, slot_rows].astype(np.float32)
+        template.target_mode[rows] = TARGET_GRID
+        template.placement[rows] = placement
+        template.is_building[rows] = self.deck_is_building[geometry_index]
+        template.building_half_width[rows] = self.deck_half_width[geometry_index]
+        template.building_half_height[rows] = self.deck_half_height[geometry_index]
+        template.building_offset_x[rows] = self.deck_offset_x[geometry_index]
+        template.building_offset_y[rows] = self.deck_offset_y[geometry_index]
+        template.exclusion_group_id[rows] = 1000 + slot_rows
+        template.native_hand_slot[rows] = slot_rows
+        template.native_visible_card_id[rows] = card_ids
+        template.runtime_features[lane_rows, target, 0] = template.cost[lane_rows, target] / 10.0
+        if placement.shape[0]:
+            # ``float(placement_array.mean())`` over the 32x18 grid, in the same
+            # float64 arithmetic, then narrowed once.
+            template.runtime_features[lane_rows, target, 1] = placement.reshape(
+                int(placement.shape[0]), -1
+            ).mean(axis=1)
+        template.uid[rows] = self.deck_uid[geometry_index, slot_rows]
+        candidates = ActionCandidatesV4(
+            **{
+                name: torch.from_numpy(getattr(template, name))
+                for name in _CANDIDATE_FIELDS
+            }
+        )
+        return VectorCandidateSection(
+            candidates=candidates,
+            count=count,
+            hand_slots=legal,
+            effective_elixir=effective_elixir.astype(np.float32),
+        )
+
+
 class VectorRelationBuilder:
     """Fill the target/card/group relation edges for a whole vector batch.
 
@@ -1144,6 +1413,62 @@ class VectorCardSection:
     card_to_row: dict[int, int]
 
 
+@dataclass(frozen=True)
+class VectorCandidateSection:
+    """The batched ``_candidates`` output for every lane.
+
+    Candidate rows are variable-length per lane, so ``candidates`` is padded to
+    ``max_action_candidates`` with the same sentinels the per-lane arena writes
+    and ``count`` is the live row count.  ``hand_slots`` is the mask the
+    tensorizer reads (``pending_execution`` / ``insufficient_elixir`` /
+    ``no_legal_placement`` all close a slot), and ``effective_elixir`` is the
+    exact value the section's ``elixir`` field carries.
+    """
+
+    candidates: ActionCandidatesV4
+    count: np.ndarray
+    hand_slots: np.ndarray
+    effective_elixir: np.ndarray
+
+    def lane(self, lane: int) -> ActionCandidatesV4:
+        index = int(lane)
+        values = {
+            item: getattr(self.candidates, item)[index : index + 1].clone()
+            for item in _CANDIDATE_FIELDS
+            if item != "elixir"
+        }
+        values["elixir"] = self.candidates.elixir[index : index + 1].clone()
+        return ActionCandidatesV4(**values)
+
+
+_CANDIDATE_FIELDS = (
+    "mask",
+    "elixir",
+    "uid",
+    "variant",
+    "visible_card_vocab_id",
+    "effective_card_vocab_id",
+    "effective_form",
+    "own_card_row",
+    "source_group_index",
+    "source_child_index",
+    "ability_vocab_id",
+    "cost",
+    "runtime_features",
+    "target_mode",
+    "placement",
+    "is_building",
+    "building_half_width",
+    "building_half_height",
+    "building_offset_x",
+    "building_offset_y",
+    "exclusion_group_id",
+    "native_hand_slot",
+    "native_source_entity",
+    "native_visible_card_id",
+)
+
+
 class _PlayerView:
     """The player attributes ``_card_sets`` / ``_card_runtime_features`` read."""
 
@@ -1269,13 +1594,15 @@ def reference_observation(
     tensorizer: Any,
     seat: int = 0,
     tower_troop_id: int | None = None,
+    action_mask: Any | None = None,
 ) -> Any:
     """The per-lane oracle input, projected from the same facts.
 
     The tensorizer's own ``_card_sets`` / ``_towers`` / ``_relations`` decide
     everything from these rows, so a mismatch means a batched table is wrong,
     not that both sides share a shortcut.  Only the attributes those sections
-    read are supplied.
+    read are supplied.  ``action_mask`` is the projected mask a caller needs for
+    ``_candidates``; a missing one is the empty mask the other sections see.
     """
 
     if seat != 0:
@@ -1329,7 +1656,125 @@ def reference_observation(
         towers=tuple(towers),
         pending=reference_pending_actions(batch, lane, tensorizer=tensorizer, seat=seat),
         tick=int(batch.tick[lane, seat]),
+        action_mask=action_mask,
     )
+
+
+def reference_action_mask(
+    batch: VectorObservationBatch,
+    lane: int,
+    *,
+    tensorizer: Any,
+    seat: int = 0,
+) -> _MaskView:
+    """The per-lane ``action_mask`` projection ``_candidates`` reads.
+
+    The stock section consumes four facts from the mask: which hand slots are
+    open, the placement entry behind each open slot, the ability sources (empty
+    in this envelope) and the exact effective elixir.  The entry is the
+    projection of the same hand header and native tile view the batched build
+    uses: the card's runtime cost and form, its static footprint and subcell
+    offset, and ``row_major`` as the ``[32][18]`` sequence the tensorizer
+    validates.
+
+    A slot is open under the environment's rule — in hand, its play not already
+    waiting to run, affordable at this decision's elixir, and at least one legal
+    tile — which is why the floor of the projected grid is all it contributes.
+    """
+
+    if seat != 0:
+        raise ValueError("the vector facts layer currently carries seat 0 only")
+    lane = int(lane)
+    elixir_raw = int(batch.elixir_raw[lane, seat])
+    reserved_raw = int(batch.elixir_reserved_raw[lane, seat])
+    effective_elixir = max(0, elixir_raw - reserved_raw) / 10_000.0
+    placement = batch.placement_rows(seat)[lane]
+    slots: list[bool] = []
+    entries: dict[str, Any] = {}
+    for slot in range(int(batch.hand_slots)):
+        if int(batch.hand_vocab[lane, seat, slot]) < 0:
+            slots.append(False)
+            continue
+        card_id = int(batch.hand_card_id[lane, seat, slot])
+        cost = int(batch.hand_cost[lane, seat, slot])
+        form_code = int(batch.hand_form[lane, seat, slot])
+        geometry = candidate_geometry(tensorizer, card_id, form_code)
+        rows = [[bool(value) for value in row] for row in placement[slot]]
+        legal = bool(
+            not int(batch.hand_pending[lane, seat, slot])
+            and cost * 10_000 <= max(0, elixir_raw - reserved_raw)
+            and placement[slot].any()
+        )
+        slots.append(legal)
+        entries[str(slot)] = {
+            "card_id": card_id,
+            "shape": (GRID_HEIGHT, GRID_WIDTH),
+            "row_major": rows,
+            "visible_card_id": card_id,
+            "effective_card_id": card_id,
+            "native_effective_card_id": card_id,
+            "effective_cost": float(cost),
+            "form_code": form_code,
+            "native_form_code": form_code,
+            "source_native_hand_slot": slot,
+            "footprint_width_tiles": (geometry.width_tiles if geometry.width_tiles > 0 else None),
+            "footprint_height_tiles": (geometry.height_tiles if geometry.height_tiles > 0 else None),
+            "model_subcell_offset": (
+                (geometry.offset_x, geometry.offset_y)
+                if geometry.width_tiles > 0 or geometry.height_tiles > 0
+                else None
+            ),
+        }
+    return _MaskView(
+        hand_slots=tuple(slots),
+        placement_masks=entries,
+        ability_sources=(),
+        reasons={"effective_elixir": effective_elixir, "reserved_elixir": reserved_raw / 10_000.0},
+    )
+
+
+def compare_candidate_section(
+    section: VectorCandidateSection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """Every candidate tensor field, lane by lane, against the oracle."""
+
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        observation = reference_observation(
+            batch,
+            lane,
+            tables=tables,
+            tensorizer=tensorizer,
+            action_mask=reference_action_mask(batch, lane, tensorizer=tensorizer),
+        )
+        tensorizer._frame_players.clear()
+        _own, _opponent, card_to_row = tensorizer._card_sets(observation)
+        _groups, group_index, child_index, _group_overflow, _child_overflow = oracle_groups(
+            tensorizer, observation.entities
+        )
+        expected, expected_count = tensorizer._candidates(
+            observation,
+            card_to_row=card_to_row,
+            group_index_by_entity=group_index,
+            child_index_by_entity=child_index,
+        )
+        if int(section.count[lane]) != int(expected_count):
+            mismatches.append(f"candidate_count lane={lane}")
+        actual = section.lane(lane)
+        for name in _CANDIDATE_FIELDS:
+            if not torch.equal(getattr(actual, name), getattr(expected, name)):
+                mismatches.append(f"candidates.{name} lane={lane}")
+        if int(section.hand_slots[lane].sum()) != sum(bool(value) for value in observation.action_mask.hand_slots):
+            mismatches.append(f"hand_slots lane={lane}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
 
 
 def compare_card_section(
@@ -1471,17 +1916,32 @@ class _ObservationView:
         towers: Sequence[Any] = (),
         pending: Sequence[PendingActionV1] = (),
         tick: int = 0,
+        action_mask: Any | None = None,
     ) -> None:
         self.entities = tuple(entities)
         self.players = tuple(players)
         self.towers = tuple(towers)
         self.pending_actions = tuple(pending)
         self.tick = int(tick)
-        self.action_mask = _MaskView()
+        self.action_mask = action_mask if action_mask is not None else _MaskView()
 
 
 class _MaskView:
-    ability_sources: tuple[int, ...] = ()
+    """The ``ActionMaskV1`` attributes the tensorizer reads, without the contract."""
+
+    def __init__(
+        self,
+        *,
+        hand_slots: Sequence[bool] = (False, False, False, False),
+        placement_masks: Mapping[str, Any] | None = None,
+        ability_sources: Sequence[int] = (),
+        reasons: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.hand_slots = tuple(bool(value) for value in hand_slots)
+        self.placement_masks = dict(placement_masks or {})
+        self.ability_sources = tuple(int(value) for value in ability_sources)
+        self.reasons = dict(reasons or {})
+
 
 
 def oracle_groups(
@@ -1561,6 +2021,9 @@ def compare_group_section(
 
 
 __all__ = [
+    "CandidateGeometry",
+    "VectorCandidateBuilder",
+    "VectorCandidateSection",
     "VectorCardBuilder",
     "VectorCardSection",
     "VectorEntityTables",
@@ -1568,10 +2031,13 @@ __all__ = [
     "VectorGroupSection",
     "VectorRelationBuilder",
     "VectorRelationSection",
+    "candidate_geometry",
+    "compare_candidate_section",
     "compare_card_section",
     "compare_group_section",
     "compare_relation_section",
     "oracle_groups",
+    "reference_action_mask",
     "reference_entities",
     "reference_observation",
     "reference_pending_actions",

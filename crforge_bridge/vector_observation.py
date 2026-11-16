@@ -139,6 +139,9 @@ class VectorObservationBatch:
     hand_card_id: np.ndarray = field(init=False)
     hand_cost: np.ndarray = field(init=False)
     hand_form: np.ndarray = field(init=False)
+    # The engine's own statement that the slot's play is waiting to run.  It is
+    # the per-slot fact ``BattleEnvV1`` reads as ``pendingHandSlots``, and the
+    # candidate build must close that slot even though the card is still in hand.
     hand_pending: np.ndarray = field(init=False)
     hand_parameter: np.ndarray = field(init=False)
     deck_vocab: np.ndarray = field(init=False)
@@ -814,6 +817,9 @@ def compare_lane_facts(
                     add("hand_cost", lane, seat)
                 if int(batch.hand_parameter[lane, seat, index]) != int(card["cardParameter"]):
                     add("hand_parameter", lane, seat)
+                pending_flag = int(observation[schema.H_HAND_PENDING + index]) > 0
+                if bool(batch.hand_pending[lane, seat, index]) != pending_flag:
+                    add("hand_pending", lane, seat)
             for card in facts["deck"]:
                 index = int(card["slot"])
                 if not 0 <= index < schema.deck_size:

@@ -3365,3 +3365,99 @@ Evidence: `runs/crforge-c3/batched-cards.json`,
 `crforge_bridge/vector_rows.py`,
 `crforge_bridge/tests/test_vector_rows.py`,
 `tools/crforge/batched_cards.py`.
+
+### 3.49 The batched candidate section — C3-B continues (2026-11-19)
+
+`_candidates` is 0.30 of the 0.992 CPU ms/decision packet: one row per legal
+hand slot with the card token, its runtime form and cost, the deck row it
+addresses, and a 32×18 native placement grid. §3.48 listed it as blocked on
+facts the layer did not yet expose (`effective_cost`, `form_code`,
+`footprint_*`, `model_subcell_offset`). The audit for this section found that
+almost all of it was already there, and the rest is **card-static**:
+
+| candidate field | where it comes from |
+| --- | --- |
+| card id, runtime cost, runtime form | `hand_card` / `hand_cost` / `hand_form` header columns (already in the batch) |
+| slot is in flight | `hand_pending`, the same per-slot flag `player_facts` exports as `pendingHandSlots` |
+| placement grid | `VectorBattle.masks`, the `(lanes, seats, 4, 32, 18)` view §3.46 landed |
+| footprint, subcell offset, `is_building` | static per card: `native_building_footprint` + `building_placement_profile` |
+| effective elixir | `max(0, elixir - elixir_reserved) / 10_000` from the seat header |
+| `source_native_hand_slot` | the slot index (crforge's hand is dense and slot-indexed) |
+
+So the work is `VectorCandidateBuilder`: one compiled table of per-deck-card
+geometry, vocabulary id and UID, then a four-slot vector pass per batch.
+
+#### The slot rule is the environment's, not the tile block's
+
+crforge's mask keeps a slot open while its play is still waiting to run — the
+card stays in hand and a second try can be *given*. `BattleEnvV1.action_mask`
+closes it instead (`pending_execution`), and the batch must reproduce the
+bridge, so a slot is a candidate only when the card is in hand, its play is not
+queued, its runtime cost fits this decision's effective elixir, and the native
+mask opens at least one tile. The measured frame confirms the distinction: after
+queueing a 4-cost Tesla with 10 elixir, the native slot still showed 222 legal
+tiles while the correct candidate count dropped from 4 to 3.
+
+#### Geometry is a fact, and the decoder depends on it
+
+`CandidateGeometry` carries the 2×2 Tesla's half-tile `model_subcell_offset`
+(0.5, 0.5) and 3×3 X-Bow's (0, 0), exactly as `card_placement_mask` derives them
+from `NativeBuildingFootprintV1.model_subcell_offset`. This is the value
+`BattleEnvV1` validates against `action.subcell_offset`, so a candidate row that
+omitted it would decode to a command the native engine rejects.
+
+Scope stays the bridge's envelope: **deploy rows only**. `players.abilityRuntime`
+is `null` in the bridge's rich player record, so `ability_sources` is empty on
+both paths and no ABILITY row exists to reproduce. Mirror is refused explicitly
+— it needs the actor-private hand/placement runtime contract to name the copied
+card, which the frame does not carry.
+
+#### The oracle and the gate
+
+`reference_action_mask(batch, lane)` projects the mask `_candidates` reads —
+open slots, one entry per hand card with `row_major` as the `[32][18]` sequence
+the tensorizer validates, and the exact effective elixir — and
+`compare_candidate_section` runs the stock `_card_sets` / `_groups` /
+`_candidates` against it. `tools/crforge/batched_candidates.py` is the gate: 256
+learner-deck lanes, the checkpoint's own `model_config`, `ActionCandidatesV4`
+validation on every step, and paired timing.
+
+`runs/crforge-c3/batched-candidates.json` (256 lanes × 40 decisions, 60 WAIT
+warmup decisions past the start cooldown, 32 lanes verified after step 0):
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched candidate section | **0.221 ms** | **0.00086** |
+| per-lane `_candidates` oracle | 13.60 ms | 0.0531 |
+
+**Equivalence: pass**, `mismatches: []` over 40 decisions. The fixture produced
+up to 4 candidates per lane, 5,181 queued-play slots (the pending-rule case) and
+1,171 building rows (the geometry case). **61×** the per-lane oracle (two full
+runs: 0.00084–0.00086 vs 0.0524–0.0531, i.e. 61–62×); the ratio moves with how
+loaded the frame is, so quote the paired run.
+
+Section arithmetic only: replacing the live profile's 0.300 share with 0.00086
+projects **0.693 ms/decision** with groups, cards and relations also batched,
+before towers, spatial planes and scalars.
+
+#### Tests
+
+`test_vector_rows.py` adds 4 tests (14 in the file, bridge suite **36**):
+a 50-decision candidate equivalence that also validates the batch record and
+asserts a queued play and a building candidate were actually seen; the slot rule
+against a hand-built frame (pending, no elixir, a fully promised balance, an empty
+tile block); the 2×2 / 3×3 building geometry; and the Mirror refusal. `compare_lane_facts` now also
+checks `hand_pending` against the bridge's `pendingHandSlots`. Ruff clean.
+
+#### What remains for C3-B
+
+`_towers` (0.145), then `_spatial_planes` (0.117), `_scalars` and the empty
+effects/events, and only then a facts-only `tensorize` returning one
+`UniversalSemanticBatchV4` per lane, `batch_digest`-identical to the per-lane
+path. The towers section has two envelope facts to carry (empty `status`, and
+`tower_troop_id` as a static build input).
+
+Evidence: `runs/crforge-c3/batched-candidates.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_candidates.py`.

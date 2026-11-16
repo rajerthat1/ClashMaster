@@ -9,10 +9,13 @@ from crforge_bridge.catalog import Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_rows import (
+    VectorCandidateBuilder,
     VectorCardBuilder,
     VectorEntityTables,
     VectorGroupBuilder,
     VectorRelationBuilder,
+    candidate_geometry,
+    compare_candidate_section,
     compare_card_section,
     compare_group_section,
     compare_relation_section,
@@ -320,3 +323,137 @@ def test_card_builder_refuses_a_tracker(crforge_runtime: None) -> None:
             VectorCardBuilder(tensorizer)
     finally:
         tensorizer.tracker = None
+
+
+def test_batched_candidates_match_the_per_lane_oracle(crforge_runtime: None) -> None:
+    """Hand order, runtime cost/form, placement grid and building geometry."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=4) as vector:
+        _, tables = _builder(tensorizer, vector)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        candidates_builder = VectorCandidateBuilder(tensorizer)
+        saw_pending = False
+        saw_building = False
+        for step in range(50):
+            section = candidates_builder.build(batch)
+            section.candidates.validate(
+                tensorizer.config,
+                batch_size=batch.count,
+                card_vocab_size=tensorizer.catalog.vocab_size,
+                ability_vocab_size=tensorizer.ability_catalog.vocab_size,
+                own_card_count=tensorizer.config.max_own_cards,
+                group_count=tensorizer.config.max_battle_groups,
+                child_count=tensorizer.config.max_children_total,
+            )
+            saw_pending = saw_pending or bool((batch.hand_pending[:, 0] > 0).any())
+            saw_building = saw_building or bool(section.candidates.is_building.any())
+            mismatches = compare_candidate_section(section, tensorizer, batch, tables=tables)
+            assert mismatches == [], f"step {step}: {mismatches}"
+            _step(vector, 400 + step)
+            encoder.encode(batch)
+        assert saw_pending, "the fixture never queued a play, so the pending-slot rule is untested"
+        assert saw_building, "the fixture never dealt a building candidate"
+
+
+def test_candidate_slot_rule_closes_pending_unaffordable_and_blocked_slots(crforge_runtime: None) -> None:
+    """The mask is the environment's rule, not the native tile block alone."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=2) as vector:
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        # Let the start cooldown pass with no play queued, so every slot is open.
+        wait = np.zeros((vector.count, 2), dtype=np.int32)
+        for _ in range(60):
+            vector.step(wait)
+        batch = encoder.encode()
+        builder = VectorCandidateBuilder(tensorizer)
+        legal, _elixir = builder.hand_slots(batch)
+        assert legal.all(), "an open hand is fully affordable and placeable"
+
+        # A queued play closes its slot, and only its slot.
+        batch.hand_pending[0, 0, 1] = 1
+        legal, _elixir = builder.hand_slots(batch)
+        assert legal[0].tolist() == [True, False, True, True]
+
+        # No elixir closes the lane.
+        batch.elixir_raw[1, 0] = 0
+        batch.elixir_reserved_raw[1, 0] = 0
+        legal, _elixir = builder.hand_slots(batch)
+        assert not legal[1].any(), "a card costs at least one elixir"
+
+        # The header's promise accounting is what is spendable, not the raw bar.
+        batch.elixir_raw[1, 0] = 100_000
+        batch.elixir_reserved_raw[1, 0] = 100_000
+        legal, _elixir = builder.hand_slots(batch)
+        assert not legal[1].any(), "a fully promised balance leaves nothing to spend"
+
+        # An empty native tile block is ``no_legal_placement`` in the env.
+        block = batch.hand_slots * vector.schema.cols * vector.schema.rows
+        batch.masks[:, :, 1 : 1 + block] = 0
+        legal, _elixir = builder.hand_slots(batch)
+        assert not bool(legal.any())
+
+
+def test_candidate_building_geometry_is_the_native_lattice(crforge_runtime: None) -> None:
+    """A 2x2 Tesla carries the half-tile subcell offset; a 3x3 X-Bow does not."""
+
+    tesla = candidate_geometry(_tensorizer(), 27000006)
+    assert tesla.is_building
+    assert tesla.half_width == pytest.approx(1.0)
+    assert tesla.half_height == pytest.approx(1.0)
+    assert (tesla.offset_x, tesla.offset_y) == pytest.approx((0.5, 0.5))
+
+    xbow = candidate_geometry(_tensorizer(), 27000008)
+    assert xbow.is_building
+    assert xbow.half_width == pytest.approx(1.5)
+    assert (xbow.offset_x, xbow.offset_y) == pytest.approx((0.0, 0.0))
+
+    # A troop has no building footprint, so the decoder reads it as centered.
+    knight = candidate_geometry(_tensorizer(), 26000000)
+    assert not knight.is_building
+    assert knight.half_width == 0.0
+
+    # The rows carry the same values for the card they name.
+    tensorizer = _tensorizer()
+    with _vector(count=2) as vector:
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        builder = VectorCandidateBuilder(tensorizer)
+        saw_building = False
+        for step in range(40):
+            section = builder.build(batch)
+            candidates = section.candidates
+            for row in np.flatnonzero(candidates.mask[0] & candidates.is_building[0]):
+                card_id = int(candidates.native_visible_card_id[0, row])
+                expected = candidate_geometry(tensorizer, card_id)
+                assert float(candidates.building_half_width[0, row]) == pytest.approx(expected.half_width)
+                assert float(candidates.building_offset_x[0, row]) == pytest.approx(expected.offset_x)
+                saw_building = True
+            _step(vector, 700 + step)
+            encoder.encode(batch)
+        assert saw_building, "the fixture never dealt a building candidate"
+
+
+def test_candidate_builder_refuses_mirror(crforge_runtime: None) -> None:
+    """Mirror needs the actor-private runtime contract this frame does not carry."""
+
+    from native_runner.training.v4.native_actions import MIRROR_CARD_ID
+
+    tensorizer = _tensorizer()
+    original = tensorizer.deck
+    roles = dict(tensorizer.deck_roles)
+    roles[MIRROR_CARD_ID] = (False, False)
+    tensorizer.deck = (MIRROR_CARD_ID,)
+    tensorizer.deck_roles = roles
+    try:
+        with pytest.raises(ValueError, match="Mirror"):
+            VectorCandidateBuilder(tensorizer)
+    finally:
+        tensorizer.deck = original
+        tensorizer.deck_roles = roles
+

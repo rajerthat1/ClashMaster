@@ -243,6 +243,84 @@ do not start another R0 run.
 
 ---
 
+## Session 20 results (2026-11-19) — C3-B's candidate section
+
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
+`FINDINGS.md` §3.49.
+
+### What changed
+
+C3's next section after cards and relations is `_candidates` (0.30 of a 0.992
+CPU ms/decision). `crforge_bridge/vector_rows.py` now builds it for every lane of
+a `VectorBattle`:
+
+- **`VectorCandidateBuilder`** — one row per legal hand slot: card token, runtime
+  form and cost, own-card row, the native 32×18 placement grid, the building
+  half-footprint and `model_subcell_offset` the decoder needs, and the `(variant,
+  visible, effective, slot)` UID. Rows are packed in hand order, which is the
+  order `_candidates` walks `player.hand`.
+- **`CandidateGeometry`** — the per-card static placement facts
+  (`native_building_footprint` + `building_placement_profile`), compiled once per
+  deck. They are the same facts `BattleEnvV1._cached_placement_entry` derives
+  from `card_placement_mask`; the live legality of a tile stays the vector's own
+  mask view.
+- **The slot rule is the environment's**, not crforge's tile block: in hand, play
+  not queued (`hand_pending`, the flag the bridge exports as `pendingHandSlots`),
+  cost fits this decision's effective elixir, and at least one legal tile.
+  crforge keeps a slot open while its play waits to run; `BattleEnvV1` closes it.
+  Measured: after queueing a 4-cost Tesla with 10 elixir, the native slot still
+  showed 222 legal tiles while the candidate count correctly dropped 4 → 3.
+- **`reference_action_mask`** projects the mask `_candidates` reads (open slots,
+  one entry per hand card with `row_major` as the `[32][18]` sequence, the exact
+  effective elixir), and `compare_candidate_section` runs the stock `_card_sets`
+  → `_groups` → `_candidates` chain against it.
+- **`tools/crforge/batched_candidates.py`** is the gate: 256 learner-deck lanes,
+  the checkpoint's own `model_config`, `ActionCandidatesV4` validation every
+  step, 60 WAIT warmup decisions past the start cooldown, paired timing.
+
+Scope is unchanged: **deploy rows only**. `players.abilityRuntime` is `null` in
+the bridge's rich player record, so `ability_sources` is empty on both paths;
+Mirror is refused because it needs the actor-private runtime contract the frame
+does not carry.
+
+### Measured (256 lanes, learner deck, 40 decisions)
+
+`runs/crforge-c3/batched-candidates.json`:
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched candidate section | **0.221 ms** | **0.00086** |
+| per-lane `_candidates` oracle | 13.60 ms | 0.0531 |
+
+**Equivalence: pass**, `mismatches: []` over 40 decisions; up to 4 candidates per
+lane, **5,181 queued-play slots** and **1,171 building rows** exercised (the two
+cases that matter). **61×** the per-lane oracle (two full runs: 0.00084–0.00086 vs
+0.0524–0.0531, 61–62×). Section arithmetic only: replacing the live 0.300 share
+projects **0.693 ms/decision** with groups, cards and relations also batched,
+before towers, spatial planes and scalars.
+
+`crforge_bridge/tests/test_vector_rows.py` adds 4 tests (candidate equivalence
+with record validation and coverage asserts, the slot rule against a hand-built
+frame, the 2×2/3×3 building geometry, the Mirror refusal);
+`compare_lane_facts` now checks `hand_pending` against `pendingHandSlots`. The
+bridge suite is **36 tests**, all passing, ruff clean.
+
+### Next session (session 21) — C3-B's remaining sections
+
+1. **`_towers` (0.145).** Two envelope facts to carry: `status` is always empty
+   because `tower_activate` events are not supplied, and `tower_troop_id` is not
+   in the facts — pass it as a static build input (`159000000` for the learner
+   deck) and record it as a fidelity pin. Destroyed towers need the initial max
+   HP carried across frames.
+2. **Then `_spatial_planes` (0.117), `_scalars` and the empty effects/events.**
+3. **Wire it up:** a facts-only `tensorize` returning one
+   `UniversalSemanticBatchV4` per lane, `batch_digest`-identical to the per-lane
+   path on a captured sequence; only then claim ≤0.5 ms/lane end to end.
+4. **Do not** widen the batch input, add lanes or GPUs while the row build is
+   incomplete; the facts layer is 0.03 ms/lane and is not the cost.
+5. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
 ## Session 19 results (2026-11-19) — C3-B's card and relation sections
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
@@ -305,6 +383,11 @@ ability's `ability_pending` column, the tracker guard);
 is **32 tests**, all passing, ruff clean.
 
 ### Next session (session 20) — C3-B's remaining sections
+
+> **Session 20 did item 1:** `_candidates`/placement landed in
+> `crforge_bridge/vector_rows.py` with `tools/crforge/batched_candidates.py`,
+> equivalence pass (61× the per-lane oracle). Items 2–6 carry to session 21; see
+> the session-20 section above and `FINDINGS.md` §3.49.
 
 1. **`_candidates` / placement (0.30).** The facts layer carries the native
    placement-mask view, but a candidate row also needs the hand-slot runtime
@@ -1258,9 +1341,11 @@ Yes — but as a **parity oracle**, not the training engine.
 | Batched group row build | **new 2026-11-19** — `crforge_bridge/vector_rows.py` builds `_groups`+children for all lanes from the facts layer; `VectorEntityTables` compiles card/archetype/child/extent/runtime-form semantics once. **Equivalence pass** over 40 decisions (256 lanes step 0, 32 after), `mismatches: []`; **0.0539 ms/lane** vs 0.2207 per-lane oracle (**4.09×**) at 256 lanes, max 14 entities/lane (`runs/crforge-c3/batched-groups.json`, `FINDINGS.md` §3.47). Section only — the rest of C3-B is open |
 | Batched card row build | **new 2026-11-19** — `VectorCardBuilder` fills the actor's eight-row set and the opponent's nine-row set for all lanes, including the **21-column** pending-execution schema (`pending_execution`, target cell with the even-footprint offset, ability pending; tick column neutralised by the checkpoint). **0.00161 ms/lane** vs 0.0718 oracle (**44.5×**), equivalence pass, 4 pending rows max (`runs/crforge-c3/batched-cards.json`, `FINDINGS.md` §3.48) |
 | Batched relation row build | **new 2026-11-19** — `VectorRelationBuilder` fills target/reverse-target and card→group edges; `VectorRelationSection.lane(n)` slices back to the per-lane `(1, count)` record. **0.00984 ms/lane** vs 0.0522 oracle (**5.30×**), equivalence pass, 40 edges max (`FINDINGS.md` §3.48) |
+| Batched candidate row build | **new 2026-11-19** — `VectorCandidateBuilder` fills one row per legal hand slot: card/form/cost, own-card row, the native 32×18 placement grid, building half-footprint + `model_subcell_offset`, UID; `CandidateGeometry` compiles the card-static placement facts once. Slot rule is `BattleEnvV1`'s (in hand, not queued, affordable, ≥1 legal tile), not crforge's tile block. **0.00086 ms/lane** vs 0.0531 oracle (**61×**), equivalence pass over 40 decisions, 5,181 queued slots and 1,171 building rows exercised (`runs/crforge-c3/batched-candidates.json`, `FINDINGS.md` §3.49) |
+| Batched-candidate gate | **new 2026-11-19** — `tools/crforge/batched_candidates.py`; steps 256 real learner-deck lanes past the start cooldown, validates `ActionCandidatesV4` every step, compares every candidate tensor against the stock `_card_sets` → `_groups` → `_candidates` chain, then times both paired |
 | Batched-group gate | **new 2026-11-19** — `tools/crforge/batched_groups.py`; steps real learner-deck vector lanes, compares every group/child tensor against the stock `_groups` oracle on facts-projected `EntityStateV1` rows, then times both paired over all 256 lanes |
 | Batched-card gate | **new 2026-11-19** — `tools/crforge/batched_cards.py`; reads the checkpoint's own `model_config` (21 card columns for `B-general-v275`), compares card and relation tensors against the stock sections every step, then times both paired. This is the gate that proves the 16.x schema, not the default 16-column one |
-| Batched-group tests | `crforge_bridge/tests/test_vector_rows.py` (10 tests): 50-decision group equivalence, forced overflow, empty-board masks, reference-entity projection, seat-0 guard, 21-column card equivalence, relation equivalence, pending-cell mirror rule, waiting-ability column, tracker guard. Bridge suite **32 tests**, all pass |
+| Batched-row tests | `crforge_bridge/tests/test_vector_rows.py` (14 tests): 50-decision group equivalence, forced overflow, empty-board masks, reference-entity projection, seat-0 guard, 21-column card equivalence, relation equivalence, pending-cell mirror rule, waiting-ability column, tracker guard, 50-decision candidate equivalence with record validation, the candidate slot rule (pending / unaffordable / empty tile block), the 2×2 vs 3×3 building geometry, the Mirror refusal. Bridge suite **36 tests**, all pass |
 
 ### State at handoff (processes are ephemeral)
 
@@ -2083,13 +2168,14 @@ Scale options, in order of leverage:
 | `.resource/crforge/env/build/install/env` | Installed JVM env distribution for `VectorBattle` |
 | `~/.crforge/tables/16.635.8` | Pinned game tables (also 16.635.3); record the lock with every run |
 | `crforge_bridge/` | `BattleEnvV1` bridge for evaluation/parity; 152/152 cards, 118 forms. `native_runner/crforge_resident.py` presents the same surface in-process |
-| `crforge_bridge/vector_rows.py` | **C3-B row build** — `VectorGroupBuilder` (`_groups`+children), `VectorCardBuilder` (own/opponent sets incl. the 21-column pending schema), `VectorRelationBuilder` (target/reverse/card→group edges) over a whole `VectorBattle` batch; `reference_observation` projects the per-lane oracle input from the same facts |
+| `crforge_bridge/vector_rows.py` | **C3-B row build** — `VectorGroupBuilder` (`_groups`+children), `VectorCardBuilder` (own/opponent sets incl. the 21-column pending schema), `VectorCandidateBuilder` (legal hand slots, native placement grid, building geometry), `VectorRelationBuilder` (target/reverse/card→group edges) over a whole `VectorBattle` batch; `reference_observation` / `reference_action_mask` project the per-lane oracle input from the same facts |
 | `tools/crforge/batched_groups.py` | **C3-B group gate** — per-lane `_groups` oracle vs the batched section; writes `runs/crforge-c3/batched-groups.json` |
 | `tools/crforge/batched_cards.py` | **C3-B card/relation gate** — reads the checkpoint's own `model_config` (21 card columns), verifies both sections against the stock methods, then times them paired; writes `runs/crforge-c3/batched-cards.json` |
+| `tools/crforge/batched_candidates.py` | **C3-B candidate gate** — 256 learner-deck lanes past the start cooldown, `ActionCandidatesV4` validation and full section equivalence every step, paired timing; writes `runs/crforge-c3/batched-candidates.json` |
 | `crforge_bridge/tests/test_encoder_spike.py` | Pins the C1 encoders to the bridge's own facts and card-parameter packing |
 | `runs/crforge-c0-20261116/` | C0 legality soak: 20 games, `illegal`, `truncated`, `rejected_total` counters |
 | `runs/crforge-c1/` | C1 encoder-spike JSON (`encoder-spike.json`), default shape 256 × 200 × 3 |
-| `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json`; `learner-deck/` holds the locked-deck match config, the clean 2-game rollout and its tensorizer profile |
+| `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json`; the C3-B section gates `vector-observation.json`, `batched-groups.json`, `batched-cards.json`, `batched-candidates.json`; `learner-deck/` holds the locked-deck match config, the clean 2-game rollout and its tensorizer profile |
 | `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator and **locked X-Bow learner deck** constants (`DECK`, `LEARNER_DECK`, form availability), tower troop, release scope, one session per seat — used by all crforge tools; takes `port=` (socket bridge) or `native=` (resident adapter) |
 | `tools/crforge/resident_parity.py` | **C2 deliverable** — resident vs bridge, decision for decision: parity digests (native/rich/atomic, masks, rewards, terminals) + paired `env.step` timing; writes `runs/crforge-c2/resident-parity.json` |
 | `tools/crforge/profile_tensorizer.py` | **C3 deliverable** — replays a live policy episode's `tensorize`+`record_action` under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical; `--profile-decisions 0` is the timing-only A/B mode |
@@ -2189,6 +2275,13 @@ Scale options, in order of leverage:
 - Do not expect another round of Python tuning to reach ≤0.5 ms/lane: the packet
   is 3,754 calls/decision and the reductions that remove calls measured flat
   end-to-end (FINDINGS §3.44).
+- Do not treat a crforge hand slot's tile block as candidate legality. crforge
+  keeps the slot open while its play waits to run (the card is still in hand and
+  a second try can be *given*); `BattleEnvV1` closes it with `pending_execution`,
+  and the batched candidate rows follow the environment: in hand, not queued,
+  affordable at this decision's elixir, and at least one legal tile. A row set
+  built from the tile block alone emits a candidate the bridge would never offer
+  (`FINDINGS.md` §3.49).
 - Do not read `resident_batch_throughput.py` matches/s as a training rate. It is
   a raw transport ceiling: four engines measured 0.736 aggregate because one
   Python client decodes every lane, while the real worker floor is ~0.08
