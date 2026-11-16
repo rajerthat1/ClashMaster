@@ -16,6 +16,10 @@ Sections here:
 * :class:`VectorTowerBuilder` — the six-row tower section (health, active,
   target), with the tower troop as a static build input;
 * :class:`VectorSpatialPlaneBuilder` — the 14-channel explicit spatial planes;
+* :class:`VectorScalarBuilder` — the generic match scalars (clock, phase,
+  elixirs, crowns, counts);
+* :class:`VectorEmptySectionBuilder` — the empty active-effects and event
+  records the no-event envelope carries;
 * :class:`VectorCandidateBuilder` — the actor's legal deploy candidates, with
   the native placement grid and the static building geometry the decoder needs;
 * :class:`VectorRelationBuilder` — target/reverse-target and card→group edges.
@@ -60,6 +64,7 @@ import torch
 
 from native_runner.arena import GRID_HEIGHT, GRID_WIDTH, WORLD_HEIGHT, WORLD_WIDTH, native_building_footprint
 from native_runner.building_placement_profiles import building_placement_profile
+from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
 from native_runner.contracts import (
     ActionKind,
     ActionV1,
@@ -70,22 +75,27 @@ from native_runner.contracts import (
     construct_contract,
 )
 from native_runner.cr_native_env import LIVE_COMMAND_AGE_TICKS
+from native_runner.match_factory import NATIVE_GAMEPLAY_END_TICK
 from native_runner.training.v4.catalog import UNKNOWN_CARD_VOCAB_ID
 from native_runner.training.v4.config import (
     CARD_RUNTIME_FEATURE_NAMES,
     CARD_RUNTIME_FEATURE_NAMES_V2,
     CHILD_FEATURE_NAMES,
     GROUP_FEATURE_NAMES,
+    MATCH_SCALAR_NAMES,
     TOWER_FEATURE_NAMES,
 )
 from native_runner.training.v4.decoding import candidate_uid_v4
+from native_runner.training.v4.mechanics import ACTIVE_EFFECT_RUNTIME_FEATURE_NAMES
 from native_runner.training.v4.native_actions import MIRROR_CARD_ID
 from native_runner.training.v4.tensors import (
     CANDIDATE_DEPLOY,
     TARGET_GRID,
     ActionCandidatesV4,
+    ActiveEffectSetV4,
     BattleGroupSetV4,
     CardSetV4,
+    EventSetV4,
     RelationEdgesV4,
     TowerSetV4,
 )
@@ -1258,6 +1268,183 @@ class VectorSpatialPlaneBuilder:
 
 
 @dataclass(frozen=True)
+class VectorEmptySection:
+    """The batched empty effects and events records for every lane.
+
+    The bridge's no-event envelope carries no active effects and no combat
+    events, so both sections are the stock empty records widened to the lane
+    count: effects have zero rows, events keep their fixed capacity with every
+    row masked off and the padding sentinels the tensorizer validates
+    (``owner_type`` neutral, group/token addresses ``-1``).
+    """
+
+    active_effects: ActiveEffectSetV4
+    events: EventSetV4
+    event_count: np.ndarray
+    event_overflow: np.ndarray
+
+    def lane(self, lane: int) -> tuple[ActiveEffectSetV4, EventSetV4, int, int]:
+        index = int(lane)
+        effects = ActiveEffectSetV4(
+            effect_vocab_id=self.active_effects.effect_vocab_id[index : index + 1].clone(),
+            parent_type=self.active_effects.parent_type[index : index + 1].clone(),
+            parent_index=self.active_effects.parent_index[index : index + 1].clone(),
+            source_owner_type=self.active_effects.source_owner_type[index : index + 1].clone(),
+            runtime_features=self.active_effects.runtime_features[index : index + 1].clone(),
+            mask=self.active_effects.mask[index : index + 1].clone(),
+        )
+        events = EventSetV4(
+            event_type=self.events.event_type[index : index + 1].clone(),
+            owner_type=self.events.owner_type[index : index + 1].clone(),
+            source_card_vocab_id=self.events.source_card_vocab_id[index : index + 1].clone(),
+            source_form=self.events.source_form[index : index + 1].clone(),
+            source_group_index=self.events.source_group_index[index : index + 1].clone(),
+            target_token_index=self.events.target_token_index[index : index + 1].clone(),
+            features=self.events.features[index : index + 1].clone(),
+            mask=self.events.mask[index : index + 1].clone(),
+        )
+        return effects, events, int(self.event_count[index]), int(self.event_overflow[index])
+
+
+class VectorEmptySectionBuilder:
+    """Build the empty effects/events records for a whole vector batch.
+
+    This is a pure widening of the stock empty records, so there is nothing to
+    derive per lane.  It exists so the facts-only ``tensorize`` can fill every
+    ``UniversalSemanticBatchV4`` field without the per-lane contract path, and so
+    the envelope's "no effects, no events" scope is explicit rather than implied.
+    """
+
+    def __init__(self, tensorizer: Any) -> None:
+        self.tensorizer = tensorizer
+        self.config = tensorizer.config
+        if int(tensorizer.actor_owner) != 0:
+            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.effect_feature_dim = len(ACTIVE_EFFECT_RUNTIME_FEATURE_NAMES)
+        self.event_rows = int(self.config.max_recent_events)
+        self.event_feature_dim = int(self.config.event_feature_dim)
+
+    def build(self, batch: VectorObservationBatch) -> VectorEmptySection:
+        lanes = int(batch.count)
+        active_effects = ActiveEffectSetV4(
+            effect_vocab_id=torch.zeros((lanes, 0), dtype=torch.long),
+            parent_type=torch.zeros((lanes, 0), dtype=torch.long),
+            parent_index=torch.full((lanes, 0), -1, dtype=torch.long),
+            source_owner_type=torch.zeros((lanes, 0), dtype=torch.long),
+            runtime_features=torch.zeros((lanes, 0, self.effect_feature_dim), dtype=torch.float32),
+            mask=torch.zeros((lanes, 0), dtype=torch.bool),
+        )
+        rows = self.event_rows
+        events = EventSetV4(
+            event_type=torch.zeros((lanes, rows), dtype=torch.long),
+            owner_type=torch.full((lanes, rows), OWNER_NEUTRAL, dtype=torch.long),
+            source_card_vocab_id=torch.zeros((lanes, rows), dtype=torch.long),
+            source_form=torch.zeros((lanes, rows), dtype=torch.long),
+            source_group_index=torch.full((lanes, rows), -1, dtype=torch.long),
+            target_token_index=torch.full((lanes, rows), -1, dtype=torch.long),
+            features=torch.zeros((lanes, rows, self.event_feature_dim), dtype=torch.float32),
+            mask=torch.zeros((lanes, rows), dtype=torch.bool),
+        )
+        zeros = np.zeros(lanes, dtype=np.int64)
+        return VectorEmptySection(
+            active_effects=active_effects,
+            events=events,
+            event_count=zeros,
+            event_overflow=zeros.copy(),
+        )
+
+
+@dataclass(frozen=True)
+class VectorScalarSection:
+    """The batched ``_scalars`` output for every lane."""
+
+    scalars: torch.Tensor
+
+    def lane(self, lane: int) -> torch.Tensor:
+        index = int(lane)
+        return self.scalars[index : index + 1].clone()
+
+
+class VectorScalarBuilder:
+    """Fill the generic match scalars for a whole vector batch in one pass.
+
+    ``_scalars`` writes 18 numbers per decision: the match clock and phase
+    (from the mode timeline), both elixirs and the reserved balance, both crown
+    counts, the visible-entity count, the group/child/candidate/event overflow
+    ratios and the static actor identity.  The batch carries every per-frame
+    fact; the timeline is the same static asset ``BattleEnvV1`` uses, so it is
+    compiled once into per-tick lookup tables.
+
+    Scope is the bridge envelope: no tracker (so the enemy elixir interval is the
+    sound public bound, upper 1.0 / uncertainty 1.0) and no events (so both event
+    columns are zero).  A tracker-backed caller is refused rather than guessed.
+    """
+
+    def __init__(self, tensorizer: Any, *, timeline: Any, native_tick_offset: int = 0) -> None:
+        self.tensorizer = tensorizer
+        self.config = tensorizer.config
+        self.actor = int(tensorizer.actor_owner)
+        if self.actor != 0:
+            raise ValueError("the vector facts layer currently carries seat 0 only")
+        if tensorizer.tracker is not None:
+            raise ValueError(
+                "the batched scalar build needs the bridge's no-event envelope; a tracker would invent a belief"
+            )
+        if int(self.config.generic_scalar_dim) != len(MATCH_SCALAR_NAMES):
+            raise ValueError(
+                f"scalar schema of {int(self.config.generic_scalar_dim)} columns is not a V4 profile"
+            )
+        self.timeline = timeline
+        self.native_tick_offset = int(native_tick_offset)
+        self.max_tick = int(timeline.maximum_tick)
+        # ``BattleTimelineV1.phase`` is a per-tick scan; compile it once.
+        phases = [timeline.phase(tick) for tick in range(self.max_tick + 1)]
+        self.overtime = np.asarray([name in {"overtime", "sudden_death"} for name, _ in phases], dtype=np.float32)
+        self.tiebreak = np.asarray([name == "tiebreak" for name, _ in phases], dtype=np.float32)
+        self.multiplier = np.asarray([value for _, value in phases], dtype=np.float64)
+
+    def build(
+        self,
+        batch: VectorObservationBatch,
+        *,
+        groups: VectorGroupSection,
+        candidates: VectorCandidateSection,
+    ) -> VectorScalarSection:
+        lanes = int(batch.count)
+        scalars = np.zeros((lanes, len(MATCH_SCALAR_NAMES)), dtype=np.float32)
+        canonical = batch.tick[:, 0].astype(np.int64)
+        phase_tick = np.clip(canonical + self.native_tick_offset, 0, self.max_tick)
+        remaining_ms = np.maximum(0, NATIVE_GAMEPLAY_END_TICK - canonical) * TICK_MS
+        entity_count = (batch.entity_valid & ~batch.entity_is_tower).sum(axis=1)
+        elixir_exact = batch.elixir_raw[:, 0].astype(np.float64) / 10_000.0
+        reserved = batch.elixir_reserved_raw[:, 0].astype(np.float64) / 10_000.0
+
+        scalars[:, 0] = remaining_ms.astype(np.float64) / 300_000.0
+        scalars[:, 1] = self.multiplier[phase_tick] / 3.0
+        scalars[:, 2] = self.overtime[phase_tick]
+        scalars[:, 3] = self.tiebreak[phase_tick]
+        scalars[:, 4] = elixir_exact / 10.0
+        scalars[:, 5] = batch.crowns[:, 0] / 3.0
+        scalars[:, 6] = batch.crowns_enemy[:, 0] / 3.0
+        scalars[:, 7] = entity_count / float(self.config.max_children_total)
+        # No events in the bridge envelope.
+        scalars[:, 8] = 0.0
+        scalars[:, 9] = groups.group_overflow / float(self.config.max_battle_groups)
+        scalars[:, 10] = groups.child_overflow / float(self.config.max_children_total)
+        scalars[:, 11] = batch.entity_overflow[:, 0].astype(np.float64) / float(self.config.max_children_total)
+        scalars[:, 12] = 0.0
+        scalars[:, 13] = candidates.count / float(self.config.max_action_candidates)
+        scalars[:, 14] = reserved / 10.0
+        # Without a tracker the only sound public bound is the full [0, 10]
+        # interval, encoded as (upper 1, uncertainty 1).
+        scalars[:, 15] = 1.0
+        scalars[:, 16] = 1.0
+        # Native owner 0 is absolute True Red and survives perspective.
+        scalars[:, 17] = float(self.actor == 0)
+        return VectorScalarSection(scalars=torch.from_numpy(scalars))
+
+
+@dataclass(frozen=True)
 class CandidateGeometry:
     """Static placement facts for one card, as ``BattleEnvV1``'s mask entry carries them.
 
@@ -1816,9 +2003,18 @@ _CANDIDATE_FIELDS = (
 
 
 class _PlayerView:
-    """The player attributes ``_card_sets`` / ``_card_runtime_features`` read."""
+    """The player attributes ``_card_sets`` / ``_scalars`` read."""
 
-    def __init__(self, owner: int, *, hand: Sequence[int], next_card: int | None, metadata: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        owner: int,
+        *,
+        hand: Sequence[int],
+        next_card: int | None,
+        metadata: dict[str, Any],
+        crowns: int = 0,
+        elixir_exact: float | None = None,
+    ) -> None:
         self.owner = int(owner)
         self.hand = tuple(int(value) for value in hand)
         self.next_card = next_card
@@ -1826,6 +2022,8 @@ class _PlayerView:
         self.evolution_runtime_states: tuple[Any, ...] = ()
         self.ability_runtime_states: tuple[Any, ...] = ()
         self.metadata = metadata
+        self.crowns = int(crowns)
+        self.elixir_exact = elixir_exact
 
 
 class _TowerView:
@@ -1857,6 +2055,7 @@ class _TowerView:
         self.tower_troop_runtime = None
         self.visible_target = visible_target
         self.attack_state = None
+        self.effect_states: tuple[Any, ...] = ()
 
 
 _TOWER_KIND_NAMES = ("king", "princess_left", "princess_right")
@@ -1967,8 +2166,15 @@ def reference_observation(
         metadata["hand_runtime_by_slot"][str(slot)] = {"form_code": int(batch.hand_form[lane, seat, slot])}
     next_id = int(batch.next_card_id[lane, seat])
     players = (
-        _PlayerView(seat, hand=hand, next_card=next_id if next_id > 0 else None, metadata=metadata),
-        _PlayerView(1 - seat, hand=(), next_card=None, metadata={}),
+        _PlayerView(
+            seat,
+            hand=hand,
+            next_card=next_id if next_id > 0 else None,
+            metadata=metadata,
+            crowns=int(batch.crowns[lane, seat]),
+            elixir_exact=float(batch.elixir_raw[lane, seat]) / 10_000.0,
+        ),
+        _PlayerView(1 - seat, hand=(), next_card=None, metadata={}, crowns=int(batch.crowns_enemy[lane, seat])),
     )
 
     tower_slots = VectorRelationBuilder._tower_slots(batch)
@@ -2004,6 +2210,155 @@ def reference_observation(
         tick=int(batch.tick[lane, seat]),
         action_mask=action_mask,
     )
+
+
+def reference_scalar_observation(
+    batch: VectorObservationBatch,
+    lane: int,
+    *,
+    tables: VectorEntityTables,
+    tensorizer: Any,
+    timeline: Any,
+    native_tick_offset: int = 0,
+    seat: int = 0,
+    action_mask: Any | None = None,
+) -> _ObservationView:
+    """The per-lane observation ``_scalars`` reads, with the timeline facts.
+
+    ``BattleEnvV1.observe`` takes the phase and the elixir multiplier from the
+    mode timeline at the *native* tick and the remaining clock from the canonical
+    tick, so the projection keeps the same split: ``batch.tick`` is canonical,
+    ``native_tick_offset`` is the encoder's first raw tick.
+    """
+
+    base = reference_observation(
+        batch, lane, tables=tables, tensorizer=tensorizer, seat=seat, action_mask=action_mask
+    )
+    canonical = int(batch.tick[int(lane), int(seat)])
+    phase, multiplier = timeline.phase(max(0, canonical + int(native_tick_offset)))
+    remaining = max(0, NATIVE_GAMEPLAY_END_TICK - canonical) * TICK_MS
+    return _ObservationView(
+        base.entities,
+        players=base.players,
+        towers=base.towers,
+        pending=base.pending_actions,
+        tick=base.tick,
+        action_mask=base.action_mask,
+        time=_TimeView(remaining_ms=remaining, elixir_multiplier=multiplier),
+        phase=phase,
+        metadata={"entity_overflow_count": int(batch.entity_overflow[int(lane), int(seat)])},
+    )
+
+
+def compare_empty_section(
+    section: VectorEmptySection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """The empty effect/event records, lane by lane, against the oracle."""
+
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer)
+        tensorizer._frame_players.clear()
+        _own, _opponent, _card_to_row = tensorizer._card_sets(observation)
+        _groups, group_index, child_index, _group_overflow, _child_overflow = oracle_groups(
+            tensorizer, observation.entities
+        )
+        _towers, tower_index = tensorizer._towers(observation)
+        expected_effects = tensorizer._active_effects(
+            observation, child_index_by_entity=child_index, tower_index_by_entity=tower_index
+        )
+        expected_events, event_count, event_overflow = tensorizer._events(
+            observation, group_index_by_entity=group_index, tower_token_by_entity=tower_index
+        )
+        actual_effects, actual_events, actual_count, actual_overflow = section.lane(lane)
+        for name in (
+            "effect_vocab_id",
+            "parent_type",
+            "parent_index",
+            "source_owner_type",
+            "runtime_features",
+            "mask",
+        ):
+            if not torch.equal(getattr(actual_effects, name), getattr(expected_effects, name)):
+                mismatches.append(f"active_effects.{name} lane={lane}")
+        for name in (
+            "event_type",
+            "owner_type",
+            "source_card_vocab_id",
+            "source_form",
+            "source_group_index",
+            "target_token_index",
+            "features",
+            "mask",
+        ):
+            if not torch.equal(getattr(actual_events, name), getattr(expected_events, name)):
+                mismatches.append(f"events.{name} lane={lane}")
+        if actual_count != int(event_count) or actual_overflow != int(event_overflow):
+            mismatches.append(f"events.count lane={lane}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
+
+
+def compare_scalar_section(
+    section: VectorScalarSection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    timeline: Any,
+    native_tick_offset: int = 0,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """Every match scalar, lane by lane, against the oracle.
+
+    The oracle resolves the group/child overflow and the candidate count through
+    its own sections, so the scalar comparison does not inherit the batched
+    counts it is meant to check.
+    """
+
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        observation = reference_scalar_observation(
+            batch,
+            lane,
+            tables=tables,
+            tensorizer=tensorizer,
+            timeline=timeline,
+            native_tick_offset=native_tick_offset,
+            action_mask=reference_action_mask(batch, lane, tensorizer=tensorizer),
+        )
+        tensorizer._frame_players.clear()
+        _own, _opponent, card_to_row = tensorizer._card_sets(observation)
+        _groups, group_index, child_index, group_overflow, child_overflow = oracle_groups(
+            tensorizer, observation.entities
+        )
+        _candidates, candidate_count = tensorizer._candidates(
+            observation,
+            card_to_row=card_to_row,
+            group_index_by_entity=group_index,
+            child_index_by_entity=child_index,
+        )
+        expected = tensorizer._scalars(
+            observation,
+            group_overflow=group_overflow,
+            child_overflow=child_overflow,
+            event_count=0,
+            event_overflow=0,
+            candidate_count=candidate_count,
+        )
+        if not torch.equal(section.lane(lane), expected):
+            mismatches.append(f"match_scalars lane={lane}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
 
 
 def reference_action_mask(
@@ -2335,6 +2690,10 @@ class _ObservationView:
         pending: Sequence[PendingActionV1] = (),
         tick: int = 0,
         action_mask: Any | None = None,
+        time: Any | None = None,
+        phase: str = "normal",
+        metadata: Mapping[str, Any] | None = None,
+        events: Sequence[Any] = (),
     ) -> None:
         self.entities = tuple(entities)
         self.players = tuple(players)
@@ -2342,6 +2701,18 @@ class _ObservationView:
         self.pending_actions = tuple(pending)
         self.tick = int(tick)
         self.action_mask = action_mask if action_mask is not None else _MaskView()
+        self.time = time
+        self.phase = phase
+        self.metadata = dict(metadata or {})
+        self.events = tuple(events)
+
+
+class _TimeView:
+    """The ``TimeStateV1`` attributes ``_scalars`` reads."""
+
+    def __init__(self, *, remaining_ms: int, elixir_multiplier: float) -> None:
+        self.remaining_ms = int(remaining_ms)
+        self.elixir_multiplier = float(elixir_multiplier)
 
 
 class _MaskView:
@@ -2444,11 +2815,15 @@ __all__ = [
     "VectorCandidateSection",
     "VectorCardBuilder",
     "VectorCardSection",
+    "VectorEmptySection",
+    "VectorEmptySectionBuilder",
     "VectorEntityTables",
     "VectorGroupBuilder",
     "VectorGroupSection",
     "VectorRelationBuilder",
     "VectorRelationSection",
+    "VectorScalarBuilder",
+    "VectorScalarSection",
     "VectorSpatialPlaneBuilder",
     "VectorSpatialPlaneSection",
     "VectorTowerBuilder",
@@ -2456,8 +2831,10 @@ __all__ = [
     "candidate_geometry",
     "compare_candidate_section",
     "compare_card_section",
+    "compare_empty_section",
     "compare_group_section",
     "compare_relation_section",
+    "compare_scalar_section",
     "compare_spatial_plane_section",
     "compare_tower_section",
     "oracle_groups",
@@ -2465,4 +2842,5 @@ __all__ = [
     "reference_entities",
     "reference_observation",
     "reference_pending_actions",
+    "reference_scalar_observation",
 ]

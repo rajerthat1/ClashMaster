@@ -11,16 +11,20 @@ from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_rows import (
     VectorCandidateBuilder,
     VectorCardBuilder,
+    VectorEmptySectionBuilder,
     VectorEntityTables,
     VectorGroupBuilder,
     VectorRelationBuilder,
+    VectorScalarBuilder,
     VectorSpatialPlaneBuilder,
     VectorTowerBuilder,
     candidate_geometry,
     compare_candidate_section,
     compare_card_section,
+    compare_empty_section,
     compare_group_section,
     compare_relation_section,
+    compare_scalar_section,
     compare_spatial_plane_section,
     compare_tower_section,
     reference_entities,
@@ -705,3 +709,146 @@ def test_spatial_planes_skip_towers_and_neutral_rows(crforge_runtime: None) -> N
         batch.entity_side[lane, slot] = original_side
         removed = builder.build(batch).planes.numpy()
         assert np.array_equal(neutral, removed)
+
+
+STANDARD_GAME_MODE = 72_000_006  # ``BattleEnvV1.STANDARD_GAME_MODE``
+
+
+def _timeline():
+    from native_runner.timeline import load_game_mode_timeline
+
+    return load_game_mode_timeline(STANDARD_GAME_MODE).timeline
+
+
+def test_batched_scalars_match_the_per_lane_oracle(crforge_runtime: None) -> None:
+    """Clock, phase, elixirs, crowns and every overflow ratio, lane by lane."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=4) as vector:
+        _, tables = _builder(tensorizer, vector)
+        groups_builder = VectorGroupBuilder(tensorizer, tables)
+        candidates_builder = VectorCandidateBuilder(tensorizer)
+        scalars_builder = VectorScalarBuilder(tensorizer, timeline=_timeline())
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        saw_elixir = False
+        saw_candidate = False
+        for step in range(50):
+            groups = groups_builder.build(batch)
+            candidates = candidates_builder.build(batch)
+            section = scalars_builder.build(batch, groups=groups, candidates=candidates)
+            assert tuple(section.scalars.shape) == (batch.count, 18)
+            saw_elixir = saw_elixir or bool((batch.elixir_raw[:, 0] > 0).any())
+            saw_candidate = saw_candidate or bool((candidates.count > 0).any())
+            mismatches = compare_scalar_section(
+                section, tensorizer, batch, tables=tables, timeline=_timeline()
+            )
+            assert mismatches == [], f"step {step}: {mismatches}"
+            _step(vector, 1100 + step)
+            encoder.encode(batch)
+        assert saw_elixir, "the fixture never generated elixir, so the clock columns are untested"
+        assert saw_candidate, "the fixture never produced a candidate, so the count column is untested"
+
+
+def test_scalar_timeline_phases_follow_the_standard_schedule(crforge_runtime: None) -> None:
+    """Normal / double / overtime / tiebreak come from the mode timeline."""
+
+    tensorizer = _tensorizer()
+    timeline = _timeline()
+    with _vector(count=2) as vector:
+        _, tables = _builder(tensorizer, vector)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        groups = VectorGroupBuilder(tensorizer, tables).build(batch)
+        candidates = VectorCandidateBuilder(tensorizer).build(batch)
+        builder = VectorScalarBuilder(tensorizer, timeline=timeline)
+
+        expected = {
+            0: (1.0, 1.0 / 3.0, 0.0, 0.0),
+            2400: (0.6, 2.0 / 3.0, 0.0, 0.0),
+            3600: (0.4, 2.0 / 3.0, 1.0, 0.0),
+            4800: (0.2, 1.0, 1.0, 0.0),
+            6000: (0.0, 1.0, 0.0, 1.0),
+        }
+        for tick, columns in expected.items():
+            batch.tick[:, 0] = tick
+            scalars = builder.build(batch, groups=groups, candidates=candidates).scalars[0]
+            assert float(scalars[0]) == pytest.approx(columns[0])
+            assert float(scalars[1]) == pytest.approx(columns[1])
+            assert float(scalars[2]) == pytest.approx(columns[2])
+            assert float(scalars[3]) == pytest.approx(columns[3])
+            assert float(scalars[17]) == 1.0
+            assert compare_scalar_section(
+                builder.build(batch, groups=groups, candidates=candidates),
+                tensorizer,
+                batch,
+                tables=tables,
+                timeline=timeline,
+            ) == []
+
+
+def test_scalar_builder_refuses_a_tracker(crforge_runtime: None) -> None:
+    """A tracker would turn the sound public bound into a guessed belief."""
+
+    tensorizer = _tensorizer()
+    tensorizer.tracker = object()
+    try:
+        with pytest.raises(ValueError, match="no-event envelope"):
+            VectorScalarBuilder(tensorizer, timeline=_timeline())
+    finally:
+        tensorizer.tracker = None
+
+
+def test_batched_empty_effects_and_events_match_the_per_lane_oracle(crforge_runtime: None) -> None:
+    """The no-effect/no-event envelope widens the stock empty records exactly."""
+
+    tensorizer = _tensorizer()
+    config = tensorizer.config
+    token_count = (
+        int(config.max_towers) + int(config.max_own_cards) + int(config.max_opponent_cards) + int(config.max_battle_groups)
+    )
+    with _vector(count=2) as vector:
+        _, tables = _builder(tensorizer, vector)
+        builder = VectorEmptySectionBuilder(tensorizer)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        for step in range(20):
+            section = builder.build(batch)
+            effects, events, count, overflow = section.lane(0)
+            assert tuple(effects.mask.shape) == (1, 0)
+            assert tuple(events.mask.shape) == (1, int(config.max_recent_events))
+            assert not bool(events.mask.any())
+            assert int(events.owner_type.min()) == 2
+            assert int(events.source_group_index.max()) == -1
+            assert int(events.target_token_index.max()) == -1
+            assert count == 0 and overflow == 0
+            effects.validate(
+                config,
+                batch_size=1,
+                effect_vocab_size=tensorizer.effect_catalog.vocab_size,
+                child_count=int(config.max_children_total),
+                tower_count=int(config.max_towers),
+            )
+            events.validate(
+                config,
+                batch_size=1,
+                vocab_size=tensorizer.catalog.vocab_size,
+                group_count=int(config.max_battle_groups),
+                token_count=token_count,
+            )
+            assert compare_empty_section(section, tensorizer, batch, tables=tables) == []
+            _step(vector, 1200 + step)
+            encoder.encode(batch)
+
+
+def test_empty_section_builder_refuses_a_nonzero_seat(crforge_runtime: None) -> None:
+    tensorizer = _tensorizer()
+    tensorizer.actor_owner = 1
+    try:
+        with pytest.raises(ValueError, match="seat 0"):
+            VectorEmptySectionBuilder(tensorizer)
+    finally:
+        tensorizer.actor_owner = 0

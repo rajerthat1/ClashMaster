@@ -3642,3 +3642,152 @@ Evidence: `runs/crforge-c3/batched-spatial-planes.json`,
 `crforge_bridge/vector_rows.py`,
 `crforge_bridge/tests/test_vector_rows.py`,
 `tools/crforge/batched_spatial_planes.py`.
+
+### 3.52 The batched match scalars — C3-B's last named section (2026-11-19)
+
+`_scalars` is the smallest named section of the packet: **0.0140 CPU
+ms/decision** in the shipped profile (19 named sections; `tensorize` 1.875
+cumulative). It writes 18 match-wide numbers per decision — clock, phase, elixir
+multiplier, both elixirs, the reserved balance, both crown counts, the visible
+entity count, five overflow ratios and the static actor identity.
+
+Every per-frame input was already in the batch except the mode clock:
+
+| scalar input | source |
+| --- | --- |
+| remaining clock | `max(0, NATIVE_GAMEPLAY_END_TICK - canonical_tick) * 50` |
+| phase + elixir multiplier | the mode timeline at the **native** tick (a static asset, compiled once) |
+| own elixir (`elixir_exact`) | `elixir_raw / 10 000` from the seat header |
+| reserved balance | `elixir_reserved_raw / 10 000` |
+| crowns | the seat's `crowns` / `crowns_enemy` header columns |
+| visible entities | `entity_valid & ~entity_is_tower` count |
+| group/child overflow | the group section |
+| candidate count | the candidate section |
+| producer overflow | the vector's `entity_overflow` header |
+| enemy elixir bound | no tracker → `(upper 1.0, uncertainty 1.0)` |
+| events | none in the envelope → both columns zero |
+
+So the work is `VectorScalarBuilder`, plus two view extensions: `_PlayerView`
+now carries `crowns` / `elixir_exact` and `_ObservationView` carries
+`time` / `phase` / `metadata`, which the per-lane oracle reads.
+
+#### Two clocks, one timeline
+
+`BattleEnvV1.observe` takes the **phase and multiplier from the native tick** and
+the **remaining clock from the canonical tick** (`native - episode_start`). The
+projection keeps that split: `batch.tick` is canonical and the builder takes a
+`native_tick_offset` (the encoder's first raw tick; 0 in the vector gate and for
+a fresh match). `BattleTimelineV1.phase` is a per-tick scan, so the builder
+compiles the whole 6,000-tick schedule into three arrays once: normal → double
+(2,400) → overtime (3,600) → 3× (4,800) → tiebreak (6,000).
+
+#### The gate has to run the whole oracle chain
+
+`_scalars` *takes* the group/child overflow and the candidate count as
+arguments, so a comparison that fed it the batched counts would check nothing.
+`compare_scalar_section` runs the stock `_card_sets` → `_groups` → `_candidates`
+chain per lane and passes the oracle's own counts, exactly as the candidate gate
+does.
+
+`tools/crforge/batched_scalars.py` — 256 learner-deck lanes, full scalar
+equivalence every step, paired timing.
+`runs/crforge-c3/batched-scalars.json` (256 lanes × 40 decisions, 60 WAIT warmup
+decisions, 32 lanes verified after step 0):
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched match scalars | **0.0733 ms** | **0.000286** |
+| per-lane `_scalars` oracle | 0.970 ms | 0.00379 |
+
+**Equivalence: pass**, `mismatches: []` over 40 decisions; own elixir reached
+10.0, up to 4 candidates and 14 visible entities per lane. **13.2×** the
+per-lane oracle. Section arithmetic: replacing the live 0.0140 share projects
+**0.978 ms/decision** with all seven sections batched.
+
+A 40-decision window stays in the normal phase, so the gate records
+`phases_seen: ["normal"]` honestly; the overtime/tiebreak/double-elixir columns
+are pinned by the unit test's synthetic ticks (0, 2,400, 3,600, 4,800, 6,000)
+on both the batched and oracle paths.
+
+#### Tests
+
+`test_vector_rows.py` adds 3 tests (24 in the file, bridge suite **46**): a
+50-decision scalar equivalence that also asserts elixir and candidates were
+generated; the standard timeline schedule at five canonical ticks; and the
+tracker refusal. Ruff clean.
+
+#### What remains for C3-B
+
+The empty effects/events section, then a facts-only `tensorize` returning one
+`UniversalSemanticBatchV4` per lane, `batch_digest`-identical to the per-lane
+path on a captured sequence — only then can the ≤0.5 ms/lane end-to-end claim be
+made.
+
+Evidence: `runs/crforge-c3/batched-scalars.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_scalars.py`.
+
+### 3.53 The empty effects/events records — C3-B's row build is complete (2026-11-19)
+
+The bridge's no-event envelope carries no active effects and no combat events.
+Both sections still exist in every packet, and in the shipped profile they are
+**0.0983 CPU ms/decision** (`_active_effects` 0.0177 + `_events` 0.0806). The
+per-lane result is fully determined and has no content: effects are a zero-row
+`ActiveEffectSetV4`, events are the fixed 32-row record with every row masked
+off.
+
+`VectorEmptySectionBuilder` widens those stock records to the lane count in one
+allocation. The only detail is the padding the tensorizer validates:
+
+| events column | padding value |
+| --- | --- |
+| `event_type`, `source_card_vocab_id`, `source_form`, `features` | 0 |
+| `owner_type` | **2** (neutral) |
+| `source_group_index`, `target_token_index` | **-1** |
+| `mask` | False |
+
+Effects have zero rows but keep the parent-index `-1` sentinel. The builder also
+returns the zero `event_count` / `event_overflow` the section carries.
+
+This meant two small view fixes for the oracle path: `_TowerView` now exposes an
+empty `effect_states` and `_ObservationView` an empty `events` sequence, which
+`_active_effects` / `_events` iterate.
+
+#### The gate
+
+`tools/crforge/batched_empty_sections.py` — 256 learner-deck lanes, both records
+validated (`ActiveEffectSetV4.validate`, `EventSetV4.validate`) and compared field
+for field every step, paired timing.
+
+`runs/crforge-c3/batched-empty-sections.json` (256 lanes × 40 decisions):
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched empty records | **0.0362 ms** | **0.000141** |
+| per-lane `_active_effects` + `_events` oracle | 5.17 ms | 0.0202 |
+
+**Equivalence: pass**, `mismatches: []` over 40 decisions; zero effect rows and
+zero event rows, 32 padded event rows per lane. **143×** the per-lane oracle.
+Section arithmetic: replacing the live 0.0983 share projects **0.894
+ms/decision**.
+
+#### Tests
+
+`test_vector_rows.py` adds 2 tests (26 in the file, bridge suite **48**): the
+20-decision equivalence with record validation, and the non-zero-seat refusal.
+Ruff clean.
+
+#### Where C3-B stands
+
+Every named row section now has a batched build and a gate against the per-lane
+tensorizer: groups, cards, relations, candidates, towers, spatial planes, scalars
+and the empty effects/events. What remains is **the wiring**: a facts-only
+`tensorize` that assembles one `UniversalSemanticBatchV4` per lane and proves
+`batch_digest` identity against the per-lane path on a captured sequence. Only
+that measurement can support an end-to-end ≤0.5 ms/lane claim.
+
+Evidence: `runs/crforge-c3/batched-empty-sections.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_empty_sections.py`.

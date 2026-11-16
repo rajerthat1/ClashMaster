@@ -288,7 +288,7 @@ become a training data path; the gate is `libg.so` + our probe + our
 `BattleEnvV1`, not Clashback's observation schema.
 
 **RoyaleFish** (`github.com/fabiospalla9-tech/RoyaleFish`, Apache-2.0, commit
-`da9c8cf`; 501 MB):
+`c42108d`; 501 MB):
 
 | Piece | Role |
 | --- | --- |
@@ -298,9 +298,10 @@ become a training data path; the gate is `libg.so` + our probe + our
 | `patches/native_runner_16635.diff`, `probe_x86_64_16635.diff` | **Reference only.** Different base tree; our catalogs are a first-class release and our x86 probe is already ported. Do not apply as-is. |
 | `logical_{funcs,offsets,vtables}.inc` | **Already used** for the relocation cross-check (0 AMBIGUOUS, §3.33). Keep for re-checks on a version bump. |
 
-**Upstream watch (pulled 2026-11-15, `da9c8cf`; README-only change):**
+**Upstream watch (pulled 2026-11-15, `c42108d`; README + media only since `da9c8cf`):**
 
-- **Hugging Face (announced):** the **November 2026 Hog 2.6 replay set**, ~5,000–10,000 games from Path-of-Legends top-1k / Ultimate Champion players, collected from RoyaleAPI at 1 request/10 s and credited. It is **Hog 2.6 only — not an X-Bow corpus.** Use it for the Hog opponent's IL anchor, opponent modeling and a meta snapshot; do not feed it to the X-Bow learner. If we want X-Bow replays, run the same collector with an X-Bow filter (same rate limit) and check the licence when the HF dataset lands.
+- **The November 2026 Hog 2.6 replay set is cancelled at the source.** RoyaleAPI closed replay access for everyone on **2026-11-16** (Discord login plus a hand-reviewed request form, no stated turnaround). RoyaleFish's collector stopped at a few hundred games; the Hugging Face upload is **postponed with no date**. Treat the set as unavailable — no tier-2 Hog IL anchor and no meta snapshot from it, and an X-Bow collector hits the same wall. The local 252k corpus is unaffected.
+- **A v1881 learned defense from real human attacks.** 52,632 human attacks replayed card-for-card as "ghosts", four attempts each, rewarded for beating its own earlier attempts; 2,666 ghosts held out. On those unseen attacks: defense score 0.53 → **0.75**, princess towers lost per game 0.47 → **0.25**, fully clean defenses 11 % → **19 %**; ~1,900 updates and 99 % of the 17.5M weights changed. Open: it under-attacks and rarely commits the Hog, and its Fireball leads moving troops. **The checkpoint is not uploaded yet.** A template for the Hog opponent, not a change to the X-Bow learner.
 - **Model conversion script (15.535 → 16.635) is coming.** It remaps **card rows
   for the same architecture**, so it helps older V4-family checkpoints (FirstLight
   CR, community V4 models), **not** FirstLight-Zero's X-Bow 3.0 — that is a
@@ -308,7 +309,7 @@ become a training data path; the gate is `libg.so` + our probe + our
   possible opponent, not a V4 init. Verify forms and a native parity sample before
   trusting any conversion.
 - **The league is no longer frozen.** RoyaleFish now trains A against a generalist B that **keeps learning**, plus older versions, mirror games, focus decks picked from the cards A loses to, and drills from real mistakes. A frozen opponent can be memorized; adopt this shape for X-Bow (co-trained or periodically refreshed generalist, 10 % mirror, hard-deck focus).
-- **New models (not X-Bow):** A v1290 (Hog 2.6) uploading soon; **Frost** (Knight-EV1 / Hero Ice Wizard / Tesla-EV1 / Bats / Minion Giant / Skeletons / Barbarian Barrel / Fireball) in 1–2 days; an anti-2.6 model at ~81 %. Use them as league opponents and as the strength bar. A community **X-Bow model (Blade)** is mentioned in their notes (A vs it: 74 % → ~82 %); add it to the pool if it becomes public.
+- **New models (not X-Bow):** A v1290 (Hog 2.6) uploading soon; **Frost** (Knight-EV1 / Hero Ice Wizard / Tesla-EV1 / Bats / Minion Giant / Skeletons / Barbarian Barrel / Fireball) in 1–2 days; an anti-2.6 model at ~81 %. Use them as league opponents and as the strength bar. `Blade` is no longer mentioned in their notes.
 - **Throughput validation:** ~2,500–3,000 complete games/h on an RTX 5060 Ti + V100, ~55k decisions from ~64 games per update, 70–90 s/update; **NVIDIA MPS** nearly doubled games/h. That is the `ever_*` recipe working; make MPS part of C4.
 
 What RoyaleFish does **not** give us: a crforge adapter, a gate waiver, or
@@ -456,7 +457,9 @@ Ranked by value per hour spent:
    actually weak on the deck** — see the decision rule below.
 3. **Opponent/meta modelling.** Deck frequencies, hard matchups and focus weights
    for the league; optionally BC a Hog / Log Bait opponent from replays. The
-   RoyaleFish Hog 2.6 set (HF, announced) belongs here, not in the X-Bow learner.
+   RoyaleFish Hog 2.6 set (HF) would have belonged here, not in the X-Bow learner,
+   but it was **cancelled 2026-11-16** when RoyaleAPI closed replay access; a Hog
+   opponent anchor now has to come from the local corpus or a fresh collector.
 
 **Not worth much:** mass-scraping "more ladder data" as a substitute for PPO and
 the league; TV-Royale frame images (no state or actions); non-16.635 replays
@@ -688,7 +691,7 @@ Full table with effort and step mapping: `HANDOFF.md` → "Adopt from the field"
 | Snapshots / lookahead | Clashback `neo_replay/native_snapshots.py` | per-tick encode/load for search | unknown → local use only | optional; parity/replay lab only |
 | League / specialist recipe | daybreak-cr | PFSP, focus/hard decks, IL anchor, 55% gate, rollback loop | unknown → reimplement | after C4 |
 | X-Bow 3.0 | FirstLight-Zero | self-play recipe + eval protocol; the shipped checkpoints are **1.17M, mirror-only, different architecture** (15.535.13) — a reference/opponent, not a V4 init; retrain the V4 specialist on 16.635 | Apache-2.0 | reference; reuse recipe, not weights |
-| Hog 2.6 replay set (Nov 2026) | RoyaleFish → Hugging Face (announced 2026-11-15) | ~5–10k top-player games; Hog opponent IL anchor + meta snapshot | TBD (RoyaleAPI credited) | opponent modeling, not X-Bow IL |
+| Hog 2.6 replay set (Nov 2026) | RoyaleFish → Hugging Face (announced 2026-11-15) | **Cancelled 2026-11-16:** RoyaleAPI closed replay access; the collector stopped at a few hundred games and the upload is postponed with no date | unavailable | do not plan the Hog IL anchor or meta snapshot on it |
 | Eval discipline | ClashAI `RESULTS.md` | Wilson intervals, ≥150-game gates, held-out decks | method |
 | Anti-overfit probes | Hasty-CR | parameter-perturbation checks | MIT |
 | Ladder orchestration | daybreak-cr, RoyaleBot, ClashAI | queue/pending-elixir budget, receipts, no blind retry | MIT / method |
