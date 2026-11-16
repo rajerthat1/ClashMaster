@@ -6,6 +6,39 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — the A6000 measures the producer, not the model
+
+One hour on a rented RTX A6000 (48 GB, 6 vCPU, $0.35/h) ran the C4 loop on CUDA
+for the first time. The GPU works and is mostly idle: **the per-decision Python
+path is the ceiling, and the C4 gate shape is the wrong shape for a GPU.**
+
+- **Three defects the CPU hid, all fixed:** the producer never passed
+  `--no-validate` into `sample_for_ppo_rollout`, so the model's contract
+  validation ran every decision (on GPU every check syncs: 372.9 → **88.5 ms** at
+  16 rows); the timing buckets around the forward did not
+  `torch.cuda.synchronize()`, so the forward's cost was reported as decode; and
+  `CrforgeRolloutStore` built its masks and rewards on CPU while values/log-prob
+  came from CUDA, so the first GPU update raised a device mismatch. A fourth,
+  found on the box: **cuDNN refuses an RNN backward in `eval()` mode**, so the
+  trainer now runs each update in `train()` and restores the collection mode.
+- **The forward is flat in rows on GPU** (88.5 / 95.8 / 92.2 / 107.0 / 141.0 ms
+  at 16 / 32 / 64 / 128 / 256 rows) and ~linear on the laptop. End-to-end
+  lane-decisions/s: **0.34× the laptop at 8 lanes, 1.06× at 32, 2.15× at 64**,
+  and **395.8/s at 128 lanes × 32 decisions** (0.33 matches/s), because the box's
+  six vCPUs run the CPU half 2–13× slower than this laptop.
+- **The update is where the GPU pays: 5.5–6.1 s against 44.9 s (7.5×)** at the
+  1,024-frame gate shape, gate pass, checkpoint step 277 reload-identical, and
+  `--resume` continues it to step 279 with the moments restored.
+- **A 48 GB card OOMs** on a 64-row × 32-decision (2,048-frame) update with the
+  default `--ppo-lane-minibatch 0` / `--ppo-sequence-chunk 32`: minibatch lanes
+  and shorten the chunk before scaling rows.
+- **Revises the plan of record:** the roadmap's "GPU-saturated ~51 matches/s"
+  is not reachable from this producer (~2 matches/s even with six processes).
+  One process at 64–128 lanes is the shape; the lever is the per-decision
+  tensorize/decode/step path and CUDA graphs, not a bigger card.
+
+See `FINDINGS.md` §3.62 for the tables.
+
 ### 2026-11-19 — a C4 run resumes from its own checkpoint
 
 `--resume` makes a saved crforge checkpoint a starting point, not just an
@@ -643,7 +676,11 @@ false because it stores no rollout.
 2. **CUDA path + throughput.** Still CPU-only here (`torch 2.5.1+cpu`, no
    `nvidia-smi`). On the A6000, run the reset gate shape at 8 and 32 rows and log
    lane-decisions/s plus the update's forward/backward split (the update, not
-   collection, is now the larger wall).
+   collection, is now the larger wall). **Done 2026-11-19:** the update is
+   **7.5× faster** (5.5 s vs 44.9 s at 1,024 frames) and the collection is
+   **slower** at the gate shape (26.3 ld/s vs 47.6) — the box wants one process
+   at 64–128 lanes, where it reaches 395.8 ld/s. Three device defects found and
+   fixed. See the top decision entry and `FINDINGS.md` §3.62.
 3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
    and after every adapter change; crforge is never a promotion gate.
 4. **Keep the forced probe in the gate set** (`--force-second-micro`, paired with

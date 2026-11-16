@@ -4781,3 +4781,123 @@ Evidence: `crforge_bridge/training.py` (`optimizer_signature`,
 `native_runner/tests/test_training_v4_crforge_trainer.py` (3 resume tests),
 `runs/crforge-c4/self-play-resume-source.json`,
 `runs/crforge-c4/self-play-resume.json`.
+
+### 3.62 The A6000 measures the producer, not the model (2026-11-19)
+
+The C4 plan assumed the forward was the wall and a GPU would remove it (§3.57:
+"the forward is 94 % of the packet"). One hour on a rented **RTX A6000 (48 GB,
+6 vCPU, 48 GB RAM, $0.35/h)** says otherwise: the GPU is real and idle, and the
+per-decision Python path is the ceiling. It also found three defects the CPU
+could not.
+
+#### The box, and what it took to run
+
+Thunder Compute `base` template (Ubuntu 22.04, `torch 2.12.1+cu130`, numpy 2.5.0,
+Python 3.12.13), plus `openjdk-21-jre-headless`, `jpype1`, `gymnasium`,
+`pettingzoo`, `orjson`, `zstandard`, `sc-compression`, `pyarrow`, `safetensors`,
+`tzdata`. Payload: 76 MB — `tools/`, `crforge_bridge/`, `native_runner/`, the
+prebuilt crforge install dist (`env/build/install/env`, 4.3 MB of jars), the
+`16.635.8` tables (6 MB) and the 67 MB `B-general-v275` seed. Upload 1.1 MB/s;
+provisioning to first gate under 10 minutes. `nvidia-smi` and a 4096² matmul
+confirm the device: 9.0 TFLOP/s fp32, and `next(model.parameters()).device` is
+`cuda:0`.
+
+#### Three defects the CPU hid
+
+1. **The model's own contract validation ran every decision.** The producer
+   passed no `validate=` to `sample_for_ppo_rollout`, which defaults to `True`.
+   That is pure Python on CPU (expensive but silent); on a GPU every value it
+   inspects syncs the device. The first measurement was **372.9 ms at 16 rows**,
+   slower than the laptop's 217.2. Threading `--no-validate` into the call took
+   it to **88.5 ms**.
+2. **The timing buckets around the forward did not synchronise.** Without
+   `torch.cuda.synchronize()`, `inference_ms` is a kernel-launch time and the
+   queued work lands in the *decode* bucket (which starts with
+   `.cpu().numpy()`). The first run reported decode 12.7 ms at 16 rows against
+   1.2 ms on CPU — a tell. Both the forward boundary and the trainer's update
+   wall now sync on CUDA.
+3. **The rollout store mixed devices.** `CrforgeRolloutStore._row_mask` and the
+   reward vector were built on CPU while `log_prob`/`value` came from the CUDA
+   forward, so `rollout_next_values` raised
+   `Expected all tensors to be on the same device` on the first update. The store
+   now takes the producer's device and pads masks/rewards there.
+4. **cuDNN refuses an RNN backward in `eval()` mode.** The producer collects in
+   `model.eval()` (as the native trainer does), which is legal on CPU only:
+   `RuntimeError: cudnn RNN backward can only be called in training mode`. The
+   trainer now runs each update in `train()` and restores the collection mode;
+   with `dropout=0.0` and no batch norm that changes nothing but the gate.
+
+A fifth is a limit, not a bug: an update over **64 rows × 32 decisions (2,048
+frames)** with the defaults (`lane_minibatch 0`, `sequence_chunk 32`) exhausts
+48 GB during the backward. The gate shape (16 rows × 64 decisions) fits and the
+CPU path never noticed because it ran half the frames.
+
+#### The forward is a latency problem on GPU, a throughput problem on CPU
+
+Same probe on both machines: 8 decisions, `--no-rollout --no-validate`, median ms
+per decision (`runs/crforge-c4/gpu-forward-scaling-*.json`):
+
+| lanes | rows | laptop forward | ms/row | laptop ld/s | A6000 forward | ms/row | A6000 ld/s | GPU vs laptop |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 16 | 217.2 | 13.6 | 63.0 | 88.5 | 5.53 | 21.3 | **0.34×** |
+| 16 | 32 | 351.5 | 11.0 | 82.4 | 95.8 | 2.99 | 38.6 | 0.47× |
+| 32 | 64 | 749.1 | 11.7 | 76.2 | 92.2 | 1.44 | 81.0 | 1.06× |
+| 64 | 128 | 1,901.2 | 14.9 | 65.2 | 107.0 | 0.84 | 140.2 | **2.15×** |
+| 128 | 256 | — | — | — | 141.0 | 0.55 | 251.3 | — |
+
+The GPU forward is **flat in rows** from 16 to 128 (88.5 → 107.0 ms): it is
+launch- and dependency-latency bound, not matmul bound. The CPU forward grows
+~linearly. So the GPU's per-row advantage only appears as the batch grows, and
+the *end-to-end* producer rate follows the CPU half, which is **2–13× slower on
+the box's six vCPUs** (tensorize 26–34 ms vs 10–12; decode 13–17 ms vs 1.0–1.2;
+engine steps 7.8–9.9 vs 5.5–6.1). At the C4 gate shape (8 lanes), the A6000 is
+**three times slower than the laptop**.
+
+Amortised (128 lanes × 32 decisions, `gpu-forward-scaling-128-long.json`): wall
+20.7 s for 8,192 lane-decisions = **395.8 lane-decisions/s**, with tensorize
+81 ms, forward 157 ms, decode 97 ms and engine steps 75 ms per decision — the
+forward is 24 % of the wall. The remaining ~228 ms of the 647 ms decision is not
+in any bucket and is the next thing to profile.
+
+#### The update is where the GPU actually pays
+
+8 lanes × 64 decisions = 1,024 frames, 16 rows — the §3.59 gate shape
+(`runs/crforge-c4/self-play-gpu-update.json`):
+
+| measurement | laptop (CPU) | A6000 |
+| --- | ---: | ---: |
+| update wall | 44.9 s | **5.50 / 6.14 s** |
+| speedup | 1× | **7.5×** |
+| collection wall (validated + stored) | 21.8 s | 38.9 / 47.4 s (26.3 / 21.6 ld/s) |
+| gate | pass | **pass** (63 ACT / 1,960 eligible, 0 rejected) |
+| checkpoint / reload | step 277, match | **step 277, match** (203,056,929 B) |
+
+And the resume path works on CUDA (`self-play-gpu-resume.json`): resumed at step
+277 with 2 prior updates, ran 2 more, saved **279** with
+`update_step_continued: true` and the moments restored — a checkpoint written on
+one device resumes on either.
+
+#### What it means for the plan
+
+* **"8 lanes per process, 2–4 processes" is the wrong shape for a GPU.** The box
+  wants **one process at 64–128 lanes**; at 128 lanes it does **395.8
+  lane-decisions/s ≈ 0.33 matches/s**, which is 6× the laptop's 65.2 at 64 lanes.
+* **The roadmap's "GPU-saturated ~51 matches/s" is not reachable from this
+  producer.** At 0.33 matches/s per process, even six processes on the box's six
+  vCPUs is ~2 matches/s, not 51: the ceiling is the per-decision Python packet
+  (tensorize + decode + engine steps), not the model.
+* **Store device choice is a real cost on GPU.** Keeping the store on the model
+  device made `rollout_ms` **21.6 ms/decision** (it copies every observation into
+  CUDA) against 3.2 ms on CPU. The observation tensors are the bulk; the likely
+  fix is to store observations on CPU and keep the value/log-prob on the GPU —
+  unmeasured, and the update already moves what it needs.
+* **Batch memory is the new constraint on the update.** Minibatch the lanes and
+  shorten the TBPTT chunk on a 48 GB card before scaling rows.
+
+Evidence: `crforge_bridge/rollout.py` (device-safe store),
+`crforge_bridge/training.py` (train-mode update, CUDA sync),
+`tools/crforge/self_play.py` (`--no-validate` reaches the model, CUDA sync),
+`native_runner/tests/test_training_v4_crforge_trainer.py` (train-mode test),
+`runs/crforge-c4/self-play-gpu-update.json`,
+`runs/crforge-c4/self-play-gpu-resume.json`,
+`runs/crforge-c4/gpu-forward-scaling-{8,16,32,64,128,128-long}.json`.
