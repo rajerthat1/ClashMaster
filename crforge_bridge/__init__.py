@@ -13,6 +13,8 @@ Layout:
 - :mod:`crforge_bridge.vector_observation`  zero-copy facts for all vector lanes
 - :mod:`crforge_bridge.vector_rows`         batched V4 row sections over those facts
 - :mod:`crforge_bridge.vector_tensorize`    facts-only ``UniversalSemanticBatchV4`` per lane
+- :mod:`crforge_bridge.vector_actions`       stacked ``ActionSequenceV4`` -> engine action index
+- :mod:`crforge_bridge.rollout`              native-shape reward + ``StoredRolloutV4`` storage
 - :mod:`crforge_bridge.rich`     the minimal v3 rich envelope
 - :mod:`crforge_bridge.server`   the TCP server
 """

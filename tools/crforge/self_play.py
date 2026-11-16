@@ -24,10 +24,25 @@ Shape choices, all recorded on the artifact:
 * **Deploy candidates only** (the bridge envelope; ``FINDINGS.md`` §3.56): no
   ability source and no Mirror runtime yet.
 
-This tool is a **collection/throughput probe**, not yet a PPO update: it does
-not store a rollout or compute returns.  It measures the packet the C4 gate
-asks for — env-steps/s, tensorize ms, inference ms, decode ms — and counts
-engine faults, illegal actions and the eligible-ACT rate.
+This tool is the C4 producer.  It measures the packet the C4 gate asks for —
+env-steps/s, tensorize ms, inference ms, decode ms — counts engine faults,
+illegal actions and the eligible-ACT rate, and (by default) **stores the
+rollout** the PPO update consumes: per decision the stacked observation, the
+sampled action, the behaviour log-probability and value, the native-shape
+reward, and the episode boundary.  ``--no-rollout`` runs the throughput probe
+without retaining tensors.
+
+The reward is ``BattleEnvV1._rewards`` rebuilt from the facts layer
+(``crforge_bridge.rollout``): the engine's terminal result plus potential-based
+shaping over crowns and tower damage.  A time-limit cut stores a zero shaping
+term because the vector has already autoreset the lane (see that module).
+
+``--force-second-micro`` is a **timing probe, not a rollout**: the sampled
+policy never emits two micro-actions, so this mode appends a different legal
+play from the open candidates at the sampled play's own delay bin.  The
+collision shifts it one tick, or drops it when the sampled play already runs on
+the window's last tick.  It is refused together with rollout storage, because
+the stored sampled action would no longer be the action the engine ran.
 
     .venv/bin/python tools/crforge/self_play.py \
         --count 8 --segments 10 --decisions-per-segment 64 \
@@ -57,7 +72,8 @@ import torch
 from crforge_bridge.catalog import Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
-from crforge_bridge.vector_actions import CANDIDATE_DEPLOY, VectorActionDecoder, plan_window_ticks
+from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, PotentialShapingReward, rollout_statistics
+from crforge_bridge.vector_actions import CANDIDATE_DEPLOY, VectorActionDecoder, VectorActionPlan, plan_window_ticks
 from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_tensorize import VectorTensorizer
 from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
@@ -66,7 +82,13 @@ from native_runner.timeline import load_game_mode_timeline
 from native_runner.training.v4.factory import deck_roles_from_form_availability, production_semantic_bundle
 from native_runner.training.v4.policy_session import load_policy_v4
 from native_runner.training.v4.tensorizer import UniversalObservationTensorizerV4
-from native_runner.training.v4.tensors import ActionSequenceV4, tensor_padding_value
+from native_runner.training.v4.tensors import (
+    GATE_ACT,
+    TARGET_GRID,
+    ActionSequenceV4,
+    RecurrentPolicyStateV4,
+    tensor_padding_value,
+)
 
 LEARNER_DECK = (27000008, 27000006, 26000001, 26000000, 26000010, 26000084, 28000000, 28000011)
 LEARNER_FORMS = (0, 1, 1, 2, 0, 0, 0, 0)
@@ -103,8 +125,7 @@ def _interleave(records: Sequence[Any], *, fill: int = 0) -> Any:
         return type(first)(
             **{
                 item.name: _interleave(
-                    [getattr(record, item.name) for record in records],
-                    fill=tensor_padding_value(first, item.name),
+                    [getattr(record, item.name) for record in records], fill=tensor_padding_value(first, item.name)
                 )
                 for item in fields(first)
             }
@@ -115,9 +136,89 @@ def _interleave(records: Sequence[Any], *, fill: int = 0) -> Any:
 def _seat_rows(actions: ActionSequenceV4, index: int, seats: int) -> ActionSequenceV4:
     """One actor seat's rows of an interleaved action batch."""
 
-    return ActionSequenceV4(
-        **{item.name: getattr(actions, item.name)[index::seats] for item in fields(actions)}
+    return ActionSequenceV4(**{item.name: getattr(actions, item.name)[index::seats] for item in fields(actions)})
+
+
+def _candidate_record(section: Any) -> Any:
+    return getattr(section, "candidates", section)
+
+
+def _force_second_micro_actions(
+    sequence: ActionSequenceV4, plan: VectorActionPlan, candidates: Any, *, mode: str, budget: int, window: int
+) -> tuple[ActionSequenceV4, int]:
+    """Add a legal second micro-action at the first action's own tick.
+
+    This is a timing probe: the sampled policy emits one micro-action, so this
+    appends a **different** play from the open candidates at the same delay bin.
+    ``shift`` picks a lane whose first action runs before the last window tick,
+    so the collision pushes the second play one tick later; ``drop`` picks a
+    lane whose first action already runs on the last tick, so the second play
+    has no free tick and is counted as dropped.
+
+    Two rules keep it legal, and both matter:
+
+    * the duplicate is a **different hand slot** than the sampled play, because
+      giving the same card again one tick later finds the queued slot closed;
+    * both plays must be payable from the decision's effective elixir (one tick
+      of regeneration is ignored), and the chosen candidate must have a legal
+      tile in its own placement grid.
+
+    The first action is never modified: its rule, index and delay bin are the
+    policy's, so a refusal here can only come from the appended play.
+    """
+
+    if mode not in ("shift", "drop"):
+        raise ValueError(f"unknown second micro-action mode {mode!r}")
+    if budget < 1 or window < 2:
+        return sequence, 0
+    record = _candidate_record(candidates)
+    mask = np.asarray(record.mask, dtype=bool)
+    slots = np.asarray(record.native_hand_slot, dtype=np.int64)
+    variant = np.asarray(record.variant, dtype=np.int64)
+    target_mode = np.asarray(record.target_mode, dtype=np.int64)
+    cost = np.asarray(record.cost, dtype=np.float64)
+    elixir = np.asarray(record.elixir, dtype=np.float64)
+    uid = np.asarray(record.uid, dtype=np.int64)
+    placement = np.asarray(record.placement, dtype=bool)
+    lanes, width = mask.shape
+    grid = placement.reshape(lanes, width, -1)
+    legal_cell = grid.any(axis=2)
+
+    gate = sequence.gate.detach().cpu().numpy()
+    counts = sequence.micro_action_count.detach().cpu().numpy()
+    first_rows = np.asarray(plan.candidate_rows[:, 0], dtype=np.int64)
+    first_ticks = np.asarray(plan.offsets[:, 0], dtype=np.int64) - 1
+    plays = np.asarray(plan.actions[:, 0]) > 0
+    lane_index = np.arange(lanes)
+    safe_rows = np.clip(first_rows, 0, max(0, width - 1))
+    first_cost = np.where(first_rows >= 0, cost[lane_index, safe_rows], 0.0)
+    first_slot = np.where(first_rows >= 0, slots[lane_index, safe_rows], -2)
+    timing = first_ticks == (window - 1) if mode == "drop" else (first_ticks >= 0) & (first_ticks < window - 1)
+    other = (
+        mask
+        & (slots >= 0)
+        & (variant == CANDIDATE_DEPLOY)
+        & (target_mode == TARGET_GRID)
+        & legal_cell
+        & (slots != first_slot[:, None])
+        # Both plays must fit the decision's effective elixir.
+        & (cost <= (elixir - first_cost)[:, None] + 1e-6)
     )
+    eligible = (gate == GATE_ACT) & (counts == 1) & plays & timing & other.any(axis=1)
+    chosen = np.flatnonzero(eligible)[: int(budget)]
+    if not chosen.size:
+        return sequence, 0
+
+    updated = {item.name: getattr(sequence, item.name).clone() for item in fields(sequence)}
+    for lane in chosen:
+        lane = int(lane)
+        row = int(np.flatnonzero(other[lane])[0])
+        updated["micro_action_count"][lane] = 2
+        updated["candidate_index"][lane, 1] = row
+        updated["candidate_uid"][lane, 1] = int(uid[lane, row])
+        updated["target_cell"][lane, 1] = int(np.flatnonzero(grid[lane, row])[0])
+        updated["delay_offset_bin"][lane, 1] = updated["delay_offset_bin"][lane, 0]
+    return ActionSequenceV4(**updated), int(chosen.size)
 
 
 def _stock_tensorizer(bundle: Any, config: Any, seat: int) -> UniversalObservationTensorizerV4:
@@ -177,11 +278,43 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint", type=Path, default=Path(".resource/RoyaleFish/models/B-general-v275.pt"))
     parser.add_argument("--no-validate", action="store_true", help="skip the per-decision record validation")
     parser.add_argument("--greedy", action="store_true", help="argmax instead of sampling (debug only)")
+    parser.add_argument(
+        "--no-rollout",
+        action="store_true",
+        help="throughput probe only: do not retain the per-decision rollout tensors",
+    )
+    parser.add_argument(
+        "--shaping-beta",
+        type=float,
+        default=0.05,
+        help="potential-shaping weight of the native PPO reward (0 disables shaping)",
+    )
+    parser.add_argument(
+        "--gae-lambda",
+        type=float,
+        default=0.98,
+        help="GAE lambda used to check the stored rollout (the update's own value)",
+    )
+    parser.add_argument(
+        "--force-second-micro",
+        choices=("off", "shift", "drop", "alternate"),
+        default="off",
+        help=(
+            "timing probe: repeat a sampled play as a second micro-action that is shifted "
+            "or dropped; 'alternate' does both; refused with rollout storage"
+        ),
+    )
     parser.add_argument("--output", type=Path, default=Path("runs/crforge-c4/self-play.json"))
     args = parser.parse_args(argv)
 
     if args.count < 1 or args.segments < 1 or args.decisions_per_segment < 1:
         raise SystemExit("--count, --segments and --decisions-per-segment must be positive")
+    if args.force_second_micro != "off" and not args.no_rollout:
+        raise SystemExit(
+            "--force-second-micro replaces the sampled action, so it cannot be stored as a "
+            "policy rollout; pass --no-rollout"
+        )
+    reward_config = CrforgeRewardConfig(shaping_beta=float(args.shaping_beta))
     seats = tuple(dict.fromkeys(int(seat) for seat in args.seats))
     if not seats:
         raise SystemExit("--seats must be a subset of 0 1")
@@ -227,9 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     # a narrower checkpoint would make the second micro-action unplaceable.
     window_span = 1 + int(config.delay_offset_ms[-1]) // TICK_MS
     if window < window_span:
-        raise SystemExit(
-            f"policy window is {window} ticks but its delay bins need {window_span}"
-        )
+        raise SystemExit(f"policy window is {window} ticks but its delay bins need {window_span}")
     state = model.initial_state(args.count * len(seats), device=device)
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
@@ -253,16 +384,26 @@ def main(argv: list[str] | None = None) -> int:
         "second_micro_actions": 0,
         "shifted_micro_actions": 0,
         "dropped_micro_actions": 0,
+        "forced_second_micro_actions": 0,
         "resets": 0,
         "illegal_peak": 0,
     }
     timing: dict[str, list[float]] = {
-        "facts_ms": [],
         "tensorize_ms": [],
         "inference_ms": [],
         "decode_ms": [],
         "step_ms": [],
+        "facts_ms": [],
+        "rollout_ms": [],
     }
+    # The reward tracker spans segments: the board does not reset at a segment
+    # boundary, only the rollout does (as a truncation).
+    shaping = PotentialShapingReward(args.count, config=reward_config)
+    result_index = int(vector.schema.header["result"][0])
+    won_code = int(vector.schema.results["won"])
+    lost_code = int(vector.schema.results["lost"])
+    rollout_enabled = not args.no_rollout
+    reward_mismatches = 0
     faults_before = dict(vector.fault_counts())
     reset_mask = np.ones(args.count, dtype=bool)
     try:
@@ -277,27 +418,38 @@ def main(argv: list[str] | None = None) -> int:
                 "second_micro_actions": 0,
                 "shifted_micro_actions": 0,
                 "dropped_micro_actions": 0,
+                "forced_second_micro_actions": 0,
             }
             samples: dict[str, list[float]] = {name: [] for name in timing}
             illegal_peak = 0
-            for _ in range(args.decisions_per_segment):
+            rollout_store = None
+            if rollout_enabled:
+                rollout_store = CrforgeRolloutStore(
+                    lanes=args.count,
+                    seats=len(seats),
+                    initial_state=RecurrentPolicyStateV4(
+                        hidden=state.hidden.detach().clone(), cell=state.cell.detach().clone()
+                    ),
+                    policy_state_id=str(policy.checkpoint_id),
+                    gate_temperature=float(model.ppo_gate_temperature),
+                    action_temperature=float(model.ppo_action_temperature),
+                    continue_temperature=float(model.ppo_continue_temperature),
+                )
+            for decision in range(args.decisions_per_segment):
                 started = time.perf_counter()
+                episode_start_lanes = reset_mask.copy()
                 if reset_mask.any():
                     for seat in seats:
                         rows[seat].reset_rows(batch, reset_mask)
-                encoder.encode(batch)
-                facts_done = time.perf_counter()
 
                 stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
                 stacked = _interleave([stacks[seat] for seat in seats])
                 tensorize_done = time.perf_counter()
 
-                episode_start = torch.from_numpy(np.repeat(reset_mask, len(seats))).to(device)
+                episode_start = torch.from_numpy(np.repeat(episode_start_lanes, len(seats))).to(device)
                 with torch.inference_mode():
                     if args.greedy:
-                        output = model.act(
-                            stacked.to_model_input(device), state, episode_start=episode_start
-                        )
+                        output = model.act(stacked.to_model_input(device), state, episode_start=episode_start)
                     else:
                         output = model.sample_for_ppo_rollout(
                             stacked.to_model_input(device), state, episode_start=episode_start
@@ -309,10 +461,27 @@ def main(argv: list[str] | None = None) -> int:
                 eligible = np.zeros((args.count,), dtype=np.int64)
                 acted = np.zeros((args.count,), dtype=np.int64)
                 intra = {}
+                forced_mode = args.force_second_micro
+                if forced_mode == "alternate":
+                    forced_mode = "shift" if decision % 2 == 0 else "drop"
                 with torch.inference_mode():
                     for index, seat in enumerate(seats):
                         sequence = _seat_rows(output.actions, index, len(seats))
                         candidates = stacks[seat].candidates
+                        if forced_mode != "off":
+                            # Decode the sample first: the duplicate is built from
+                            # the action the policy actually chose.
+                            sampled = decoders[seat].decode(batch, sequence, candidates, seat=seat)
+                            sequence, forced = _force_second_micro_actions(
+                                sequence,
+                                sampled,
+                                candidates,
+                                mode=forced_mode,
+                                budget=max(1, args.count // 4),
+                                window=window,
+                            )
+                            counts["forced_second_micro_actions"] += forced
+                            totals["forced_second_micro_actions"] += forced
                         plan = decoders[seat].decode(batch, sequence, candidates, seat=seat)
                         rows[seat].record_action(sequence, stacks[seat], validate=not args.no_validate)
                         played = plan.actions > 0
@@ -341,6 +510,9 @@ def main(argv: list[str] | None = None) -> int:
                 decode_done = time.perf_counter()
 
                 reset_mask = np.zeros(args.count, dtype=bool)
+                terminated_lanes = np.zeros(args.count, dtype=bool)
+                truncated_lanes = np.zeros(args.count, dtype=bool)
+                terminal_reward = np.zeros((args.count, 2), dtype=np.float32)
                 for tick in range(window):
                     actions = np.zeros((args.count, 2), dtype=np.int32)
                     for seat in seats:
@@ -355,6 +527,20 @@ def main(argv: list[str] | None = None) -> int:
                         actions[reset_mask] = 0
                     vector.step(actions)
                     reset_mask |= vector.infos[:, info["reset"]].astype(bool)
+                    done_now = vector.dones.astype(bool)
+                    if done_now.any():
+                        # Read the result on the tick it was written: the next
+                        # step autoresets the lane and clears it.
+                        codes = vector.observations[done_now][:, :, result_index]
+                        mapped = np.where(codes == won_code, 1.0, np.where(codes == lost_code, -1.0, 0.0))
+                        terminal_reward[done_now] = mapped.astype(np.float32)
+                        cut = np.asarray(vector.infos[done_now, info["truncated"]], dtype=bool)
+                        terminated_lanes[done_now] |= ~cut
+                        truncated_lanes[done_now] |= cut
+                        # The engine's own reward must be the terminal result;
+                        # a mismatch invalidates the reconstructed reward.
+                        mismatch = np.abs(vector.rewards[done_now] - mapped) > 1e-6
+                        reward_mismatches += int(mismatch.sum())
                 if bool(vector.dones.any()):
                     # Autoreset happens on the step after a terminal.  When the
                     # terminal lands on the window's last tick, take that step
@@ -363,6 +549,26 @@ def main(argv: list[str] | None = None) -> int:
                     vector.step()
                     reset_mask |= vector.infos[:, info["reset"]].astype(bool)
                 step_done = time.perf_counter()
+
+                # The post-window facts are this decision's reward state and the
+                # next decision's observation: encode once, at the end.
+                encoder.encode(batch)
+                facts_done = time.perf_counter()
+                if rollout_store is not None:
+                    rewards = shaping.advance(
+                        batch, terminal_reward=terminal_reward, terminated=terminated_lanes, truncated=truncated_lanes
+                    )
+                    rollout_store.append(
+                        observation=stacked,
+                        actions=output.actions,
+                        log_prob=output.log_prob,
+                        value=output.value,
+                        rewards=rewards,
+                        episode_start=episode_start_lanes,
+                        terminated=terminated_lanes,
+                        truncated=truncated_lanes,
+                    )
+                rollout_done = time.perf_counter()
 
                 illegal_guard = vector.infos[:, info["illegal_0"]].astype(np.int64) + vector.infos[
                     :, info["illegal_1"]
@@ -374,11 +580,32 @@ def main(argv: list[str] | None = None) -> int:
                 counts["act_lane_decisions"] += int(acted.sum())
                 counts["eligible_lane_decisions"] += int(eligible.sum())
                 counts["resets"] += int(reset_mask.sum())
-                samples["facts_ms"].append((facts_done - started) * 1000.0)
-                samples["tensorize_ms"].append((tensorize_done - facts_done) * 1000.0)
+                samples["tensorize_ms"].append((tensorize_done - started) * 1000.0)
                 samples["inference_ms"].append((inference_done - tensorize_done) * 1000.0)
                 samples["decode_ms"].append((decode_done - inference_done) * 1000.0)
                 samples["step_ms"].append((step_done - decode_done) * 1000.0)
+                samples["facts_ms"].append((facts_done - step_done) * 1000.0)
+                samples["rollout_ms"].append((rollout_done - facts_done) * 1000.0)
+
+            segment_rollout = None
+            if rollout_store is not None:
+                # The observation after the last decision is the time-limit
+                # bootstrap every still-running lane needs at the segment cut.
+                boundary_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
+                boundary_batch = _interleave([boundary_stacks[seat] for seat in seats])
+                with torch.inference_mode():
+                    context = model.forward(
+                        boundary_batch.to_model_input(device),
+                        state,
+                        episode_start=torch.zeros(args.count * len(seats), dtype=torch.bool, device=device),
+                        validate=not args.no_validate,
+                    )
+                rollout = rollout_store.finalize(boundary_value=context.value.detach().float())
+                segment_rollout = rollout_statistics(
+                    rollout, gamma=reward_config.shaping_gamma, gae_lambda=float(args.gae_lambda)
+                )
+                segment_rollout["summary"] = rollout_store.summary().as_dict()
+                segment_rollout["storage_mib"] = round(rollout_store.storage_bytes() / 2**20, 3)
 
             wall = time.perf_counter() - segment_started
             for name, values in samples.items():
@@ -389,9 +616,7 @@ def main(argv: list[str] | None = None) -> int:
                 "decisions": counts["decisions"],
                 "lane_decisions": counts["lane_decisions"],
                 "lane_decisions_per_s": counts["lane_decisions"] / wall if wall else 0.0,
-                "matches_per_s": (
-                    counts["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall if wall else 0.0
-                ),
+                "matches_per_s": (counts["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall if wall else 0.0),
                 "eligible_lane_decisions": counts["eligible_lane_decisions"],
                 "act_lane_decisions": counts["act_lane_decisions"],
                 "eligible_act_rate": (
@@ -402,8 +627,10 @@ def main(argv: list[str] | None = None) -> int:
                 "second_micro_actions": counts["second_micro_actions"],
                 "shifted_micro_actions": counts["shifted_micro_actions"],
                 "dropped_micro_actions": counts["dropped_micro_actions"],
+                "forced_second_micro_actions": counts["forced_second_micro_actions"],
                 "resets": counts["resets"],
                 "illegal_peak": illegal_peak,
+                "rollout": segment_rollout,
                 "ms": {name: (statistics.median(values) if values else 0.0) for name, values in samples.items()},
             }
             segments.append(entry)
@@ -422,8 +649,22 @@ def main(argv: list[str] | None = None) -> int:
         eligible_total = totals["eligible_lane_decisions"]
         act_rate = totals["act_lane_decisions"] / eligible_total if eligible_total else 0.0
         rejected = totals["illegal_peak"] + sum(fault_delta.values())
+        rollout_segments = [item["rollout"] for item in segments if item["rollout"] is not None]
+        rollout_finite = all(bool(item["finite"]) for item in rollout_segments) if rollout_segments else True
+        rollout_totals = {
+            "segments": len(rollout_segments),
+            "time_steps": sum(int(item["time_steps"]) for item in rollout_segments),
+            "rows_per_decision": len(seats) * args.count,
+            "episode_starts": sum(int(item["episode_starts"]) for item in rollout_segments),
+            "terminated": sum(int(item["terminated"]) for item in rollout_segments),
+            "truncated": sum(int(item["truncated"]) for item in rollout_segments),
+            "storage_mib": round(sum(float(item["storage_mib"]) for item in rollout_segments), 3),
+            "reward_sum": sum(float(item["summary"]["reward_sum"]) for item in rollout_segments),
+            "reward_nonzero_rows": sum(int(item["summary"]["reward_nonzero_rows"]) for item in rollout_segments),
+            "finite": rollout_finite,
+        }
         artifact = {
-            "schema": "crforge-self-play.v1",
+            "schema": "crforge-self-play.v2",
             "measured": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "shape": {
                 "count": args.count,
@@ -438,6 +679,8 @@ def main(argv: list[str] | None = None) -> int:
                 "engine_decision_ticks": 1,
                 "validated_every_decision": not args.no_validate,
                 "sampled": not args.greedy,
+                "rollout_storage": rollout_enabled,
+                "forced_second_micro": args.force_second_micro,
             },
             "substrate": {
                 "release": release,
@@ -452,6 +695,30 @@ def main(argv: list[str] | None = None) -> int:
                 "tower_troop": TOWER_TROOP,
                 "contract_keys": sorted(str(key) for key in contract)[:12] if isinstance(contract, dict) else [],
             },
+            "rollout": {
+                "stored": rollout_enabled,
+                "float_dtype": "float16",
+                "reward": reward_config.as_dict(),
+                "gae_lambda": float(args.gae_lambda),
+                "policy_state_id": str(policy.checkpoint_id),
+                "totals": rollout_totals,
+                "segments": rollout_segments,
+                "fidelity": {
+                    "rows": "lane * seats + seat, the producer's interleave order",
+                    "reward": (
+                        "BattleEnvV1._rewards rebuilt from the facts layer: terminal result plus "
+                        "potential-based shaping over crowns and tower damage"
+                    ),
+                    "potentials": "zero at a terminal; a time-limit cut (max_ticks) carries no shaping term",
+                    "reward_result_mismatches": reward_mismatches,
+                    "boundary": "each segment finalizes with a bootstrap forward on the post-window observation",
+                    "multiple_episodes_per_lane": (
+                        "a lane may carry more than one episode (autoreset); episode_start and the "
+                        "GAE trace boundary handle it, but distributed_ppo_update_v4 currently "
+                        "requires one episode per lane"
+                    ),
+                },
+            },
             "fidelity": {
                 "frame": "facts are game-framed; the batched decode applies game -> seat",
                 "action_space": "one engine action per seat per tick; every V4 micro-action is scheduled",
@@ -463,7 +730,15 @@ def main(argv: list[str] | None = None) -> int:
                 "candidates": "deploy candidates only (no ability source, no Mirror runtime)",
                 "previous_action": "recorded every decision; cleared per lane on autoreset",
                 "episode_start": "per lane, from the vector's own reset flag",
-                "rollout_storage": "none yet - this is the collection/throughput probe",
+                "forced_second_micro": (
+                    "none"
+                    if args.force_second_micro == "off"
+                    else (
+                        "timing probe only: a sampled play is repeated as a second micro-action "
+                        "at a colliding or saturated delay bin; the sampled action is not the "
+                        "engine action, so this run stores no rollout"
+                    )
+                ),
             },
             "gate": {
                 "rejected": rejected,
@@ -472,22 +747,26 @@ def main(argv: list[str] | None = None) -> int:
                 "eligible_act_rate": act_rate,
                 "eligible_lane_decisions": eligible_total,
                 "act_lane_decisions": totals["act_lane_decisions"],
-                "pass": rejected == 0 and eligible_total > 0 and act_rate > 0.0,
+                "reward_result_mismatches": reward_mismatches,
+                "rollout_finite": rollout_finite,
+                "pass": (
+                    rejected == 0
+                    and eligible_total > 0
+                    and act_rate > 0.0
+                    and reward_mismatches == 0
+                    and rollout_finite
+                ),
             },
             "totals": {
                 **totals,
                 "wall_s": wall_total,
                 "lane_decisions_per_s": totals["lane_decisions"] / wall_total if wall_total else 0.0,
                 "matches_per_s": (
-                    totals["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall_total
-                    if wall_total
-                    else 0.0
+                    totals["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall_total if wall_total else 0.0
                 ),
                 "ms": {name: (statistics.median(values) if values else 0.0) for name, values in timing.items()},
                 # Engine work: every lane is stepped one tick at a time.
-                "env_steps_per_s": (
-                    totals["decisions"] * window * args.count / wall_total if wall_total else 0.0
-                ),
+                "env_steps_per_s": (totals["decisions"] * window * args.count / wall_total if wall_total else 0.0),
                 # What the learner would consume: one transition per actor row.
                 "policy_rows_per_s": (
                     totals["decisions"] * args.count * len(seats) / wall_total if wall_total else 0.0
