@@ -3117,3 +3117,111 @@ keeps the no-event envelope as an explicit precondition.
 Evidence: `runs/crforge-c3/vector-observation.json`,
 `crforge_bridge/tests/test_vector_observation.py`,
 `tools/crforge/vector_observation_spike.py`.
+
+### 3.47 The batched causal-group section — C3-B's first row build (2026-11-19)
+
+C3 attributed **0.543 of a 0.992 CPU ms/decision** packet to `_groups` plus its
+children, the largest section, so C3-B starts there. `crforge_bridge/vector_rows.py`
+now builds that section for every lane of a `VectorBattle` from the session-17
+facts layer in one NumPy pass, and the per-lane tensorizer stays the oracle.
+
+#### What the build covers
+
+`VectorGroupBuilder.build(batch)` returns the `BattleGroupSetV4` tensors with
+the lane count as their batch dimension, plus slot-keyed `group_index` /
+`child_index` maps and the two overflow counts. The scope is the bridge's
+no-event envelope:
+
+- **singleton groups.** The bridge sends no causal-group reference, so
+  `build_causal_groups` returns one group per entity; the batched build is a
+  per-lane sort by the tensorizer's priority tuple, not a graph walk;
+- **the raw `entity_kind` rule.** The bridge classifies a row from the card
+  spec when it resolves a card, `effect` for a cardless row, `unknown`
+  otherwise. That matters: a cardless spawned skeleton is an `effect` entity,
+  so its singleton group type is `persistent_effect` even though its archetype
+  metadata resolves to a `character` child;
+- **no ability sources, projectiles, runtime attack/movement/visibility or
+  events**, exactly as crforge's minimal rich player/object envelope supplies
+  them;
+- **seat 0** (`VectorObservationBatch` reads `VectorBattle.observations`
+  seat 0). Towers are not entities: the six-row tower section stays separate.
+
+Static policy semantics (card id, archetype, child type, footprint/radius,
+runtime form, group type, source-card vocabulary id) are compiled once per
+tensorizer into `VectorEntityTables`, so a decision does no catalog walk. The
+archetype id resolves from the vector row's form name (`form:<Name>`, then
+`CHARACTER.`/`BUILDING.`/`AREA.`/`AOE.`/`EXT.` node ids); a form with a
+character global id carries that id into the oracle entity so the tensorizer's
+own `_entity_archetype_id` takes the same path.
+
+#### The oracle and the gate
+
+`reference_entities(batch, lane)` projects `EntityStateV1` rows from the same
+facts and calls the tensorizer's `_groups` through `oracle_groups`. The oracle
+therefore resolves archetype, child kind, extent, radius and runtime form with
+its own helper methods; the batched tables are the only thing under test.
+`compare_group_section` compares every group/child tensor, both index maps and
+both overflow counts.
+
+`tools/crforge/batched_groups.py` runs the gate on real vector lanes with the
+locked learner deck:
+
+```
+.venv/bin/python tools/crforge/batched_groups.py \
+    --count 256 --steps 40 --repeats 3 --timing-samples 8 --verify-lanes 32 \
+    --output runs/crforge-c3/batched-groups.json
+```
+
+`runs/crforge-c3/batched-groups.json`: **equivalence pass over 40 decisions**
+(256 lanes at step 0, lanes 0–31 after), `mismatches: []`. At the sampled frame
+the busiest lane held **14 entities** (all retained as groups and children;
+overflow 0), mean per-step max **4.85**.
+
+Paired timing, 256 lanes, 8 alternating samples:
+
+| path | total ms | ms/lane |
+| --- | ---: | ---: |
+| batched group section | **13.81** | **0.0539** |
+| per-lane `_groups` oracle | 56.50 | 0.2207 |
+
+**4.09×** the per-lane oracle on this host and this entity density. The
+section's live-profile cost was 0.543 ms/decision; replacing just that share
+projects a **0.503 ms/decision** packet, before any other section moves. That is
+a section arithmetic, not an end-to-end claim: the facts-only path still has to
+build cards, candidates, relations, towers, scalars and spatial planes, and the
+oracle here is the 0.22 ms/lane group function on minimal entities, not the
+0.543 ms/decision live row (median 8 entities and richer runtime).
+
+Two ordering rules are worth pinning because they are easy to get wrong and the
+equivalence test caught both:
+
+1. **Group relation is local; child relation is global.** A singleton group's
+   second priority term is "this entity has no visible target". A child's is
+   "this entity is not some entity's target" — the tensorizer builds that set
+   from the whole observation. The first implementation reused the owner's
+   target flag and reordered troops ahead of targeted skeletons.
+2. **Targets can be towers.** A skeleton attacking a princess tower has a
+   visible target that is not an entity; the lane-tagged membership test simply
+   misses it, which is correct.
+
+#### Tests
+
+`crforge_bridge/tests/test_vector_rows.py` (5 tests): a 50-decision equivalence
+run, a two-group/three-child capacity run that forces overflow, an empty-board
+mask/neutral-owner check, the reference-entity fact projection, and the seat-0
+guard. The bridge suite is **26 tests**, all passing. Ruff clean.
+
+#### What remains for C3-B
+
+The row build is not wired into `tensorize` yet. The remaining sections, in
+C3's measured order, are `_card_sets` (0.33), `_candidates` / placement rows
+(0.30), `_relations` (0.14), then `_towers` (0.145), `_spatial_planes` (0.117),
+`_scalars` and the empty effects/events. They must consume the same facts and
+reproduce the bridge's empty revealed-card set until a separate fidelity gate
+moves it. Only then can a facts-only `tensorize` replace the per-lane build and
+the ≤0.5 ms/lane target be claimed end to end.
+
+Evidence: `runs/crforge-c3/batched-groups.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_groups.py`.

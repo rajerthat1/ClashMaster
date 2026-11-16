@@ -109,6 +109,28 @@ build will consume; the bridge's per-lane `decode_rows` / `player_facts` /
 Measured 2026-11-18: **0.0317 ms/lane**, 4.8x the per-lane decoders, equivalence
 pass (`docs/native/16.635.1/FINDINGS.md` §3.46).
 
+## Batched causal-group row build (C3-B, first section)
+
+`vector_rows.py` consumes the facts batch and fills the `_groups` + children
+tensors for every lane at once. `VectorEntityTables` compiles the card /
+archetype / child-type / extent / runtime-form semantics once per tensorizer;
+`VectorGroupBuilder.build` is a per-lane priority sort and fixed-array fill, not
+a graph walk (the bridge envelope has no causal-group events, so every group is
+a singleton). The per-lane tensorizer stays the oracle:
+`reference_entities` + `oracle_groups` run the stock `_groups` on
+`EntityStateV1` rows projected from the same facts.
+
+```bash
+.venv/bin/python tools/crforge/batched_groups.py \
+  --count 256 --steps 40 --repeats 3 --timing-samples 8 --verify-lanes 32 \
+  --output runs/crforge-c3/batched-groups.json
+```
+
+Measured 2026-11-19: **0.0539 ms/lane** vs the 0.2207 per-lane oracle (**4.09x**),
+equivalence pass over 40 decisions (`docs/native/16.635.1/FINDINGS.md` §3.47).
+Section only: cards, candidates, relations, towers, scalars and spatial planes
+are still per-lane, and a facts-only `tensorize` must land before the C3 gate.
+
 ## Tests
 
 ```bash

@@ -243,6 +243,82 @@ do not start another R0 run.
 
 ---
 
+## Session 18 results (2026-11-19) — C3-B's first section: batched causal groups
+
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
+`FINDINGS.md` §3.47.
+
+### What changed
+
+C3's largest section is `_groups` + children (0.543 of a 0.992 CPU
+ms/decision). `crforge_bridge/vector_rows.py` now builds that section for every
+lane of a `VectorBattle` from the session-17 facts layer in one NumPy pass:
+
+- `VectorEntityTables` compiles the per-vocabulary policy semantics once:
+  base card, archetype (`form:<Name>`, then character/building/area node ids),
+  child type, footprint/radius, runtime form, singleton group type and the
+  source-card vocabulary id;
+- `VectorGroupBuilder.build(batch)` fills the `BattleGroupSetV4` group/child
+  tensors with the lane count as the batch dimension, plus slot-keyed
+  `group_index` / `child_index` maps and both overflow counts;
+- `reference_entities` projects `EntityStateV1` rows from the same facts and
+  `oracle_groups` runs the stock `_groups` on them. The oracle resolves
+  archetype, child kind, extent, radius and runtime form through its own
+  helpers, so only the batched tables are under test.
+
+The scope is the bridge's no-event envelope: **singleton groups** (the bridge
+sends no causal-group reference), the bridge's raw `entity_kind` rule
+(cardless rows are `effect`), no ability sources, projectiles, attack/movement/
+visibility runtime or events, and **seat 0**. Towers are the separate six-row
+section and stay out of the entity groups. `tools/crforge/batched_groups.py` is
+the gate.
+
+### Measured (256 lanes, learner deck, 40 decisions)
+
+`runs/crforge-c3/batched-groups.json`:
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched group section | **13.81 ms** | **0.0539** |
+| per-lane `_groups` oracle | 56.50 ms | 0.2207 |
+
+**Equivalence: pass**, 40 decisions, 256 lanes at step 0 and lanes 0–31 after,
+`mismatches: []`. **4.09×** the per-lane oracle; the busiest lane held 14
+entities, all retained (overflow 0). This is the section arithmetic only:
+replacing the live profile's 0.543 ms share with 0.0539 projects **0.503
+ms/decision**, but the facts-only path still has to build cards, candidates,
+relations, towers, scalars and spatial planes.
+
+Two ordering rules were easy to get wrong and the test caught both:
+
+1. **Group relation is local, child relation is global.** A singleton group's
+   term is "this entity has no target"; a child's is "this entity is not
+   anyone's target" — and it is built from the whole lane.
+2. **Targets can be towers.** A skeleton attacking a princess tower names a
+   target id that is not an entity; the lane-tagged membership test must miss
+   it.
+
+`crforge_bridge/tests/test_vector_rows.py` adds 5 tests (50-decision
+equivalence, forced two-group/three-child overflow, empty-board mask/neutral
+owner, the reference-entity projection, the seat-0 guard). The bridge suite is
+**26 tests**, all passing; ruff clean.
+
+### Next session (session 19) — finish C3-B's row build
+
+1. **`_card_sets` (0.33), then `_candidates`/placement (0.30), `_relations`
+   (0.14)** from the same facts, each against its own oracle slice. Keep the
+   bridge's empty `revealed_cards` until a separate fidelity gate changes it.
+2. **Then `_towers` (0.145), `_spatial_planes` (0.117), `_scalars`** and the
+   empty effects/events. Together with the group section these are the whole
+   packet.
+3. **Wire it up:** a facts-only `tensorize` returning one
+   `UniversalSemanticBatchV4` per lane, `batch_digest`-identical to the per-lane
+   path on a captured sequence; only then claim ≤0.5 ms/lane end to end.
+4. **Do not** widen the batch input, add lanes or GPUs while the row build is
+   incomplete; the facts layer is 0.03 ms/lane and is not the cost.
+5. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
 ## Session 17 results (2026-11-18) — the vectorized observation facts layer landed
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
@@ -302,6 +378,11 @@ Two findings make the next step smaller than it looked:
    `(0, min(10, start + generated))`.
 
 ### Next session (session 18) — the batched row build, now on a verified input
+
+> **Session 18 started it:** the batched group/children section landed and is
+> 4.09× the per-lane oracle (0.0539 vs 0.2207 ms/lane at 256 lanes), equivalent
+> over 40 decisions. The rest of this list is still the plan. See the session-18
+> section above and `FINDINGS.md` §3.47.
 
 1. **C3-B:** batch `_groups` + children first (0.54 ms/decision, the largest
    section) from `VectorObservationBatch`; keep the per-lane tensorizer as the
@@ -1084,6 +1165,9 @@ Yes — but as a **parity oracle**, not the training engine.
 | Run-refusal naming | **fixed 2026-11-17** — `H_LAST_RUN_REFUSAL` is a `LadderMatch` code (4 = `OVER`), not a `PlayerCommands.Refusal` ordinal; queued plays refused with `OVER` now resolve as `action_canceled_terminal` (`FINDINGS.md` §3.45) |
 | `tools/crforge/profile_tensorizer.py` | **new** — replays a live policy episode's tensorizer half under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical |
 | Vectorized observation facts | **new 2026-11-18** — `crforge_bridge/vector_observation.py` fills a fixed-size batch from `VectorBattle` for all lanes: both seats' headers/cards, all six towers, placement-mask views, derived `age_ms`/`velocity`. **0.0317 ms/lane** (31,555 decisions/s) at 256 lanes/1 thread, **4.8×** the bridge's per-lane decoders, equivalence pass (`runs/crforge-c3/vector-observation.json`, `FINDINGS.md` §3.46). It is the precondition for C3-B, not the row build |
+| Batched group row build | **new 2026-11-19** — `crforge_bridge/vector_rows.py` builds `_groups`+children for all lanes from the facts layer; `VectorEntityTables` compiles card/archetype/child/extent/runtime-form semantics once. **Equivalence pass** over 40 decisions (256 lanes step 0, 32 after), `mismatches: []`; **0.0539 ms/lane** vs 0.2207 per-lane oracle (**4.09×**) at 256 lanes, max 14 entities/lane (`runs/crforge-c3/batched-groups.json`, `FINDINGS.md` §3.47). Section only — the rest of C3-B is open |
+| Batched-group gate | **new 2026-11-19** — `tools/crforge/batched_groups.py`; steps real learner-deck vector lanes, compares every group/child tensor against the stock `_groups` oracle on facts-projected `EntityStateV1` rows, then times both paired over all 256 lanes |
+| Batched-group tests | `crforge_bridge/tests/test_vector_rows.py` (5 tests): 50-decision equivalence, forced group/child overflow, empty-board masks, reference-entity projection, seat-0 guard. Bridge suite **26 tests**, all pass |
 
 ### State at handoff (processes are ephemeral)
 
