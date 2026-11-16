@@ -10,6 +10,7 @@ Layout:
 - :mod:`crforge_bridge.catalog`  FirstLight card ids <-> crforge row names
 - :mod:`crforge_bridge.jvm`      one JVM per process, crforge jars on its path
 - :mod:`crforge_bridge.engine`   ``LiveBattle`` + configure/step/inject/observe
+- :mod:`crforge_bridge.vector_observation`  zero-copy facts for all vector lanes
 - :mod:`crforge_bridge.rich`     the minimal v3 rich envelope
 - :mod:`crforge_bridge.server`   the TCP server
 """

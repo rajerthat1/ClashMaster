@@ -91,6 +91,24 @@ pinned `native_runner/versions/16.635.1.json` release, then verifies the live
 - **No lying.** Fields crforge cannot supply are `null`, with the provenance
   status saying so. Adding a field is a Phase 5 change with a test, not a guess.
 
+## Vectorized observation facts (C3-B precondition)
+
+`vector_observation.py` is not part of the wire server: it reads a
+`VectorBattle`'s zero-copy buffers for all 256 lanes and fills a fixed-size
+`VectorObservationBatch` (both seats' headers and cards, six towers, placement
+mask views, derived `age_ms` / `velocity`). It is the input the batched V4 row
+build will consume; the bridge's per-lane `decode_rows` / `player_facts` /
+`entity_rows` are its equivalence oracle.
+
+```bash
+.venv/bin/python tools/crforge/vector_observation_spike.py \
+  --count 256 --threads 1 8 --steps 200 --repeats 3 \
+  --output runs/crforge-c3/vector-observation.json
+```
+
+Measured 2026-11-18: **0.0317 ms/lane**, 4.8x the per-lane decoders, equivalence
+pass (`docs/native/16.635.1/FINDINGS.md` §3.46).
+
 ## Tests
 
 ```bash

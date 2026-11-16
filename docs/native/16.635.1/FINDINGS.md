@@ -3028,3 +3028,92 @@ learner-deck tensorizer is not cheaper: **1.171 CPU ms/decision** (median 1.202,
 90 decisions, entities median 5 / max 11) in
 `runs/crforge-c3/learner-deck/tensorizer-profile.json`, against 0.992 on the
 evaluator deck. More spells, evolutions and a hero row, not a regression.
+
+### 3.46 The vectorized observation facts layer — C3-B's precondition (2026-11-18)
+
+C3-B is "batch the row build across lanes", and the handoff calls a vectorized
+`ObservationV1` its real precondition. C1's spike built a private `PolicyFrame`
+for the *encoder* comparison only: it carried hand/deck/pending and the entity
+rows, but no towers, no placement rows and none of the derived entity state the
+observation layer supplies. A row build cannot consume that frame without
+inventing fields, so the first session-17 step is a production facts layer.
+
+#### What landed
+
+`crforge_bridge/vector_observation.py` — `VectorObservationEncoder` fills a
+fixed-size `VectorObservationBatch` from `VectorBattle.observations` /
+`masks` for every lane at once. It carries every fact the bridge's per-lane
+`decode_rows` / `player_facts` / `entity_rows` expose, plus:
+
+- both seats' header scalars (elixir, crowns, refusals, pending count,
+  `enemy_seen` / evolution columns, per-seat own/enemy tower HP);
+- both seats' hand / deck / cycle / pending rows and the packed
+  `card_parameter`, vectorized with the bridge's own slot resolution;
+- all six towers as fixed rows selected by the arena's pinned entity ids (not
+  by a row name), with the seat header's HP fallback when the shared scene
+  reports an enemy health bar as unknown;
+- the native placement masks as a `(lanes, seats, 4, 32, 18)` **view** of
+  `VectorBattle.masks`, which is the candidate-placement half of the
+  tensorizer;
+- derived per-entity state the observation layer normally tracks:
+  `age_ms = (tick - first_seen_tick) * 50` and
+  `velocity = (position - previous_position) / delta_ticks`, with a slot whose
+  entity id changed treated as a new entity.
+
+`tools/crforge/vector_observation_spike.py` is the gate: it runs one vector,
+encodes the same state with the batch encoder and with the bridge's three
+per-lane decoders, asserts field equality, then times both paired over
+`--steps` decisions × `--repeats` trials.
+
+`crforge_bridge/tests/test_vector_observation.py` (4 tests) pins the
+equivalence, the mask view (`np.shares_memory`), the fixed tower layout, and
+the age/velocity rule against the frame's own position deltas. The bridge suite
+is now **21 tests**; with the V4 tensorizer suite, **93 pass**.
+
+#### Measured (256 lanes, 16.635.8, learner deck, 200 × 3)
+
+`runs/crforge-c3/vector-observation.json`:
+
+| threads | vectorized facts | decisions/s | bridge decoders | speedup | equivalence |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | **0.0317 ms/lane** | 31,555 | 0.1518 ms/lane | **4.8×** | pass |
+| 8 | **0.0342 ms/lane** | 29,282 | 0.1619 ms/lane | **4.7×** | pass |
+
+Shape at the sampled decision: 9–13 policy entities per lane, all six towers,
+and a peak of ~260k legal placement cells across the 256 lanes (of 589,824
+possible). The control is the bridge's full fact decode, not C1's partial
+per-lane encoder, which is why the ratio is 4.8× rather than C1's 19×; the
+absolute number is still **~30× below the tensorizer**.
+
+#### What this does not do
+
+It does not build `ObservationV1` contracts (the contract layer is exactly what
+C3 wants to skip) and it does not tensorize. The end-to-end gate is unchanged:
+C1's **0.713 ms/lane** projection and the C3 profile's **0.99–1.07 CPU
+ms/decision** replay mean still stand. C3-B's row build is the next step, and it
+now has a verified input.
+
+Two facts from this work matter for that row build:
+
+1. **The bridge's causal groups are singleton per entity.** `_causal_group_by_entity`
+   is fed only by rich combat events, and the bridge's rich envelope carries
+   none. `build_causal_groups` therefore returns one group per entity, ordered by
+   the same priority tuple. The batched group build is a sort, not a graph walk;
+   the general (native) path stays the oracle.
+2. **The bridge ignores the vector's revealed-card columns.** `player_facts`
+   exposes `cycle` but not `enemy_seen`; the observation layer builds
+   `revealed_cards` from events it never receives. The batch carries
+   `enemy_seen_vocab` / evolution so the gap is visible, but the first batched
+   row build must reproduce the bridge's current empty set — fixing the gap is a
+   fidelity change and belongs behind its own digest gate.
+
+The tracker's contribution in this envelope is equally small and exact: with no
+events, opponent card states stay `UNKNOWN_INITIAL` and `revealed_cards` stays
+empty, so the only tracker term the tensorizer reads is the enemy elixir
+interval (`(0, min(10, start + generated))`). A batched tracker is therefore a
+one-line regeneration schedule, not a state machine — provided the row build
+keeps the no-event envelope as an explicit precondition.
+
+Evidence: `runs/crforge-c3/vector-observation.json`,
+`crforge_bridge/tests/test_vector_observation.py`,
+`tools/crforge/vector_observation_spike.py`.

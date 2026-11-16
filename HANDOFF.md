@@ -243,6 +243,79 @@ do not start another R0 run.
 
 ---
 
+## Session 17 results (2026-11-18) — the vectorized observation facts layer landed
+
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §2 (C3),
+`FINDINGS.md` §3.46.
+
+### What changed
+
+C3-B's named precondition was a vectorized `ObservationV1`; what existed was the
+C1 spike's private `PolicyFrame`, which carries no towers, no placement rows and
+none of the derived entity state. `crforge_bridge/vector_observation.py` now
+fills a fixed-size `VectorObservationBatch` from `VectorBattle.observations` /
+`masks` for every lane:
+
+- both seats' header scalars (elixir, crowns, refusals, pending count,
+  `enemy_seen` / evolution, per-seat own/enemy tower HP);
+- both seats' hand / deck / cycle / pending rows and the packed
+  `card_parameter` with the bridge's own slot resolution;
+- all six towers as fixed rows selected by the pinned arena entity ids, with a
+  header HP fallback for an enemy health bar the shared scene reports unknown;
+- the native placement masks as a `(lanes, seats, 4, 32, 18)` **view** of
+  `VectorBattle.masks` (the candidate-placement half of the tensorizer);
+- derived `age_ms` and `velocity`, restarting when a row's entity id changes.
+
+`tools/crforge/vector_observation_spike.py` is the gate and
+`crforge_bridge/tests/test_vector_observation.py` pins it (equivalence, mask
+view, fixed tower layout, age/velocity rule). See `FINDINGS.md` §3.46.
+
+### Measured (256 lanes, 16.635.8, learner deck, 200 × 3)
+
+`runs/crforge-c3/vector-observation.json`:
+
+| threads | vectorized facts | decisions/s | bridge decoders | speedup | equivalence |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | **0.0317 ms/lane** | 31,555 | 0.1518 ms/lane | **4.8×** | pass |
+| 8 | **0.0342 ms/lane** | 29,282 | 0.1619 ms/lane | **4.7×** | pass |
+
+The control is the bridge's full per-lane fact decode, so the ratio is 4.8×,
+not C1's 19× for the smaller frame; the absolute cost is ~30× below the
+tensorizer. 9–13 policy entities per lane and all six towers; ~260k legal
+placement cells across 256 lanes at the peak.
+
+### The gate has not moved
+
+This is the precondition, not C3-B. Nothing here builds `ObservationV1`
+contracts or tensorizes, so C1's **0.713 ms/lane** projection and the C3
+profile's **0.99–1.07 CPU ms/decision** replay mean still describe the packet.
+
+Two findings make the next step smaller than it looked:
+
+1. **crforge's causal groups are all singletons.** The bridge's rich envelope
+   carries no combat events, and `_causal_group_by_entity` is fed only by them,
+   so `build_causal_groups` returns one group per entity ordered by the existing
+   priority tuple. The batched group build is a sort, not a graph walk.
+2. **The tracker collapses to an elixir schedule.** With no events, opponent
+   card states stay `UNKNOWN_INITIAL` and `revealed_cards` stays empty, so the
+   only tracker term the tensorizer reads is the enemy interval
+   `(0, min(10, start + generated))`.
+
+### Next session (session 18) — the batched row build, now on a verified input
+
+1. **C3-B:** batch `_groups` + children first (0.54 ms/decision, the largest
+   section) from `VectorObservationBatch`; keep the per-lane tensorizer as the
+   digest oracle. Then `_card_sets` (0.33), `_candidates`/`placement_rows`
+   (0.30) and `_relations` (0.14). Target ≤0.5 ms/lane, `batch_digest`-identical
+   row-for-row.
+2. **Do not** widen the batch input or add lanes until the row build is under
+   the gate; the facts layer is 0.03 ms/lane and is not the cost.
+3. **Fidelity note:** the bridge ignores the vector's `enemy_seen` columns
+   (`revealed_cards` comes from events it never receives). Reproduce today's
+   empty set in the first row build; fixing the gap is a separate digest gate.
+4. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
 ## Session 16 results (2026-11-17) — the learner-deck blocker is closed; a run refusal is a match code
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4,
@@ -308,6 +381,9 @@ a hero, not because of the fix.
 1. **C3-B, unchanged:** a batched row build across lanes from a vectorized
    `ObservationV1` (which does not exist yet — that is the real precondition),
    `batch_digest`-identical to the per-lane path. Target ≤0.5 ms/lane.
+   **Precondition landed in session 17:** `crforge_bridge/vector_observation.py`
+   is the vectorized facts layer (0.032 ms/lane, equivalence pass); the row
+   build itself is still open. See the session-17 section above.
 2. **C3-A:** only if a compiled helper is cheap in this tree; there is no
    Cython/build extension today, so treat it as a design task, not a quick win.
 3. **C4** can now use the learner deck: `profile_tensorizer.py --resident
@@ -1007,6 +1083,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | Learner-deck rollout | **clean 2026-11-17** — `runs/crforge-c3/learner-deck/`: 2/2 games, `illegal 0`, `rejected 0`, terminals at ticks 3,681 / 4,032. The tensorizer failure was the Knight hero's signed LogicData global id, not an effect row (`FINDINGS.md` §3.45) |
 | Run-refusal naming | **fixed 2026-11-17** — `H_LAST_RUN_REFUSAL` is a `LadderMatch` code (4 = `OVER`), not a `PlayerCommands.Refusal` ordinal; queued plays refused with `OVER` now resolve as `action_canceled_terminal` (`FINDINGS.md` §3.45) |
 | `tools/crforge/profile_tensorizer.py` | **new** — replays a live policy episode's tensorizer half under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical |
+| Vectorized observation facts | **new 2026-11-18** — `crforge_bridge/vector_observation.py` fills a fixed-size batch from `VectorBattle` for all lanes: both seats' headers/cards, all six towers, placement-mask views, derived `age_ms`/`velocity`. **0.0317 ms/lane** (31,555 decisions/s) at 256 lanes/1 thread, **4.8×** the bridge's per-lane decoders, equivalence pass (`runs/crforge-c3/vector-observation.json`, `FINDINGS.md` §3.46). It is the precondition for C3-B, not the row build |
 
 ### State at handoff (processes are ephemeral)
 
