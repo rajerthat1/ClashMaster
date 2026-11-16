@@ -6,6 +6,57 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — the overlapped loop is correct; on CPU it is not a training default
+
+`--overlap-update` collects segment `k+1` while segment `k` updates, on a second
+model in a worker thread. The mechanics are proven and gated — the collector's
+weights are refused if they moved during a segment, and every boundary copy is
+verified byte-for-byte — but the CPU trade is bad: **103.8 s serial vs 100.7 s
+overlapped (1.03×), collection 29.2 → 18.9 lane-decisions/s (0.65×), and 5 of 6
+updates stale** (|KL| **4.4e-3** against 6.2e-5 on-policy, clip **2.9 %**).
+
+- **Why the gain is ~3 %:** the per-decision forward and the PPO backward are both
+  CPU-bound on this host, so the worker steals cores from the collector. Both
+  halves inflate (collection 1.55×, update 1.39×) and the update is paid for in
+  contention instead of hidden. `tools/crforge/overlap_compare.py` therefore gates
+  on the collection rate, not just the wall, and this run **fails** it.
+- **The tax is the wave's tax, measured directly.** The trainer now records the
+  sampling id against the id the update actually started from, so a pipelined
+  stale update is a number rather than an inference (the old id-chain classifier
+  could not see it). A 3 % wall gain does not buy 71× the on-policy KL.
+- **Decision:** `reset` remains the default trainer, `carry` the deploy-shape
+  candidate, `wave` a diagnostic, and the pipeline a **gated option**, not a
+  default. It is not deleted: this host is the wrong substrate. On the A6000 the
+  update is the *short* side (5.5 s against ~39 s of collection at the gate
+  shape, §3.62), so the collector's forward is not competing for the CPU cores a
+  backward uses. The ceiling is bounded arithmetic (~27 % at 128 lanes × 32
+  decisions if the update scales linearly), and the 2,048-frame OOM in §3.62 has
+  to be solved before it is reachable. That measurement is open.
+
+See the session-32 section below and `FINDINGS.md` §3.64.
+
+### 2026-11-19 — `carry` leads the 50-update horizon; the default waits for more seeds
+
+The cadence question session 31 deferred is now measurable: 50 updates at one
+shape and seed, both on-policy, `tools/crforge/learning_horizon.py`.
+
+- **Both cadences learn the simulator's return.** `reset` 0.228 → 0.495,
+  `carry` 0.226 → **0.580**. `carry` leads on the last-10 mean (+0.085), the
+  slope (+2.2e-3/update), last-5 (0.622 vs 0.511) and best-5, at the same wall.
+  Its ACT rate also more than doubles (4.2 % → 12.0 %) against `reset`'s 7.4 %.
+- **The first update is identical in both runs** (return 0.330, KL 7.5e-5): the
+  only difference is where the recurrence is cut, which is the control this
+  comparison needs.
+- **What this is not:** a win-rate claim, a native result, or a ranking. It is one
+  seed and one 4-lane match per run; `value_explained_variance` is unusable at 8
+  rows × 24 decisions (a low-variance segment sent it to −11), and native parity
+  was not run.
+- **Decision:** `reset` stays the training default. `carry` is the leading
+  candidate and the subject of the next horizon run: ≥2 more seeds, then 50–150
+  native matches every N updates. Do not flip the default from one seed.
+
+See the session-32 section below and `FINDINGS.md` §3.65.
+
 ### 2026-11-19 — the cadence decision: `reset` trains, `wave` is a diagnostic
 
 The update-boundary policy was the last open choice from session 29, and its
@@ -591,6 +642,123 @@ do not start another R0 run.
 
 ---
 
+## Session 32 results (2026-11-19) — the overlapped loop, and `reset` vs `carry` over a horizon
+
+**Read first:** this section, `FINDINGS.md` §3.64–§3.65, and the session-31
+section below.
+
+### What landed
+
+- **`crforge_bridge/training.py` — `OverlapUpdater`.** A second model plus a
+  worker thread; `submit(rollout, segment, expected_policy_state_id)` joins the
+  previous update, checks the collector still hashes to the segment's sampling
+  id, copies the updated weights into the collection model in place
+  (`copy_weights`, verified byte-for-byte), and starts the next update. `finish()`
+  joins the last update and records the final sync.
+- **Every update now records whether it was on-policy.** `_update` stores
+  `sampling_policy_state_id`, `policy_state_id_at_update_start` and `stale`; the
+  gate reports `stale_updates`, `on_policy_updates` and `all_updates_on_policy`.
+  This is what makes a *pipelined* stale update measurable — the id-chain
+  classifier in `cadence_compare.py` cannot see it, because the row's "before" id
+  is the sampling id. The classifier now prefers the measured field.
+- **`tools/crforge/self_play.py --overlap-update`** and the `pipeline` block on
+  the artifact (boundaries, join/sync/in-flight clocks, identity checks, stale
+  count, serial-equivalent wall, speedup). `--resume` copies the resumed weights
+  into the collector before segment 0; `wave` + overlap is refused.
+- **`tools/crforge/overlap_compare.py`** — the gate at one shape and seed list.
+  Serial `reset` vs overlapped `reset`; it fails when the collection rate does
+  not survive (`>= 0.9×` serial), even if the wall is slightly lower.
+- **`tools/crforge/learning_horizon.py`** — `reset` vs `carry` for ≥50 updates at
+  one shape and seed: return/reward curve, ACT-rate curve, slope, wall. Native
+  parity is explicitly *not* run (crforge is never a promotion source).
+- **Tests:** `crforge_bridge/tests/test_overlap.py` (4 tests: stable collector,
+  moved-collector refusal, second-model requirement, boundary clocks);
+  trainer tests for the measured stale verdict and the in-place copy; the cadence
+  classifier test for the measured verdict. Bridge suite **90 passed**; native
+  learning + trainer suite **46 passed / 4 skipped**; ruff clean on the touched
+  files.
+
+### Measured — the pipeline is correct and CPU-negative
+
+4 lanes × 6 segments × 24 decisions, 2 seeds, CPU, `OMP_NUM_THREADS=4`,
+`runs/crforge-c4/overlap-compare.json`:
+
+| measurement | serial `reset` | overlapped `reset` |
+| --- | ---: | ---: |
+| updates / stale | 6 / **0** | 6 / **5** |
+| wall | **103.8 s** | **100.7 s** (1.03×) |
+| collection / update wall | 39.4 / 64.4 s | **60.9 / 89.6 s** |
+| collection rate | **29.2 ld/s** | **18.9 ld/s (0.65×)** |
+| abs KL on-policy / stale | 4.63e-5 / — | 6.20e-5 / **4.40e-3** |
+| clip fraction stale | — | **2.92 %** |
+| collection identity / weight bytes | — | **pass / pass** |
+| gate | — | **fail** (collection rate) |
+
+The pipeline hides the update structurally (its own ledger says 150.5 s serial
+equivalent over 100.7 s), but under CPU contention both halves inflate, so the
+honest comparison is 103.8 → 100.7 s. The tax is the wave's: 5/6 updates stale,
+71× the on-policy KL, 2.9 % clip. The recorded decision is therefore *not* to
+adopt it as the default; the A6000 is the shape to measure next, where the update
+is the short side.
+
+### Measured — `reset` vs `carry` over 50 updates
+
+4 lanes × 24 decisions, 50 updates, seed 1, CPU, `OMP_NUM_THREADS=4`,
+`runs/crforge-c4/learning-horizon.json`:
+
+| measurement | `reset` | `carry` |
+| --- | ---: | ---: |
+| updates / stale | 50 / **0** | 50 / **0** |
+| return: first-10 mean | 0.2280 | 0.2260 |
+| return: last-10 mean | 0.4951 | **0.5803** |
+| return: delta / slope | +0.2672 / 5.93e-3 | **+0.3543 / 8.14e-3** |
+| return: last-5 / best-5 | 0.511 / 0.518 | **0.622 / 0.652** |
+| ACT: first-10 → last-10 | 3.62 % → 7.40 % | 4.16 % → **12.02 %** |
+| lane-decisions / wall | 9,600 / 899.4 s | 9,600 / 872.4 s |
+| training gate | pass | pass |
+
+The first update is identical in both runs (return 0.330, KL 7.5e-5), the control
+that only the recurrence boundary differs. Both curves rise over 50 updates;
+`carry` leads on the last-10 mean (+0.085), slope and both tail windows, at the
+same wall (27 s is host noise). **One seed is not a ranking**, and
+`value_explained_variance` is unusable at this shape (it swings to −11 on a
+low-variance segment). `reset` therefore stays the default; `carry` is the
+leading candidate for the next horizon run (≥2 more seeds + native parity).
+
+### Found by running it
+
+1. **The first smoke run failed with an in-place autograd error, and it was a
+   real race.** The producer read `trainer.pending` before joining the worker's
+   last update, then flushed the same rollout concurrently. The join now happens
+   before any trainer state is read. The pipeline is only safe because the worker
+   is the sole writer while in flight.
+2. **A 3 % wall gain is not worth 5/6 stale updates.** The measured stale KL and
+   clip reproduce session 31's wave numbers, which is the control: the tax is a
+   property of the data age, not of this implementation.
+3. **The gate had to include the collection rate.** A wall-only gate would have
+   called a 3 % win a pass while the collector lost 35 % of its throughput. The
+   handoff's criterion ("same lane-decisions/s") is the right one.
+4. **The pipeline is a GPU shape, not a CPU one.** On this host the forward and
+   the backward share cores; on the A6000 the update is 7.5× faster and the
+   collector's forward is not competing for the CPU cores a backward uses. The
+   same code has a bounded ~27 % ceiling there at 128 lanes × 32 decisions (and
+   §3.62's 2,048-frame OOM must be solved first), so the measurement is open.
+
+### Next session (session 33)
+
+1. **Measure the pipeline on the A6000** at 64–128 lanes: wall, collection rate,
+   stale KL/clip, and whether a concurrent forward and backward contend on one
+   device. Do not adopt it from the CPU result.
+2. **Extend the horizon to ≥2 more seeds and native parity.** Seed 1 already
+   shows `carry` leading (last-10 return 0.580 vs 0.495, slope 8.14e-3 vs
+   5.93e-3, ACT 12.0 % vs 7.4 %); `reset` stays the default until the seeds agree
+   and 50–150 native matches per checkpoint back the ranking. See `FINDINGS.md`
+   §3.65.
+3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
+   and after every adapter change; crforge is never a promotion gate.
+4. **Profile the ~228 ms/decision the A6000 session left unattributed** at 128
+   lanes (tensorize 81 + forward 157 + decode 97 + steps 75 of a 647 ms decision).
+
 ## Session 31 results (2026-11-19) — the cadence decision: `reset` trains, `wave` is a diagnostic
 
 **Read first:** this section, `FINDINGS.md` §3.63, and the session-30 items above.
@@ -662,10 +830,15 @@ three sampled the same first segment with the same weights.
 1. **Overlap collection with the update.** The only cadence change with a measured
    wall payoff. Gate: same lane-decisions/s with the update hidden behind the next
    wave, on CPU and CUDA, and the behaviour identity of the collecting pass
-   unchanged during the overlap.
+   unchanged during the overlap. **Done 2026-11-19:** `--overlap-update` is
+   implemented and gated; on CPU it wins 3 % wall but loses 35 % collection rate
+   and 5/6 updates are stale, so the gate **fails**. The GPU measurement remains
+   open. See the session-32 section and `FINDINGS.md` §3.64.
 2. **Rank `reset` against `carry` on a learning horizon.** Same shape and seed,
    ≥50 updates, reward/return and native parity every N updates; the 6-update
-   trace above is not a learning claim.
+   trace above is not a learning claim. **Done 2026-11-19 (native parity not
+   run):** `tools/crforge/learning_horizon.py` runs 50 updates for both policies;
+   see the session-32 section and `FINDINGS.md` §3.65.
 3. **Profile the ~228 ms/decision the A6000 session left unattributed** at 128
    lanes (tensorize 81 + forward 157 + decode 97 + steps 75 of a 647 ms decision).
    That is the per-decision Python packet, which §3.62 named as the ceiling.

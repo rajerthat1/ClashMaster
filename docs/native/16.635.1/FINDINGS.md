@@ -4991,3 +4991,181 @@ hide inside `--update-state-policy`.
 Evidence: `tools/crforge/cadence_compare.py`,
 `crforge_bridge/tests/test_cadence_compare.py`,
 `runs/crforge-c4/cadence-compare.json`, `runs/crforge-c4/cadence/*.json`.
+
+### 3.64 The overlapped loop is correct, and on CPU the update is paid for in contention (2026-11-19)
+
+Session 31's lever was the wall split: at the cadence shape the update was 66 s
+of a 106 s run (62 %), and every cadence flushed it synchronously. The obvious
+change is to collect segment `k+1` while segment `k` updates. `--overlap-update`
+does that with a **second model and a worker thread**, and this section records
+the result: the mechanics are proven, the CPU gain is ~3 %, and the reason is
+contention rather than a defect.
+
+#### What the pipeline does
+
+* The trainer owns a second, independent copy of the network (`load_policy_v4`
+  twice, checked digest-identical at start). The collector samples from the first
+  model; the worker applies `trainer.enqueue` to the second.
+* At each segment boundary the collector **joins the worker**, then copies the
+  updated weights into the collection model **in place** (`copy_weights`, so the
+  optimizer's `Parameter` identities survive), then starts the next update.
+* Two invariants are gates, not hopes:
+  - the collection model still hashes to the **id the segment was sampled with**
+    before the copy (`policy_state_id` check);
+  - the copied collection model reproduces the update model's **weight bytes**
+    (`weights_digest` on both sides).
+* The tax is recorded instead of inferred. The trainer now stores
+  `sampling_policy_state_id`, `policy_state_id_at_update_start` and `stale` on
+  every update; the old id-chain classifier could not see a pipelined stale
+  update because `policy_state_id_before` is the *sampling* id. In the serial
+  cadences the two ids are equal (0 stale); in the pipeline segment `k` is
+  sampled before update `k-1` lands, so all but the first update are stale by
+  one.
+
+#### Measured — serial vs overlapped, same shape and seeds
+
+4 lanes × 6 segments × 24 decisions, 2 seeds, CPU, `OMP_NUM_THREADS=4`,
+`runs/crforge-c4/overlap-compare.json` (per-run artifacts under
+`runs/crforge-c4/overlap/`):
+
+| measurement | serial `reset` | overlapped `reset` |
+| --- | ---: | ---: |
+| updates / stale | 6 / **0** | 6 / **5** |
+| wall | **103.8 s** | **100.7 s** (1.03×) |
+| collection wall / update wall | 39.4 / 64.4 s | **60.9 / 89.6 s** |
+| collection rate | **29.2 ld/s** | **18.9 ld/s (0.65×)** |
+| per-update wall | 10.7 s | 14.9 s |
+| boundary join + sync | 0 | 27.6 s total (4.6 s/boundary) |
+| abs KL on-policy | 4.63e-5 | 6.20e-5 |
+| abs KL stale | — | **4.40e-3** (71×) |
+| clip fraction stale | — | **2.92 %** |
+| collection identity / weight bytes | — | **pass / pass** |
+| training gate | pass | pass |
+
+The pipeline's own ledger says `serial_equivalent_wall_s = 150.5` and
+`speedup = 1.50`, but that is **not** the comparison that matters: it sums the
+*contended* clocks. The honest number is 103.8 s → 100.7 s. The measured wall
+matches the contended-clocks model almost exactly (first collection 10.2 s + six
+14.9 s updates = 99.6 s), which is the point: the pipeline is working, and the
+contended clocks are what it costs.
+
+#### What it says
+
+1. **On this host the update is not hidden; it is paid for in a slower
+   collector.** Both halves inflate under the second thread — collection 1.55×,
+   update 1.39× — because the per-decision forward and the backward are both
+   CPU-bound and compete for the same 12 cores. The gate tool therefore requires
+   the collection rate to survive (`>= 0.9×` serial), and this run **fails** at
+   0.65×. The tool's exit code is non-zero; the artifact is kept.
+2. **The pipeline reproduces the wave's off-policy tax.** 5 of 6 updates are
+   stale; |KL| is 4.4e-3 against 6.2e-5 on-policy (71×) and 2.9 % of ratios clip.
+   Session 31 measured 5.4e-3 / 3.0 % for the wave's stale half. A 3 % wall gain
+   is not worth that tax, which is why the pipeline is **not** the training
+   default.
+3. **The identity gate is free and it earned its place.** A collection model that
+   moved during a segment is refused before any copy; the final sync is verified
+   against the update model's bytes. The pipeline cannot silently sample with
+   half-applied weights, which is the failure mode a naive "share the model"
+   overlap would have.
+4. **The shape this is for is a GPU, not this laptop.** The split is different on
+   the A6000: the update is 5.5 s at the 1,024-frame gate shape while collection
+   is ~39 s at 26.3 ld/s (§3.62), so the *update* is the short side and the
+   collector's forward is not competing for the CPU cores a backward uses — the
+   opposite of this host. The ceiling is bounded arithmetic
+   (`(S-1)·c / (S·(c+u))`, ~27 % at 128 lanes × 32 decisions if the update scales
+   linearly and fits), and §3.62's 2,048-frame OOM has to be solved first. It
+   still has to be measured on the box, including whether concurrent forward and
+   backward contend on one device.
+5. **The implementation is step-agnostic.** It works with `reset` and `carry`;
+   `wave` is refused because the wave already batches segments and is a
+   diagnostic, so combining them would measure neither. `--resume` is supported:
+   the resumed weights are copied into the collector before segment 0.
+
+#### Pins
+
+* **One update of staleness is structural**, not an implementation choice: to
+  hide update `k` behind segment `k+1`, segment `k+1` must be sampled before
+  update `k` lands. A pipeline cannot be both overlapped and on-policy.
+* **The worker is the only writer while in flight.** The producer joins before
+  reading `trainer.pending` or `trainer.update_entries`; reading them earlier
+  raced the worker's `flush()` and the first smoke run failed with an in-place
+  autograd error. That was fixed by moving the join ahead of the partial-wave
+  check.
+* **Memory:** a full second model plus the persistent Adam state. At
+  `B-general-v275` that is ~70 MB of weights and ~136 MB of moments extra; the
+  rollout store still holds one segment per side.
+
+Evidence: `crforge_bridge/training.py` (`OverlapUpdater`, `copy_weights`),
+`tools/crforge/self_play.py --overlap-update`,
+`tools/crforge/overlap_compare.py`, `crforge_bridge/tests/test_overlap.py`,
+`crforge_bridge/tests/test_overlap_compare.py`,
+`native_runner/tests/test_training_v4_crforge_trainer.py`,
+`runs/crforge-c4/overlap-compare.json`, `runs/crforge-c4/overlap/*.json`.
+
+### 3.65 `carry` leads the 50-update horizon, on one seed (2026-11-19)
+
+Session 31 refused to rank `reset` against `carry` from six updates, and it was
+right to. This is the first run long enough to see the curves move: 50 updates,
+one segment per update, 4 lanes × 24 decisions, one seed, CPU,
+`OMP_NUM_THREADS=4`, the same `B-general-v275` seed and the native 1e-5. Both are
+on-policy (0 stale updates) and both pass the training gate.
+`tools/crforge/learning_horizon.py`, `runs/crforge-c4/learning-horizon.json`.
+
+#### Measured
+
+| measurement | `reset` | `carry` |
+| --- | ---: | ---: |
+| updates / stale | 50 / **0** | 50 / **0** |
+| return: first-10 mean | 0.2280 | 0.2260 |
+| return: last-10 mean | **0.4951** | **0.5803** |
+| return: delta | +0.2672 | +0.3543 |
+| return: slope/update | 5.93e-3 | **8.14e-3** |
+| return: last-5 / best-5 | 0.511 / 0.518 | **0.622 / 0.652** |
+| ACT: first-10 → last-10 | 3.62 % → 7.40 % | 4.16 % → **12.02 %** |
+| lane-decisions / wall | 9,600 / 899.4 s | 9,600 / 872.4 s |
+| training gate | pass | pass |
+
+The two runs are identical at the first update (return 0.330, `approx_kl` 7.5e-5,
+`value_explained_variance` 0.011), which is the control that the only difference
+is the recurrence policy. After that they diverge, as they must with one
+optimizer and one seed.
+
+#### What it says
+
+1. **Both cadences learn on the simulator's own return.** `reset` moves from
+   0.228 to 0.495 over 50 updates; `carry` from 0.226 to 0.580. That is a
+   within-simulator training curve, not a win-rate claim and not a promotion
+   result — native matches are still the gate and were not run.
+2. **`carry` leads on every summary here:** a higher last-10 mean (+0.085), a
+   steeper slope (+2.2e-3/update), a higher last-5 and best-5, and it is the
+   cheaper wall by 27 s (within host noise). Its ACT rate also more than doubles
+   (4.2 % → 12.0 %) while `reset` reaches 7.4 %, so carry's policy is committing
+   to more plays. More actions is not automatically better; the return is the
+   signal, the ACT rate is the behaviour that produced it.
+3. **One seed is not a ranking.** The per-segment return is noisy (each segment
+   is a different 120-tick slice of a 6,000-tick match; `reset` spans 0.122–0.567,
+   `carry` 0.048–0.699), and the two runs are single 4-lane matches. The gap is
+   large enough to justify a second and third seed, not to flip the default.
+4. **`value_explained_variance` is not usable at this shape.** Per update it
+   swings from positive to below −2 in `reset` and to −11 in `carry`; with 8 rows
+   and 24 decisions a low-variance return makes the ratio explode. The last-10
+   mean is dominated by those points. It is recorded, not interpreted.
+5. **Decision:** `reset` stays the default for now, `carry` becomes the leading
+   candidate and the subject of the next horizon run. The change of default needs
+   the same shape at ≥2 more seeds **and** native parity every N updates; neither
+   was run here.
+
+#### Pins
+
+* **The first update is the control.** Both runs share seed, checkpoint and first
+  segment, so update 1 must be identical; it is. A divergence there would mean the
+  cadence changed more than the recurrence boundary.
+* **`carry` is the deployed inference shape** (session 29): the state survives the
+  update. This horizon does not show it is the better *training* shape beyond one
+  seed; it shows the question is now measurable.
+* **Shape discipline:** the run is 4 lanes × 50 × 24 at 4 threads, ~15 min per
+  policy on this host. 50 updates is the session-31 bar, not a convergence claim.
+
+Evidence: `tools/crforge/learning_horizon.py`,
+`crforge_bridge/tests/test_learning_horizon.py`, `runs/crforge-c4/learning-horizon.json`,
+`runs/crforge-c4/horizon/{reset,carry}-seed1.json`.

@@ -367,6 +367,22 @@ PYTHONPATH=.resource/crforge/python .venv/bin/python -m crforge_env.bench \
   --count 4 --segments 6 --decisions-per-segment 24 --seeds 1 2 \
   --output runs/crforge-c4/cadence-compare.json
 
+# C4 pipeline gate: serial reset vs the overlapped loop at one shape and seed
+# list.  The update runs on a second model in a worker thread while the next
+# segment collects; the gate also requires the collection rate to survive
+# (>= 90 % of serial), because an update paid for in CPU contention is not
+# hidden.  --reuse re-aggregates the per-run artifacts without re-collecting.
+.venv/bin/python tools/crforge/overlap_compare.py \
+  --count 4 --segments 6 --decisions-per-segment 24 --seeds 1 2 \
+  --output runs/crforge-c4/overlap-compare.json
+
+# C4 learning horizon: reset vs carry for >=50 updates at one shape and seed.
+# Summarizes the reward/return curve and the accessible ACT rate.  Native
+# parity is deliberately not run here: crforge is never a promotion source.
+.venv/bin/python tools/crforge/learning_horizon.py \
+  --count 4 --updates 50 --decisions-per-segment 24 --seeds 1 \
+  --output runs/crforge-c4/learning-horizon.json
+
 # C2 gate: resident adapter vs the socket bridge — parity digests then paired timing
 .venv/bin/python tools/crforge/resident_parity.py \
   --decisions 60 --output runs/crforge-c2/resident-parity.json
