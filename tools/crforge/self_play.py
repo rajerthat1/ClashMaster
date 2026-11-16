@@ -45,6 +45,15 @@ carries the dead episode's state into the new one.  The store binds a hash of th
 sampling weights, so an update between segments changes the next segment's
 behaviour identity instead of silently reusing the checkpoint's.
 
+The loop keeps **one AdamW** for the whole run and states its boundary policy
+(``--update-state-policy``): ``reset`` zeroes the recurrent state after every
+update, ``carry`` keeps it (the deployed inference shape), and ``wave`` freezes
+the behaviour weights for ``--wave-segments`` segments before applying their
+updates and resetting.  Every update appends a reward/return trace row, and the
+training gate needs **two consecutive finite updates** — one update proves the
+mechanics, not the loop.  ``--save-checkpoint`` writes a V4 checkpoint (weights,
+persistent optimizer, loop counters) and reloads it to verify the weight bytes.
+
 ``--force-second-micro`` is a **timing probe, not a rollout**: the sampled
 policy never emits two micro-actions, so this mode appends a different legal
 play from the open candidates at the sampled play's own delay bin.  The
@@ -60,9 +69,7 @@ the stored sampled action would no longer be the action the engine ran.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import math
 import statistics
 import sys
 import time
@@ -83,16 +90,16 @@ from crforge_bridge.catalog import Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
 from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, PotentialShapingReward, rollout_statistics
+from crforge_bridge.training import CrforgeTrainer, CrforgeTrainingConfig, policy_state_id, weights_digest
 from crforge_bridge.vector_actions import CANDIDATE_DEPLOY, VectorActionDecoder, VectorActionPlan, plan_window_ticks
 from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_tensorize import VectorTensorizer
 from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
 from native_runner.cr_native_env import FIRST_PLAYABLE_TICK
 from native_runner.timeline import load_game_mode_timeline
-from native_runner.training.v4.distributed_ppo import distributed_ppo_update_v4
+from native_runner.training.v4.checkpoint import save_actor_critic_checkpoint
 from native_runner.training.v4.factory import deck_roles_from_form_availability, production_semantic_bundle
 from native_runner.training.v4.policy_session import load_policy_v4
-from native_runner.training.v4.ppo import PPOConfigV4
 from native_runner.training.v4.tensorizer import UniversalObservationTensorizerV4
 from native_runner.training.v4.tensors import (
     GATE_ACT,
@@ -272,91 +279,62 @@ def _vector(count: int, *, max_ticks: int) -> Any:
     return vector
 
 
-def _policy_state_id(model: torch.nn.Module, checkpoint_id: str) -> str:
-    """Identity of the behaviour weights, not just the file they came from.
-
-    A crforge gate run may update between segments; the stored rollout must say
-    which weights sampled it, or the update could silently replay old behaviour
-    under new parameters.  Parameter and buffer bytes are cheap to hash at a
-    segment boundary.
-    """
-
-    digest = hashlib.sha256(checkpoint_id.encode("utf-8"))
-    for name, tensor in sorted(model.named_parameters()):
-        digest.update(name.encode("utf-8"))
-        digest.update(tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes())
-    for name, tensor in sorted(model.named_buffers()):
-        digest.update(name.encode("utf-8"))
-        digest.update(tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes())
-    return digest.hexdigest()[:32]
-
-
-def _run_segment_update(
+def _save_checkpoint(
+    path: Path,
     model: torch.nn.Module,
-    rollout: Any,
+    trainer: CrforgeTrainer | None,
     *,
+    policy: Any,
     args: argparse.Namespace,
-    device: torch.device,
-    expected_policy_state_id: str,
-    gamma: float,
+    reward_config: CrforgeRewardConfig,
 ) -> dict[str, Any]:
-    """One PPO update over a finalized segment, with the C4 update gate.
+    """Write a V4 checkpoint and prove it reloads to the same weight bytes.
 
-    The optimizer is created per call: this is a correctness gate over the
-    stored record, not the training loop, so AdamW momentum does not span the
-    segment boundary.  A real crforge trainer keeps one optimizer.
+    The saved payload carries the persistent optimizer, so a later run can
+    continue the momentum instead of restarting Adam; the reload check is the
+    gate that the weights on disk are the weights the loop trained, not the
+    seed checkpoint's.
     """
 
-    rows = int(rollout.batch_size)
-    minibatch = int(args.ppo_lane_minibatch) or rows
-    minibatch = min(minibatch, rows)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.ppo_learning_rate))
-    config = PPOConfigV4(
-        gamma=gamma,
-        gae_lambda=float(args.gae_lambda),
-        clip_range=float(args.ppo_clip_range),
-        value_clip_range=float(args.ppo_clip_range),
-        value_coefficient=0.5,
-        entropy_coefficient=0.0,
-        max_grad_norm=1.0,
-    )
-    started = time.perf_counter()
-    metrics = distributed_ppo_update_v4(
+    digest = weights_digest(model)
+    update_step = int(policy.update_step) + (0 if trainer is None else trainer.updates)
+    checkpoint_id = save_actor_critic_checkpoint(
+        path,
         model,
-        optimizer,
-        rollout,
-        epochs=int(args.ppo_epochs),
-        lane_minibatch_size=minibatch,
-        sequence_chunk_steps=int(args.ppo_sequence_chunk),
-        config=config,
-        expected_policy_state_id=expected_policy_state_id,
-        autocast_dtype=None,
-        validate=not args.no_validate,
+        optimizer=None if trainer is None else trainer.optimizer,
+        update_step=update_step,
+        training_stage="crforge-c4-ppo",
+        gamma_per_decision=reward_config.gamma_per_decision,
+        gae_lambda=float(args.gae_lambda),
+        extra={
+            "weights_digest": digest,
+            "crforge": {
+                "source_checkpoint": str(args.checkpoint),
+                "source_checkpoint_sha256": policy.checkpoint_sha256,
+                "source_checkpoint_id": policy.checkpoint_id,
+                "source_update_step": int(policy.update_step),
+                "loop": None if trainer is None else trainer.checkpoint_state(),
+                "reward": reward_config.as_dict(),
+                "shape": {
+                    "count": args.count,
+                    "segments": args.segments,
+                    "decisions_per_segment": args.decisions_per_segment,
+                    "seats": [int(seat) for seat in args.seats],
+                },
+            },
+        },
     )
-    wall = time.perf_counter() - started
-    finite = bool(metrics) and all(
-        math.isfinite(float(value)) for row in metrics for value in row.values() if isinstance(value, (int, float))
-    )
-    valid = sum(float(row.get("valid_count", 0.0)) for row in metrics)
+    reloaded = load_policy_v4(path, device="cpu")
+    reloaded_digest = weights_digest(reloaded.model)
     return {
-        "segments_updated": 1,
-        "epochs": int(args.ppo_epochs),
-        "lane_minibatch_size": minibatch,
-        "sequence_chunk_steps": int(args.ppo_sequence_chunk),
-        "learning_rate": float(args.ppo_learning_rate),
-        "clip_range": float(args.ppo_clip_range),
-        "gamma": float(gamma),
-        "gae_lambda": float(args.gae_lambda),
-        "device": str(device),
-        "time_steps": int(rollout.time_steps),
-        "batch_size": rows,
-        "episode_starts": int(rollout.episode_start.sum()),
-        "mid_rollout_episode_starts": int(rollout.episode_start[1:].sum()) if rollout.time_steps > 1 else 0,
-        "wall_s": wall,
-        "valid_count": valid,
-        "finite": finite,
-        "metrics": metrics,
-        "pass": finite and valid > 0.0,
+        "path": str(path),
+        "checkpoint_id": checkpoint_id,
+        "update_step": update_step,
+        "training_stage": "crforge-c4-ppo",
+        "weights_digest": digest,
+        "reload_weights_digest": reloaded_digest,
+        "reload_match": reloaded_digest == digest,
+        "bytes": int(path.stat().st_size),
     }
 
 
@@ -408,9 +386,25 @@ def main(argv: list[str] | None = None) -> int:
         "--ppo-update",
         action="store_true",
         help=(
-            "run one PPO update on each finalized segment's stored rollout; a lane that "
-            "autoreset mid-segment exercises the episode-boundary replay"
+            "train: run PPO over each finalized segment's stored rollout with one persistent "
+            "optimizer; a lane that autoreset mid-segment exercises the episode-boundary replay"
         ),
+    )
+    parser.add_argument(
+        "--update-state-policy",
+        choices=("carry", "reset", "wave"),
+        default="reset",
+        help=(
+            "recurrent-state policy at an update boundary: 'reset' zeroes it after every update, "
+            "'carry' keeps it (deployment inference shape), 'wave' freezes the weights for "
+            "--wave-segments segments, updates at the wave end, then resets"
+        ),
+    )
+    parser.add_argument(
+        "--wave-segments",
+        type=int,
+        default=2,
+        help="segments collected with frozen weights before one update wave (wave policy only)",
     )
     parser.add_argument("--ppo-epochs", type=int, default=1, help="PPO epochs per segment update")
     parser.add_argument(
@@ -421,7 +415,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--ppo-sequence-chunk", type=int, default=32, help="TBPTT chunk length in decisions")
     parser.add_argument("--ppo-clip-range", type=float, default=0.1, help="PPO policy/value clip range")
-    parser.add_argument("--ppo-learning-rate", type=float, default=1e-4, help="AdamW learning rate of the gate update")
+    parser.add_argument(
+        "--ppo-learning-rate",
+        type=float,
+        default=1e-5,
+        help="persistent AdamW learning rate (the native trainer default)",
+    )
+    parser.add_argument("--ppo-value-coefficient", type=float, default=0.5, help="value-loss coefficient")
+    parser.add_argument("--ppo-entropy-coefficient", type=float, default=0.0, help="entropy bonus coefficient")
+    parser.add_argument("--ppo-max-grad-norm", type=float, default=1.0, help="gradient clipping norm (0 disables)")
+    parser.add_argument("--ppo-adam-eps", type=float, default=1e-5, help="AdamW epsilon")
+    parser.add_argument("--ppo-weight-decay", type=float, default=0.0, help="AdamW weight decay")
+    parser.add_argument(
+        "--save-checkpoint",
+        type=Path,
+        default=None,
+        help="write a V4 checkpoint (weights + the persistent optimizer) and reload it to verify",
+    )
     parser.add_argument("--output", type=Path, default=Path("runs/crforge-c4/self-play.json"))
     args = parser.parse_args(argv)
 
@@ -434,6 +444,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.ppo_update and args.no_rollout:
         raise SystemExit("--ppo-update needs the stored rollout; drop --no-rollout")
+    if args.ppo_update and args.segments < 2:
+        raise SystemExit("--ppo-update needs at least two segments: one update is not a training loop")
+    if args.ppo_update and args.wave_segments > args.segments:
+        raise SystemExit("--wave-segments cannot exceed --segments")
     if args.ppo_update and (
         args.ppo_epochs < 1
         or args.ppo_sequence_chunk < 1
@@ -443,6 +457,27 @@ def main(argv: list[str] | None = None) -> int:
     ):
         raise SystemExit("--ppo-update settings must be positive (and the lane minibatch non-negative)")
     reward_config = CrforgeRewardConfig(shaping_beta=float(args.shaping_beta))
+    training_config = None
+    if args.ppo_update:
+        # The update's gamma must be the reward's per-decision discount, or GAE
+        # and the shaping term would optimize two different games.
+        training_config = CrforgeTrainingConfig(
+            state_policy=args.update_state_policy,
+            segments_per_wave=(args.wave_segments if args.update_state_policy == "wave" else 1),
+            learning_rate=float(args.ppo_learning_rate),
+            epochs=int(args.ppo_epochs),
+            lane_minibatch_size=int(args.ppo_lane_minibatch),
+            sequence_chunk_steps=int(args.ppo_sequence_chunk),
+            clip_range=float(args.ppo_clip_range),
+            value_coefficient=float(args.ppo_value_coefficient),
+            entropy_coefficient=float(args.ppo_entropy_coefficient),
+            max_grad_norm=(None if args.ppo_max_grad_norm <= 0.0 else float(args.ppo_max_grad_norm)),
+            adam_eps=float(args.ppo_adam_eps),
+            weight_decay=float(args.ppo_weight_decay),
+            gamma=reward_config.shaping_gamma,
+            gae_lambda=float(args.gae_lambda),
+            validate=not args.no_validate,
+        )
     seats = tuple(dict.fromkeys(int(seat) for seat in args.seats))
     if not seats:
         raise SystemExit("--seats must be a subset of 0 1")
@@ -490,6 +525,17 @@ def main(argv: list[str] | None = None) -> int:
     if window < window_span:
         raise SystemExit(f"policy window is {window} ticks but its delay bins need {window_span}")
     state = model.initial_state(args.count * len(seats), device=device)
+    trainer = (
+        None
+        if training_config is None
+        else CrforgeTrainer(
+            model,
+            config=training_config,
+            checkpoint_id=str(policy.checkpoint_id),
+            device=device,
+            base_update_step=int(policy.update_step),
+        )
+    )
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
     info = vector.schema.info
@@ -534,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     reward_mismatches = 0
     faults_before = dict(vector.fault_counts())
     reset_mask = np.ones(args.count, dtype=bool)
+    flushed_partial_wave = 0
     try:
         for segment in range(args.segments):
             segment_started = time.perf_counter()
@@ -553,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
             rollout_store = None
             segment_policy_state_id = None
             if rollout_enabled:
-                segment_policy_state_id = _policy_state_id(model, str(policy.checkpoint_id))
+                segment_policy_state_id = policy_state_id(model, str(policy.checkpoint_id))
                 rollout_store = CrforgeRolloutStore(
                     lanes=args.count,
                     seats=len(seats),
@@ -718,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
                 samples["rollout_ms"].append((rollout_done - facts_done) * 1000.0)
 
             segment_rollout = None
+            segment_updates: list[dict[str, Any]] = []
             if rollout_store is not None:
                 # The observation after the last decision is the time-limit
                 # bootstrap every still-running lane needs at the segment cut.
@@ -736,19 +784,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 segment_rollout["summary"] = rollout_store.summary().as_dict()
                 segment_rollout["storage_mib"] = round(rollout_store.storage_bytes() / 2**20, 3)
-                if args.ppo_update:
-                    segment_rollout["update"] = _run_segment_update(
-                        model,
-                        rollout,
-                        args=args,
-                        device=device,
-                        expected_policy_state_id=str(segment_policy_state_id),
-                        gamma=reward_config.shaping_gamma,
+                if trainer is not None:
+                    # The optimizer steps at the wave boundary; the recurrence
+                    # policy decides whether the next segment keeps this state.
+                    updates = trainer.enqueue(
+                        rollout, segment=segment, expected_policy_state_id=str(segment_policy_state_id)
                     )
+                    if updates is not None:
+                        segment_updates = updates
+                        state = trainer.boundary_state(state, rows=args.count * len(seats))
 
             wall = time.perf_counter() - segment_started
-            update = None if segment_rollout is None else segment_rollout.get("update")
-            update_wall = 0.0 if update is None else float(update["wall_s"])
+            update_wall = sum(float(update["wall_s"]) for update in segment_updates)
             collection_wall = max(wall - update_wall, 0.0)
             for name, values in samples.items():
                 timing[name].extend(values)
@@ -778,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
                 "resets": counts["resets"],
                 "illegal_peak": illegal_peak,
                 "rollout": segment_rollout,
-                "update": update,
+                "updates": segment_updates,
                 "ms": {name: (statistics.median(values) if values else 0.0) for name, values in samples.items()},
             }
             segments.append(entry)
@@ -786,6 +833,31 @@ def main(argv: list[str] | None = None) -> int:
                 totals[name] += value
             totals["illegal_peak"] = max(totals["illegal_peak"], illegal_peak)
             print(json.dumps(entry), flush=True)
+
+        if trainer is not None and trainer.pending:
+            # A run whose segment count is not a whole number of waves still
+            # trains on what it collected; the artifact marks the partial wave.
+            partial_wave = len(trainer.pending)
+            flushed = trainer.flush()
+            flushed_partial_wave = partial_wave
+            flush_wall = sum(float(update["wall_s"]) for update in flushed)
+            last = segments[-1]
+            last["updates"].extend(flushed)
+            # The flush ran after the last segment's clock stopped: move both
+            # clocks forward so the run total still adds up, but keep the
+            # collection wall where the collection actually ended.
+            last["wall_s"] += flush_wall
+            last["update_wall_s"] += flush_wall
+            last["lane_decisions_per_s"] = last["lane_decisions"] / last["wall_s"] if last["wall_s"] else 0.0
+            last["matches_per_s"] = (
+                last["lane_decisions"] / len(seats) / MATCH_DECISIONS / last["wall_s"] if last["wall_s"] else 0.0
+            )
+            if trainer.config.resets_recurrence:
+                state = trainer.boundary_state(state, rows=args.count * len(seats))
+            print(
+                json.dumps({"event": "partial_wave_flush", "segments": partial_wave, "updates": len(flushed)}),
+                flush=True,
+            )
 
         faults_after = dict(vector.fault_counts())
         fault_delta = {
@@ -813,28 +885,55 @@ def main(argv: list[str] | None = None) -> int:
             "reward_nonzero_rows": sum(int(item["summary"]["reward_nonzero_rows"]) for item in rollout_segments),
             "finite": rollout_finite,
         }
-        update_segments = [item["update"] for item in segments if item["update"] is not None]
+        update_entries = [update for item in segments for update in item["updates"]]
         update_totals = {
-            "segments_updated": len(update_segments),
-            "time_steps": sum(int(item["time_steps"]) for item in update_segments),
-            "valid_count": sum(float(item["valid_count"]) for item in update_segments),
-            "wall_s": sum(float(item["wall_s"]) for item in update_segments),
-            "finite": all(bool(item["finite"]) for item in update_segments) if update_segments else True,
-            "mid_rollout_episode_starts": sum(int(item["mid_rollout_episode_starts"]) for item in update_segments),
-            "multiple_episodes_per_lane": any(int(item["mid_rollout_episode_starts"]) > 0 for item in update_segments),
+            "segments_updated": len(update_entries),
+            "updates": len(update_entries),
+            "time_steps": sum(int(item["time_steps"]) for item in update_entries),
+            "valid_count": sum(float(item["valid_count"]) for item in update_entries),
+            "wall_s": sum(float(item["wall_s"]) for item in update_entries),
+            "finite": all(bool(item["finite"]) for item in update_entries) if update_entries else True,
+            "mid_rollout_episode_starts": sum(
+                int(segments[int(item["segment"])]["rollout"]["mid_rollout_episode_starts"]) for item in update_entries
+            ),
+            "multiple_episodes_per_lane": any(
+                int(segments[int(item["segment"])]["rollout"]["mid_rollout_episode_starts"]) > 0
+                for item in update_entries
+            ),
         }
         update_gate = {
             "enabled": bool(args.ppo_update),
             **update_totals,
             "pass": (not args.ppo_update)
             or (
-                bool(update_segments)
-                and all(bool(item["pass"]) for item in update_segments)
-                and update_totals["finite"]
+                bool(update_entries) and all(bool(item["pass"]) for item in update_entries) and update_totals["finite"]
             ),
         }
+        checkpoint_info = None
+        if args.save_checkpoint is not None:
+            checkpoint_info = _save_checkpoint(
+                args.save_checkpoint, model, trainer, policy=policy, args=args, reward_config=reward_config
+            )
+            print(json.dumps({"event": "checkpoint_saved", **checkpoint_info}), flush=True)
+        if trainer is None:
+            training = {"enabled": False, "pass": True, "note": "no update ran: pass --ppo-update with rollout storage"}
+        else:
+            training_pass = trainer.gate()
+            training = {
+                "enabled": True,
+                **trainer.config.as_dict(),
+                **training_pass,
+                "base_update_step": trainer.base_update_step,
+                "checkpoint_id": trainer.checkpoint_id,
+                "optimizer_state": ("persistent_for_the_run" if trainer.optimizer.state else "no_steps_taken"),
+                "behaviour_ids": sorted({str(item["policy_state_id_after"]) for item in trainer.update_entries}),
+                "trace": trainer.trace,
+                "partial_wave_segments_flushed": flushed_partial_wave,
+                "checkpoint": checkpoint_info,
+                "pass": training_pass["pass"] and (checkpoint_info is None or bool(checkpoint_info["reload_match"])),
+            }
         artifact = {
-            "schema": "crforge-self-play.v2",
+            "schema": "crforge-self-play.v3",
             "measured": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "shape": {
                 "count": args.count,
@@ -851,6 +950,10 @@ def main(argv: list[str] | None = None) -> int:
                 "sampled": not args.greedy,
                 "rollout_storage": rollout_enabled,
                 "forced_second_micro": args.force_second_micro,
+                "training": bool(args.ppo_update),
+                "update_state_policy": args.update_state_policy,
+                "wave_segments": (args.wave_segments if args.update_state_policy == "wave" else 1),
+                "save_checkpoint": None if args.save_checkpoint is None else str(args.save_checkpoint),
             },
             "substrate": {
                 "release": release,
@@ -895,8 +998,14 @@ def main(argv: list[str] | None = None) -> int:
                         "the recurrence at that row and the GAE trace ends at the truncation, and "
                         "the update replays each contiguous episode segment separately"
                     ),
+                    "update_cadence": (
+                        "carry/reset: one update per segment, immediately after collection; wave: "
+                        "the behaviour weights stay frozen for the wave's segments, their updates "
+                        "run at the wave end, and the recurrence resets there"
+                    ),
                 },
             },
+            "training": training,
             "fidelity": {
                 "frame": "facts are game-framed; the batched decode applies game -> seat",
                 "action_space": "one engine action per seat per tick; every V4 micro-action is scheduled",
@@ -928,6 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
                 "reward_result_mismatches": reward_mismatches,
                 "rollout_finite": rollout_finite,
                 "update_pass": update_gate["pass"],
+                "training_pass": training["pass"],
                 "pass": (
                     rejected == 0
                     and eligible_total > 0
@@ -935,6 +1045,7 @@ def main(argv: list[str] | None = None) -> int:
                     and reward_mismatches == 0
                     and rollout_finite
                     and update_gate["pass"]
+                    and training["pass"]
                 ),
             },
             "totals": {
