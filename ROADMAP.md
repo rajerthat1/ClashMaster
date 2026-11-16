@@ -512,12 +512,16 @@ bulk path is crforge, in the order that protects the schedule:
    process and tensorizer parity to the native path.
 4. **C4 — batch + PPO.** 8 lanes/process, 2–4 processes, pipelined inference;
    gate a 10-segment run with 0 rejected, `eligible_act_rate > 0`, and a native
-   eval that does not regress. The loop and its **rollout storage** are in
-   (`tools/crforge/self_play.py`, `crforge_bridge/rollout.py`): the gate shape
-   stores every decision, rebuilds the native reward, and finalizes one
-   `StoredRolloutV4` per segment (`FINDINGS.md` §3.58). Still open: the PPO
-   update has to honour an `episode_start` after step 0 (`distributed_ppo_update_v4`
-   requires one episode per lane).
+   eval that does not regress. The loop, its **rollout storage** and the
+   **update** are in (`tools/crforge/self_play.py`, `crforge_bridge/rollout.py`):
+   the gate shape stores every decision, rebuilds the native reward, finalizes one
+   `StoredRolloutV4` per segment, and `--ppo-update` runs
+   `distributed_ppo_update_v4` over it (`FINDINGS.md` §3.58–§3.59). The update
+   now splits at every episode boundary, so a lane that autoresets mid-segment
+   replays as contiguous slices: gate shape 1,024 lane-decisions / 45 ACT /
+   0 rejected, one 1,024-frame update; multi-episode 8 × 2 × 60 with 16
+   mid-rollout starts, 2 updates, 0 rejected. Still open: CUDA/MPS throughput, a
+   persistent-optimizer training loop, and the native parity cadence.
 5. **C5 — parity curve.** 50–150 native matches every N updates and after every
    adapter change; a persistent win-rate gap freezes the checkpoint.
 6. **C6–C7 — native promotion gate, then live canary.** ≥150 native paired games,

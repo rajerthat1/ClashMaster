@@ -4234,6 +4234,126 @@ Evidence: `runs/crforge-c4/self-play.json`,
 `crforge_bridge/vector_observation.py` (per-lane clock),
 `crforge_bridge/vector_tensorize.py` (`reset_rows`, owned record).
 
+### 3.59 The C4 rollout goes through the PPO update (2026-11-19)
+
+§3.58 stored a correct `StoredRolloutV4`, but the distributed update refused any
+rollout with an `episode_start` after step 0 ("distributed PPO lanes must contain
+one episode each"). A crforge lane cut at `max_ticks` autoresets mid-segment, so
+the store and the trainer did not meet. This section closes that: the update now
+replays a multi-episode lane, and the producer runs the update over the stored
+record itself.
+
+#### The update splits at episode boundaries
+
+`evaluate_encoded_action_sequence` fuses the whole `[T,B]` slice through
+`torch._VF.lstm` and zeroes a lane's hidden/cell only at **row 0**; a reset after
+step 0 would carry the dead episode's state into the new one, which is why the
+old guard existed. The fix keeps that invariant instead of weakening it:
+
+* `_episode_segments(episode_start)` returns contiguous `[start, end)` slices,
+  split at every row where any lane starts a new episode;
+* `_episode_chunks` cuts each slice into TBPTT chunks of `sequence_chunk_steps`,
+  so no chunk straddles a boundary;
+* the update carries the state across chunks and across slices, and passes each
+  slice's boundary row as chunk row 0, where the fused kernel zeroes exactly the
+  lanes that reset. Lanes that did not reset keep their carried state.
+
+GAE needed no change: `generalized_advantage_estimate` already stops its trace at
+`terminated | truncated`, and the producer marks the cut + the next-episode
+`episode_start` consistently. The fused replay's own `validate` guard is still
+there: a caller that hands it a mid-reset slice still fails, which is what the
+new test checks it does not do.
+
+#### The store had to leave inference mode for autograd
+
+The producer samples under `inference_mode`, and `torch.as_tensor(...).detach()
+.reshape(-1)` on an inference tensor returns an inference tensor. The store's
+shape/finiteness checks passed, but the first PPO backward failed with
+`Inference tensors cannot be saved for backward`. `_rollout_float` now clones the
+stored log-probability and value outside inference mode, exactly as
+`TensorRecordV4.to_storage` does for observations and actions. A regression test
+builds the store inside `inference_mode` and backpropagates through its tensors.
+
+#### Behaviour identity is the weights
+
+Each segment binds `_policy_state_id(model, checkpoint_id)`, a SHA-256 over the
+checkpoint id and every parameter/buffer. When `--ppo-update` changes the weights
+between segments, the next segment's id changes; the autoreset run records
+`3835a22f…` then `899ef703…`. Without this, a later update could replay
+behaviour sampled by different weights under the old checkpoint id.
+
+#### Measured
+
+Gate-shape update — `tools/crforge/self_play.py --count 8 --segments 1
+--decisions-per-segment 64 --ppo-update --ppo-sequence-chunk 32`,
+`runs/crforge-c4/self-play-update.json`:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions | **1,024** (64 decisions × 16 rows) |
+| ACT lane-decisions / eligible | **45 / 983 (4.58 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| reward vs engine-terminal mismatches | **0** |
+| update frames / epochs | **1,024 / 1** |
+| update wall | **51.9 s** |
+| collection wall / rate | 27.0 s / **37.9 lane-decisions/s** |
+| full wall | 78.9 s |
+| `approx_kl` / `clip_fraction` | **2.9e-5 / 0** |
+| gradient norm | 1.147 |
+
+Multi-episode lane — `--count 8 --segments 2 --decisions-per-segment 60
+--max-ticks 600 --ppo-update`, `runs/crforge-c4/self-play-update-rollout.json`:
+
+| measurement | value |
+| --- | ---: |
+| lane-decisions | **1,920** |
+| ACT lane-decisions / eligible | **56 / 1,559 (3.59 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| mid-rollout `episode_start` rows | **16** (8 lanes × 2 seats, segment 1) |
+| mid-rollout truncations | **16 rows** (8 lanes) |
+| updates | **2**, 960 frames each |
+| update wall (segment 0 / 1) | **42.8 / 45.1 s** |
+| collection wall / rate | 39.5 s / 48.6 lane-decisions/s |
+| `approx_kl` (segment 0 / 1) | **2.8e-5 / 1.0e-6** |
+| `clip_fraction` | 0 / 0 |
+| gradient norm | 1.298 / 1.247 |
+| behaviour ids | **2** (`3835a22f…`, `899ef703…`) |
+
+The collection rate in the second run is recorded as measured, not as a new
+throughput claim; the plain gate-shape run is 37.9, matching §3.58's 37.8.
+
+#### Pins
+
+* `--ppo-update` builds a fresh `AdamW` per segment: it is a mechanics gate, not
+  the training loop, so momentum does not span segments.
+* It updates between segments while the producer carries the recurrent state and
+  previous-action record across the boundary. The stored record is internally
+  consistent (the next segment's initial state is what the behaviour actually
+  used), but a real trainer must decide explicitly whether to reset the
+  recurrence at an update or collect a whole wave with a frozen policy.
+* One epoch from the behaviour policy is not a learning result:
+  `approx_kl ≈ 1e-5`, `clip_fraction 0`, and segment 1's
+  `value_explained_variance` is −0.59. The gate is that reward, GAE, replay and
+  backward are correct.
+* CUDA was not attempted: this host has CPU-only torch (`2.5.1+cpu`) and no
+  `nvidia-smi`. The gate-shape measurement is CPU.
+
+#### Tests and evidence
+
+`native_runner/tests/test_training_v4_learning.py`:
+`test_distributed_ppo_replays_a_mid_rollout_episode_start` (two lanes, reset at
+step 2, `sequence_chunk_steps=3`, `validate=True`, `approx_kl 0`).
+`crforge_bridge/tests/test_rollout.py`:
+`test_store_escapes_inference_mode_for_the_ppo_update`. Native learning suite
+**37 passed / 4 skipped**; bridge suite **74 passed**; the new bridge/producer
+modules and `distributed_ppo.py` are ruff clean (the native test and `model.py`
+files keep their pre-existing import-sort warnings).
+
+Evidence: `native_runner/training/v4/distributed_ppo.py`,
+`crforge_bridge/rollout.py`, `tools/crforge/self_play.py`,
+`runs/crforge-c4/self-play-update.json`,
+`runs/crforge-c4/self-play-update-rollout.json`.
+
 ### 3.58 The C4 rollout store and the native-shape reward (2026-11-19)
 
 §3.57's producer measured the packet but stored nothing, so it could not be a
@@ -4282,12 +4402,11 @@ at it. The rollout's `initial_state` is the recurrent state at the segment start
 not a zeroed state, so a segment boundary is a continuation and only the return
 trace is cut.
 
-**One open constraint, recorded on the artifact:** `distributed_ppo_update_v4`
-refuses a rollout with an `episode_start` after step 0 ("distributed PPO lanes
-must contain one episode each"). A crforge segment that autoresets a lane cannot
-go straight into that update. Either the update learns per-lane episode
-boundaries (`evaluate_recurrent_sequence` already takes `episode_start` per step)
-or the producer ends a lane's rollout at its terminal. That is the next C4 item.
+**One constraint was open at this point, and §3.59 closes it:**
+`distributed_ppo_update_v4` refused a rollout with an `episode_start` after step
+0 ("distributed PPO lanes must contain one episode each"). The update now splits
+the time axis at every boundary row and replays each contiguous episode slice,
+so a crforge segment that autoresets a lane goes straight into the update.
 
 #### The second micro-action, exercised end to end
 
