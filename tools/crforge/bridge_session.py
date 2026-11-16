@@ -25,17 +25,22 @@ FORM_AVAILABILITY = (0, 0, 0, 0, 0, 0, 0, 0)
 
 def build_episode(
     *,
-    port: int,
+    port: int | None = None,
+    native: Any | None = None,
     checkpoint: str,
     seed: int,
     deck: Sequence[int] | None = None,
     forms: Sequence[int] | None = None,
 ):
-    """Build a live bridge episode; returns ``(environment, observations, sessions, close)``.
+    """Build a live crforge episode; returns ``(environment, observations, sessions, close)``.
 
     One session per seat, as the evaluator builds them: a seat's own session is
     the only place its hand, cycle and elixir stay consistent, and a one-sided
     board would measure an unrepresentative entity mix.
+
+    Pass ``port`` for the socket bridge, or ``native`` for the resident adapter
+    (``native_runner/crforge_resident.py``) — exactly one.  Both present the same
+    ``NativeClashEnv`` surface, so the episode is identical by construction.
 
     ``deck``/``forms`` default to the evaluator deck the C0 soak plays.  A tool
     that measures the *learner* deck (C1's X-Bow list) passes its own, so both
@@ -62,10 +67,14 @@ def build_episode(
         load_policy_v4,
     )
 
+    if (port is None) == (native is None):
+        raise ValueError("build_episode takes exactly one of port or native")
+
     policy = load_policy_v4(checkpoint, device="cpu")
     release = getattr(policy.model, "competitive_release", None)
     bundle = production_semantic_bundle(release)
-    native = NativeClashEnv(DEFAULT_HOST, port, timeout=30.0)
+    if native is None:
+        native = NativeClashEnv(DEFAULT_HOST, int(port), timeout=30.0)
     stack = ExitStack()
     stack.enter_context(use_release(load_release(release)) if release else nullcontext())
     # Sampled decoding must be reproducible so a stock/optimized A/B replays the

@@ -76,6 +76,15 @@ class Engine:
     _sequence: int = field(default=0, init=False)
     _command_seq: int = field(default=0, init=False)
     _attestation: dict[str, Any] | None = field(default=None, init=False)
+    # Post-step ticks at which a given play can report its run refusal. Reading
+    # the run-refusal header means copying a whole 7,024-int seat observation;
+    # the old code did that for both seats on every tick.
+    _watch_ticks: dict[int, set[int]] = field(default_factory=lambda: {0: set(), 1: set()}, init=False)
+    # The capture (decoded rows, holder identity, player facts) is identical for
+    # every observable command at one state. Keyed by
+    # (generation, tick, command sequence, done), so it cannot go stale: a step
+    # moves the tick and any given command moves the sequence.
+    _capture_cache: tuple[tuple[int, int, int, bool], Any] | None = field(default=None, init=False)
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -276,6 +285,22 @@ class Engine:
                 "tick": self._battle.tick() if self._battle is not None else 0,
             }
 
+    def close(self) -> None:
+        """Drop the live battle but keep the started engine and the JVM.
+
+        The resident adapter (``native_runner/crforge_resident.py``) ends an
+        episode by closing its transport; a later ``configure`` must still be
+        able to build a fresh ``LiveBattle``, so only the per-battle state goes.
+        """
+
+        with self._lock:
+            self._battle = None
+            self._config = None
+            self._generation = 0
+            self._sequence = 0
+            self._watch_ticks = {0: set(), 1: set()}
+            self._capture_cache = None
+
     # ---- configure -----------------------------------------------------
 
     def configure(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -360,6 +385,8 @@ class Engine:
         self._config = config
         self._generation += 1
         self._sequence = 0
+        self._watch_ticks = {0: set(), 1: set()}
+        self._capture_cache = None
 
     # ---- stepping ------------------------------------------------------
 
@@ -370,6 +397,7 @@ class Engine:
                 raise BridgeError("ticks must be in 1..1000000")
             stopped = False
             run_refusals: list[dict[str, Any]] = []
+            watch = self._watch_ticks
             for _ in range(int(ticks)):
                 if self._battle.done():
                     stopped = True
@@ -377,10 +405,18 @@ class Engine:
                 self._battle.step()
                 # A 5-tick environment step crosses several decisions. Keep the
                 # run refusals those decisions reported so the caller can
-                # attribute a pending play that died at its run tick. Reading a
-                # single header index is cheap; the full array copy is not.
+                # attribute a pending play that died at its run tick.
+                #
+                # The seat observation is a 7,024-int copy, and reading both
+                # seats every tick is pure overhead. crforge clears
+                # `last_run_refusal` when it opens a decision (one per tick
+                # here), so a code can only be observed on the post-step tick a
+                # given play's run produced. Read only those ticks.
                 refusal_tick = int(self._battle.tick())
                 for owner in (0, 1):
+                    if refusal_tick not in watch[owner]:
+                        continue
+                    watch[owner].discard(refusal_tick)
                     code = int(self._battle.observation(owner)[self._schema.H_LAST_RUN_REFUSAL])
                     if code:
                         run_refusals.append(
@@ -492,6 +528,7 @@ class Engine:
                     **given,
                 }
             raise BridgeError(f"crforge refused the play: {given}")
+        self._watch_run(owner, given["runTick"])
         return {"ok": True, "tick": self._battle.tick(), "injected": True, "owner": owner, **given}
 
     def _inject_ability(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -532,7 +569,19 @@ class Engine:
                     **given,
                 }
             raise BridgeError(f"crforge refused the ability: {given}")
+        self._watch_run(owner, given["runTick"])
         return {"ok": True, "tick": self._battle.tick(), "injected": True, "owner": owner, **given}
+
+    def _watch_run(self, owner: int, run_tick: int) -> None:
+        """Read this owner's run-refusal header on the ticks its command can run.
+
+        ``Giving.runTick`` is when crforge runs the command; the post-step tick
+        a caller observes afterwards is ``runTick + 1``. Both are watched so the
+        bridge keeps the exact receipt it produced when it read every tick.
+        """
+
+        run_tick = int(run_tick)
+        self._watch_ticks[int(owner)].update((run_tick, run_tick + 1))
 
     def _hand_slot(self, owner: int, card_id: int) -> int | None:
         rows = self._seat_rows(owner)
@@ -576,7 +625,7 @@ class Engine:
     def observe(self) -> dict[str, Any]:
         with self._lock:
             self._require_battle()
-            tick, ordinary, _rich, players, _rich_players = self._capture()
+            tick, ordinary, _rich, players, _rich_players, header = self._capture()
             return {
                 "ok": True,
                 "tick": tick,
@@ -588,13 +637,13 @@ class Engine:
                 "objects": ordinary,
                 "players": players,
                 "ended": bool(self._battle.done()),
-                "result": _result_name(self._seat_header(0).get("result", 0)),
+                "result": _result_name(header.get("result", 0)),
             }
 
     def observe_rich(self) -> dict[str, Any]:
         with self._lock:
             self._require_battle()
-            tick, _ordinary, rich, _players, rich_players = self._capture()
+            tick, _ordinary, rich, _players, rich_players, _header = self._capture()
             return rich_envelope(
                 tick=tick,
                 generation=self._generation,
@@ -606,7 +655,7 @@ class Engine:
     def observe_atomic(self) -> dict[str, Any]:
         with self._lock:
             self._require_battle()
-            tick, ordinary, rich, players, rich_players = self._capture()
+            tick, ordinary, rich, players, rich_players, _header = self._capture()
             return atomic_envelope(
                 tick=tick,
                 generation=self._generation,
@@ -619,9 +668,17 @@ class Engine:
             )
 
     def _capture(self):
+        key = (int(self._generation), int(self._battle.tick()), int(self._sequence), bool(self._battle.done()))
+        cached = self._capture_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
         observation = self._observation(0)
         rows, header = self._decode(0, observation)
-        objects, rich, _rows = entity_rows(observation, self._schema, self._vocabulary, self._catalog)
+        # One row decode per capture: `entity_rows` reuses the rows the header
+        # read already decoded instead of walking the seat vector twice.
+        objects, rich, _rows = entity_rows(
+            observation, self._schema, self._vocabulary, self._catalog, rows=rows
+        )
         objects, rich = self._bind_holder_identity(objects, rich)
         players = []
         for owner in (0, 1):
@@ -633,7 +690,9 @@ class Engine:
         # Rich players are the minimal, honest runtime: no champion/evolution
         # claim until the bridge reads those from crforge.
         rich_players = [empty_player(owner) for owner in (0, 1)]
-        return header["tick"], objects, rich, players, rich_players
+        result = (header["tick"], objects, rich, players, rich_players, header)
+        self._capture_cache = (key, result)
+        return result
 
     def _decode(self, owner: int, observation: list[int]):
         from .observe import decode_rows
@@ -642,13 +701,7 @@ class Engine:
 
     def _seat_rows(self, owner: int) -> dict[str, Any]:
         observation = self._observation(owner)
-        _rows, header = self._decode(owner, observation)
         return player_facts(observation, self._schema, self._vocabulary, self._catalog, owner=owner)
-
-    def _seat_header(self, owner: int) -> dict[str, int]:
-        observation = self._observation(owner)
-        _rows, header = self._decode(owner, observation)
-        return header
 
     def _bind_holder_identity(self, objects: list[dict[str, Any]], rich: list[dict[str, Any]], *, seat: int = 0):
         """Use the battle's own entity ids where a seat row can be matched to one.

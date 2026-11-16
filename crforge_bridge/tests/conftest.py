@@ -51,3 +51,16 @@ def engine(crforge_runtime: None) -> Engine:
     instance = Engine()
     instance.start()
     return instance
+
+
+@pytest.fixture()
+def resident_env(crforge_runtime: None) -> "CrforgeResidentEnv":
+    """A resident env owning its own engine (the transport is not a socket)."""
+
+    from native_runner.crforge_resident import CrforgeResidentEnv
+
+    instance = CrforgeResidentEnv()
+    try:
+        yield instance
+    finally:
+        instance.close_transport()

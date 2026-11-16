@@ -7,6 +7,14 @@ unchanged.
 
 Design: optional fallback/CI path in [`ROADMAP_CRFORGE.md`](../ROADMAP_CRFORGE.md); the primary plan is [`ROADMAP.md`](../ROADMAP.md).
 
+> **Same contract, no wire:** `native_runner/crforge_resident.py` presents the
+> identical `NativeClashEnv` surface over an in-process `Engine`, calling this
+> package's `dispatch()` directly. Use it for bulk collection
+> (`CrforgeResidentEnv`) and this server for a real network endpoint and CI
+> parity. Stage C2 measured it: 60/60 decisions identical to the bridge, ~1.2-1.3x
+> the environment-step throughput (the remaining per-decision cost is
+> `BattleEnvV1`'s observation/mask build, which is stage C3).
+
 ## What it is, and is not
 
 - It **is** a thin adapter: `configure` → `LiveBattle`, `inject`/`deploy` →

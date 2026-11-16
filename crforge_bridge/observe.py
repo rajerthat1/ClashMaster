@@ -182,11 +182,16 @@ def _nearest_card_id(catalog: Catalog, row_name: str) -> int | None:
 
 
 def entity_rows(
-    observation: list[int], schema, vocabulary, catalog: Catalog
+    observation: list[int], schema, vocabulary, catalog: Catalog, *, rows: list[Row] | None = None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[Row]]:
-    """Decode one seat's objects into (ordinary facts, rich facts, rows)."""
+    """Decode one seat's objects into (ordinary facts, rich facts, rows).
 
-    rows, _header = decode_rows(observation, schema, vocabulary, catalog)
+    ``rows`` lets a caller that already decoded the same observation (the
+    bridge's ``_capture``) skip the second full row decode.
+    """
+
+    if rows is None:
+        rows, _header = decode_rows(observation, schema, vocabulary, catalog)
     owner_by_id: dict[int, int] = {row.entity_id: row.side for row in rows}
     characters = (int(schema.KIND_CHARACTER), int(schema.KIND_TOWER))
     # Projectiles and area effects are Phase 5. Until their rich runtime exists,

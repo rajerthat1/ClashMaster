@@ -243,6 +243,96 @@ do not start another R0 run.
 
 ---
 
+## Session 15 results (2026-11-16) — C2 landed: parity holds, the 2× gate was never the socket
+
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4.
+
+### What landed
+
+- **`native_runner/crforge_resident.py`** — `CrforgeResidentEnv`, the full
+  `NativeClashEnv` surface (`create_match`, `observe`, `observe_atomic`,
+  `observe_rich`, `step`, `queue_*_at`, `attest`, `status`, `close_transport`)
+  over an **in-process** `crforge_bridge.engine.Engine`. Only `_request` changes:
+  it calls the bridge's own `dispatch()`, so parity is a property of
+  construction, not a test result. `status()` adds `resident: true`, `lanes: 1`,
+  `transport: "in-process"` so no artifact confuses it with the 256-lane vector.
+  `BattleEnvV1` detects it exactly as it detects the bridge (`engine: crforge`).
+- **`tools/crforge/resident_parity.py`** — the C2 gate. The resident leg decides
+  with a seeded policy, the bridge leg **replays those exact actions**, and the
+  tool compares per-decision native envelope, per-owner observation, mask,
+  entity/tower/event counts, rewards and terminals; then it re-runs both on fresh
+  episodes and times `env.step` in **one alternating loop** (this host's absolute
+  ms move ~2×, so the per-decision paired ratio is the estimator).
+- **Two shared engine cost fixes** (`crforge_bridge/engine.py`, both apply to the
+  bridge too, both bit-identical):
+  - **run-refusal reads are windowed.** `step` copied both 7,024-int seat
+    observations on *every* tick to read one header index. crforge clears
+    `last_run_refusal` when it opens a decision, so a code can only be observed on
+    the post-step tick a *given* play's run produced; the bridge now watches
+    `{runTick, runTick + 1}` per given command. All other ticks read nothing.
+  - **one row decode per capture.** `_capture` decoded seat 0 twice
+    (`decode_rows` + again inside `entity_rows`) and `observe` decoded it a third
+    time for `result`; `entity_rows` now accepts the decoded rows, and the capture
+    is memoized by `(generation, tick, command sequence, done)` so the two
+    pre-decision observes of one tick share one decode.
+- **Tests:** `crforge_bridge/tests/test_resident.py` (50-step receipt-for-receipt
+  equality against a second engine, stale-cache guard, close/reconfigure, the
+  shared-row `entity_rows` equivalence) and a `resident_env` fixture.
+
+### Parity: pass
+
+**60/60 decisions identical** in every run whose parity artifact was kept (six
+60-decision runs). One earlier run in a three-run loop diverged at decision 0
+(`owners` only, native envelope matched) and was **not reproduced** in the next
+eight runs; that run had no artifact, so it stays a recorded open question, not a
+known defect. The comparison covers the ordinary, rich and atomic envelopes
+(validated on the resident side, raw on the bridge side) plus masks, rewards and
+terminals.
+
+### Throughput: 1.2–1.5×, the 2× gate is missed
+
+Paired `env.step` on the evaluator deck, `policy_features_only=True`, seed 1:
+
+| run | resident | bridge (same process) | paired ratio |
+| --- | ---: | ---: | ---: |
+| artifact of record | 3.46 ms (289/s) | 5.15 ms (194/s) | **1.33×** |
+| 1 | 4.80 ms (209/s) | 5.97 ms (168/s) | **1.27×** |
+| 2 | 3.94 ms (254/s) | 6.30 ms (159/s) | **1.53×** |
+| 3 | 4.23 ms (236/s) | 5.18 ms (193/s) | **1.21×** |
+| earlier loop | 4.55 / 3.48 / 4.70 | 5.87 / 4.21 / 6.07 | 1.32 / 1.19 / 1.23 |
+
+Controls on the same host: the **HEAD bridge** in the same harness is **7.08 ms**
+(141 decisions/s), and the bridge in its **deployed shape** (own process,
+`python -m crforge_bridge`) is **6.70 ms** (149/s). So the socket + JSON round
+trip is **~1.2–1.7 ms of a ~4–6 ms decision**. The other 3–4 ms is
+`BattleEnvV1`: observation build, action masks, placement-mask validation and the
+atomic envelope — exactly C3's row build.
+
+**Verdict:** the resident adapter is correct and worth keeping (it removes the
+wire, the duplicate decode, and a dependency on a listening process), but it
+cannot be 2× while the step is Python-bound. **C2's throughput gate moves to C3.**
+Do not add lanes, processes or GPUs to close it.
+
+### Next session (2026-11-17, session 16) — C3's row build, then C4
+
+1. **C3-B (the throughput gate, now owned here):** fill the fixed-size rows for
+   all lanes in one pass from the VectorBattle frame — groups, children,
+   candidates, relations, cards, towers, effects, events — and keep the batch
+   `batch_digest`-identical to the per-lane path on a captured sequence. Target
+   **≤0.5 ms/lane**; the C2 2× gate is met when `BattleEnvV1.step` on the
+   resident adapter drops under ~2.5 ms/decision.
+2. **C3-A (only if it is the cheap win):** port `_groups` to a Cython/C helper
+   over plain arrays; gate ≥4× on that section before porting more.
+3. **Learner-deck blocker (unchanged):** the X-Bow deck fails closed in the
+   tensorizer on `entity_kind='effect'`, `native_data_global_id=1`. Classify or
+   filter bridge-only effect rows before any learner-deck rollout.
+4. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
+### Session 14 record (previous)
+
+**Read next:** the session-14 record below, then `FINDINGS.md` §3.43–§3.44.
+
 ## Session 14 results (2026-11-16) — C0 closed; C3 says the tensorizer is Python ceremony
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4,
@@ -329,11 +419,10 @@ learner-deck rollout is trusted; C1 stays on the evaluator deck.
 exhausted — the packet is 3,754 Python calls/decision. The next lever is
 structural, not incremental (`FINDINGS.md` §3.44).
 
-## Next session (2026-11-17, session 15) — C3 structural work, then C2
+## Next session (2026-11-17, session 15) — superseded by session 16 above
 
-C3's *gate* is met (0.73–1.02 ms/lane, 0.8–1.1 matches/s per process); the
-*≤0.5 ms/lane target* is the open item, so **C2 is unblocked** — do C2 first
-unless a training run is imminent.
+Session 15 did item 3 (C2) and measured it; items 1–2 carry into session 16's
+plan. Kept for the original wording of the C3-A/C3-B gates:
 
 1. **C3-A, probe the ceiling cheaply:** port **one** section, `_groups`, to a
    Cython/C helper over plain arrays and measure it against the Python row on the
@@ -345,10 +434,11 @@ unless a training run is imminent.
    relations, cards, towers, effects, events) from the vectorized frame. Target
    ≤0.5 ms/lane; keep the batch `batch_digest`-identical to the per-lane path on
    a captured sequence before trusting it.
-3. **C2 resident adapter:** `native_runner/crforge_resident.py` over
+3. ~~**C2 resident adapter:** `native_runner/crforge_resident.py` over
    `LiveBattle`/`VectorBattle` with the `NativeClashEnv` surface; deck pool +
    `SideSetup`; acceptance = 50+ identical observations/masks/rewards and 2× env
-   throughput.
+   throughput.~~ **Done 2026-11-16:** parity 60/60, throughput 1.2–1.5× — the
+   remaining 2× is C3.
 4. **Parity cadence:** 50–150 native matches every N updates and after every
    adapter change; never promote on crforge.
 
@@ -833,6 +923,9 @@ Yes — but as a **parity oracle**, not the training engine.
 | cr-native proxy | working, 15.535.29 only |
 | crforge simulator | `.resource/crforge/` — 16.635.3/8 tables, `VectorBattle` 1–256 lanes, zero-copy NumPy; core 127k ticks/s/thread. Bench: `PYTHONPATH=.resource/crforge/python .venv/bin/python -m crforge_env.bench …` |
 | crforge bridge | `crforge_bridge/` — 152/152 cards, 118 forms, `unmapped: []`; evaluation only (20–30 decisions/s with full `BattleEnvV1` assembly) |
+| crforge resident adapter | **`native_runner/crforge_resident.py`** — `CrforgeResidentEnv` presents the whole `NativeClashEnv` surface over an in-process `Engine` (bridge `dispatch()`, no socket); `status()` reports `resident: true` / `lanes: 1` |
+| C2 parity + throughput | **parity pass, throughput missed** — `tools/crforge/resident_parity.py`: **60/60 decisions identical** (native/rich/atomic envelopes, masks, rewards, terminals); paired `env.step` **1.21–1.53×** the bridge (resident 3.9–4.8 ms, bridge 4.2–7.3 ms). The wire is 1.2–1.7 ms of a 4–6 ms decision; the 2× gate is C3 |
+| crforge engine cost | **two shared fixes (2026-11-16)** — run-refusal header reads windowed to `{runTick, runTick+1}` instead of both seats every tick, and one row decode per capture (memoized by generation/tick/command sequence). Both bit-identical to the bridge |
 | C0 legality soak | **20/20 clean, 2026-11-16** — `runs/crforge-c0-20261116/soak20-rerun/`: illegal 0, truncated 0, rejected 0, all `king_tower_destroyed` (seeds 7–26) |
 | C1 encoder spike | **measured at the default shape** — `runs/crforge-c1/encoder-spike.json`, 256 lanes × 200 × 3: vectorized facts **0.0165–0.0177 ms/lane** (56–61k decisions/s) vs per-lane 0.32–0.35 (**19–20×**), equivalence pass; projected end-to-end **0.713 ms/lane = 1.16 matches/s per process** (**C3 gate met**) |
 | C3 tensorizer profile | **measured, 2026-11-16** — `runs/crforge-c3/tensorizer-profile.json`; `tensorize`+`record_action` **0.992 CPU ms/decision** (stock 1.069), entities median 8, **3,754 Python calls/decision**, ~35 % of profiled time in builtin calls plus the frozen-mapping layer (`FINDINGS.md` §3.44) |
@@ -1658,12 +1751,13 @@ Scale options, in order of leverage:
 | `.resource/crforge/python/crforge_env/bench.py` | `crforge_env.bench` — env-steps/s, ticks/s, obs MB by batch size; the C1 baseline |
 | `.resource/crforge/env/build/install/env` | Installed JVM env distribution for `VectorBattle` |
 | `~/.crforge/tables/16.635.8` | Pinned game tables (also 16.635.3); record the lock with every run |
-| `crforge_bridge/` | `BattleEnvV1` bridge for evaluation/parity (20–30 decisions/s); 152/152 cards, 118 forms |
+| `crforge_bridge/` | `BattleEnvV1` bridge for evaluation/parity; 152/152 cards, 118 forms. `native_runner/crforge_resident.py` presents the same surface in-process |
 | `crforge_bridge/tests/test_encoder_spike.py` | Pins the C1 encoders to the bridge's own facts and card-parameter packing |
 | `runs/crforge-c0-20261116/` | C0 legality soak: 20 games, `illegal`, `truncated`, `rejected_total` counters |
 | `runs/crforge-c1/` | C1 encoder-spike JSON (`encoder-spike.json`), default shape 256 × 200 × 3 |
 | `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json` |
-| `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator deck, tower troop, release scope, one session per seat — used by both crforge tools |
+| `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator deck, tower troop, release scope, one session per seat — used by all crforge tools; takes `port=` (socket bridge) or `native=` (resident adapter) |
+| `tools/crforge/resident_parity.py` | **C2 deliverable** — resident vs bridge, decision for decision: parity digests (native/rich/atomic, masks, rewards, terminals) + paired `env.step` timing; writes `runs/crforge-c2/resident-parity.json` |
 | `tools/crforge/profile_tensorizer.py` | **C3 deliverable** — replays a live policy episode's `tensorize`+`record_action` under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical; `--profile-decisions 0` is the timing-only A/B mode |
 | `tools/crforge/encoder_spike.py` | **C1 deliverable** — 256-lane `VectorBattle`, per-lane bridge facts vs vectorized NumPy frame, equivalence check, encode/tensorize split; writes `runs/crforge-c1/encoder-spike.json` |
 | `docs/native/16.635.1/*.json` | Relocation, field offsets, vtables, overrides |
