@@ -4901,3 +4901,93 @@ Evidence: `crforge_bridge/rollout.py` (device-safe store),
 `runs/crforge-c4/self-play-gpu-update.json`,
 `runs/crforge-c4/self-play-gpu-resume.json`,
 `runs/crforge-c4/gpu-forward-scaling-{8,16,32,64,128,128-long}.json`.
+
+### 3.63 The cadence decision: `reset` trains, `wave` is a diagnostic (2026-11-19)
+
+Session 29 left the update-boundary policy as "pick one from measurement", but the
+two runs it compared were different shapes (wave 48 decisions, reset 64), so their
+KL/clip numbers could not be set against each other. `tools/crforge/cadence_compare.py`
+removes that excuse: it runs `reset`, `carry` and `wave` at one shape, checkpoint
+and seed list, and classifies every update by whether the weights that sampled its
+rollout are the weights the update starts from
+(`policy_state_id_before == the previous update's policy_state_id_after`).
+
+#### What a cadence choice actually changes
+
+All three policies run **one optimizer step per stored segment**: 6 segments → 6
+updates, 1,152 lane-decisions. The difference is *what each update reads*:
+
+* `reset` — segment → update → zero the recurrence.
+* `carry` — segment → update → keep the recurrence.
+* `wave(2)` — two segments sampled under one frozen behaviour id, then their two
+  updates in order; the second reads data that the first update already moved
+  away from.
+
+#### Measured
+
+4 lanes × 6 segments × 24 decisions, 2 seeds, CPU, `OMP_NUM_THREADS=4`,
+`runs/crforge-c4/cadence-compare.json` (per-run artifacts under
+`runs/crforge-c4/cadence/`):
+
+| policy | updates / stale | abs KL on-policy | abs KL stale | clip on-policy | clip stale | wall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| reset | 6 / **0** | 4.63e-5 | — | **0** | — | 105.9 s |
+| carry | 6 / **0** | 2.77e-5 | — | **0** | — | 106.5 s |
+| wave | 6 / **3** | 3.36e-5 | **5.38e-3** (160×) | 0 | **3.04 %** | 105.7 s |
+
+Wave's stale half, per seed: |KL| **1.02e-2** / **5.88e-4** and clip **1.91 %** /
+**4.17 %**; neither seed's stale updates ever clip 0. The classifier's control is
+the run's first update: it is identical to `reset`'s and `carry`'s first update at
+the same seed (|KL| 7.46e-5 at seed 1, 4.93e-5 at seed 2), because all three
+sampled the same first segment with the same weights.
+
+#### What it says
+
+1. **The wave tax is structural and it sits on the stale half.** The first update
+   of a wave is on-policy by construction; every later one replays data whose
+   behaviour weights a previous update in the same wave replaced. That is where
+   the KL and the clipping live, and it is why the second update of wave 1 moved
+   furthest (clip 4.2–5.7 %).
+2. **Wave buys neither throughput nor sample reuse.** Every policy runs 6 updates
+   for 6 segments; `updates_per_sampling_id` is 2.0 for wave against 1.0 for the
+   others, which is the age of the data, not reuse. The walls are 105.7 vs 105.9
+   and 106.5 s — noise. The cadence is not a wall decision as implemented.
+3. **`reset` and `carry` are both on-policy and neither clips.** Carry's absolute
+   KL is if anything lower (2.8e-5 vs 4.6e-5), which is a property of the traced
+   updates, not a quality claim: 6 updates at the native 1e-5 cannot rank learning.
+   Nothing in the trace disqualifies carry, and nothing in it prefers carry.
+4. **Decision:** `reset` stays the training default (clean behaviour identity, and
+   the recurrent cut is at a segment boundary, which the rollout already treats as
+   a truncation). `carry` remains the deployment-shape candidate for a
+   learning-horizon comparison. `wave` is a **diagnostic**, not a trainer — it is
+   accepted by `--resume` and useful for exercising the wave path, but it pays a
+   measured off-policy tax for no measured gain.
+
+#### The lever this exposes
+
+On this shape collection is ~40 s and the update ~66 s of a 106 s run: the
+optimizer is **62 % of the wall on CPU** (and 12 % on the A6000, §3.62). No
+cadence overlaps them today — every policy calls `trainer.enqueue` → `flush`
+synchronously. The wave is the only policy whose *structure* allows the next wave
+to be collected while the previous one updates, but that needs a frozen weights
+copy (or a second model), a worker thread and a device-safe handoff. That is a
+throughput change, not a state policy, and it is the follow-up — not something to
+hide inside `--update-state-policy`.
+
+#### Pins
+
+* **The classifier is a gate, not a heuristic.** `summarize_run` refuses an
+  artifact whose trace and per-segment update counts disagree, and the tool
+  refuses runs that do not share one `substrate` block.
+* **Shape:** the first attempt at 8 lanes × 40 decisions put this 14 GB host into
+  swap and killed the session twice (the producer's JVM + torch peak ~5.8 GB
+  against 4 GB of swap). The recorded shape is 4 lanes × 6 × 24 at 4 threads. KL
+  and clip are fractions, so the classification does not depend on lane count; the
+  wall numbers are this host's and this shape's.
+* **One update per segment in every policy**, partial waves included (a 5-segment
+  wave(2) run flushes its last segment and marks it). The wave changes *when* the
+  optimizer steps, not how many times.
+
+Evidence: `tools/crforge/cadence_compare.py`,
+`crforge_bridge/tests/test_cadence_compare.py`,
+`runs/crforge-c4/cadence-compare.json`, `runs/crforge-c4/cadence/*.json`.

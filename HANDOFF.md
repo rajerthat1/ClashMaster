@@ -6,6 +6,38 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — the cadence decision: `reset` trains, `wave` is a diagnostic
+
+The update-boundary policy was the last open choice from session 29, and its
+evidence was a wave run and a reset run at **different shapes** (48 vs 64
+decisions), which cannot be compared. `tools/crforge/cadence_compare.py` now runs
+all three policies at one shape, checkpoint and seed list and classifies every
+update as **on-policy** (the weights that sampled its rollout are the weights the
+update starts from) or **stale** (an earlier update in the same wave already
+replaced them).
+
+- **Measured tax:** 4 lanes × 6 segments × 24 decisions × 2 seeds. Wave's three
+  stale updates have |KL| **5.4e-3** (160× the 3.4e-5 on-policy mean) and clip
+  **3.0 %** against **0** on-policy; per seed |KL| 1.0e-2 / 5.9e-4 and clip 1.9 %
+  / 4.2 %, never 0. The run's first update is identical to reset's and
+  carry's first update at the same seed — the control that the classifier is
+  right.
+- **No throughput or reuse gain:** all three run 6 updates for 6 segments and
+  ~106 s (collection ~40 s, update ~66 s). `updates_per_sampling_id` is 2.0 for
+  wave against 1.0, which is data age, not reuse.
+- **Decision:** `reset` stays the training default; `carry` stays the
+  deployment-shape candidate and is ranked on a learning horizon later (its
+  updates are on-policy and it did not clip); `wave` is a **diagnostic**, not a
+  trainer. The only cadence change with a wall payoff is collecting the next wave
+  while the previous one updates, which needs a frozen weights copy and a worker
+  thread — a throughput change, not a state policy.
+- **Caveat:** the 8-lane × 40-decision shape put this 14 GB host into swap and
+  killed the session twice; the recorded comparison is 4 lanes × 6 × 24 at
+  `OMP_NUM_THREADS=4`. KL/clip are fractions, so the classification holds; the
+  walls are this host's.
+
+See the session-31 section below and `FINDINGS.md` §3.63.
+
 ### 2026-11-19 — the A6000 measures the producer, not the model
 
 One hour on a rented RTX A6000 (48 GB, 6 vCPU, $0.35/h) ran the C4 loop on CUDA
@@ -559,6 +591,87 @@ do not start another R0 run.
 
 ---
 
+## Session 31 results (2026-11-19) — the cadence decision: `reset` trains, `wave` is a diagnostic
+
+**Read first:** this section, `FINDINGS.md` §3.63, and the session-30 items above.
+
+### What landed
+
+- **`tools/crforge/cadence_compare.py`** — the cadence gate. It runs the producer
+  once per policy and seed at one shape, then classifies each update on-policy or
+  stale from the trainer's own behaviour-id chain
+  (`policy_state_id_before` vs the previous update's `policy_state_id_after`).
+  The artifact carries per-run summaries, per-policy means, the comparison
+  deltas, the shared `substrate` block (runs from different substrates are
+  refused) and the exact shape. `--reuse` re-aggregates existing per-run
+  artifacts without re-collecting.
+- **`crforge_bridge/tests/test_cadence_compare.py`** (4 tests): a wave's second
+  update is stale and a reset's is not, a trace/update count mismatch is
+  refused, and the wave/stale comparison fields are what the decision reads.
+- **`ROADMAP_CRFORGE.md` §6** carries the proven command.
+
+### Measured
+
+4 lanes × 6 segments × 24 decisions, 2 seeds, CPU, `OMP_NUM_THREADS=4`,
+`runs/crforge-c4/cadence-compare.json`:
+
+| measurement | reset | carry | wave(2) |
+| --- | ---: | ---: | ---: |
+| updates / stale | 6 / **0** | 6 / **0** | 6 / **3** |
+| lane-decisions / ACT | 1,152 / 3.52 % | 1,152 / 3.30 % | 1,152 / 3.63 % |
+| abs `approx_kl` on-policy | 4.63e-5 | 2.77e-5 | 3.36e-5 |
+| abs `approx_kl` stale | — | — | **5.38e-3** |
+| `clip_fraction` on-policy | **0** | **0** | 0 |
+| `clip_fraction` stale | — | — | **3.04 %** |
+| updates per sampling id | 1.0 | 1.0 | 2.0 |
+| collection / update / wall | 40.0 / 65.9 / 105.9 s | 40.2 / 66.2 / 106.5 s | 39.9 / 65.8 / 105.7 s |
+| training gate | pass | pass | pass |
+
+Wave per seed: stale |KL| 1.02e-2 / 5.88e-4 and stale clip 1.91 % / 4.17 %; the
+stale half never clips 0. The run's first update matches reset's and
+carry's first update exactly (7.46e-5 at seed 1, 4.93e-5 at seed 2), because all
+three sampled the same first segment with the same weights.
+
+### Found by running it
+
+1. **The wave tax is structural and it is on the stale half.** The first update of
+   a wave is on-policy by construction; every later one replays data sampled by
+   weights an earlier update in the same wave replaced. The KL and the clipping
+   are both there, in both seeds.
+2. **Wave buys neither throughput nor sample reuse.** Six updates for six segments
+   in every policy, and the walls are within noise. `updates_per_sampling_id` of
+   2.0 is data age, not reuse; the second update sees different data, not the
+   same data twice.
+3. **`reset` vs `carry` is not decided here — and cannot be.** Both are on-policy
+   and neither clips; carry's |KL| is if anything lower, which is a property of
+   the trace, not a learning claim at 6 updates and 1e-5. The ranking needs a
+   learning horizon (≥50 updates, fixed seed, native parity every N updates), not
+   this gate.
+4. **The wall split names the next lever.** Collection 40 s vs update 66 s at this
+   shape: the optimizer is 62 % of the CPU wall. No cadence overlaps them today,
+   because every policy flushes synchronously. The wave's structure is the only
+   one that *could* overlap, but that needs a frozen weights copy (or a second
+   model) and a worker thread — a throughput change, not a state policy.
+5. **Shape discipline cost a session.** The first attempt at 8 lanes × 40
+   decisions put this 14 GB host into swap and killed the session twice (producer
+   peak ~5.8 GB against 4 GB of swap). The comparison runs detached and resumable
+   with `--reuse`; the recorded shape is the smaller one.
+
+### Next session (session 32)
+
+1. **Overlap collection with the update.** The only cadence change with a measured
+   wall payoff. Gate: same lane-decisions/s with the update hidden behind the next
+   wave, on CPU and CUDA, and the behaviour identity of the collecting pass
+   unchanged during the overlap.
+2. **Rank `reset` against `carry` on a learning horizon.** Same shape and seed,
+   ≥50 updates, reward/return and native parity every N updates; the 6-update
+   trace above is not a learning claim.
+3. **Profile the ~228 ms/decision the A6000 session left unattributed** at 128
+   lanes (tensorize 81 + forward 157 + decode 97 + steps 75 of a 647 ms decision).
+   That is the per-decision Python packet, which §3.62 named as the ceiling.
+4. **Native parity cadence, unchanged:** 50–150 native matches every N updates and
+   after every adapter change; crforge is never a promotion gate.
+
 ## Session 29 results (2026-11-19) — the C4 loop trains: one optimizer, a stated state policy
 
 **Read first:** this section, `FINDINGS.md` §3.60, and the session-28 section
@@ -688,7 +801,11 @@ false because it stores no rollout.
 5. **Decide the wave/update cadence for real training.** The wave buys frozen
    behaviour data and pays with in-wave off-policy drift; the reset policy buys
    clean identity and pays with a recurrence cut every segment. Pick one from
-   measurement, not from this gate.
+   measurement, not from this gate. **Done 2026-11-19:** `reset` stays the
+   training default, `carry` is the deploy-shape candidate for a learning-horizon
+   run, and `wave` is a diagnostic — its stale half clips 3.0 % against 0 and
+   costs 160× the on-policy KL with no wall or reuse gain. See the decision entry
+   at the top, the session-31 section and `FINDINGS.md` §3.63.
 
 ## Session 28 results (2026-11-19) — C4's rollout goes through the update
 
