@@ -14,12 +14,14 @@ from crforge_bridge.vector_rows import (
     VectorEntityTables,
     VectorGroupBuilder,
     VectorRelationBuilder,
+    VectorSpatialPlaneBuilder,
     VectorTowerBuilder,
     candidate_geometry,
     compare_candidate_section,
     compare_card_section,
     compare_group_section,
     compare_relation_section,
+    compare_spatial_plane_section,
     compare_tower_section,
     reference_entities,
     reference_pending_actions,
@@ -579,3 +581,127 @@ def test_destroyed_and_missing_towers_keep_the_oracle_shape(crforge_runtime: Non
             section, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP
         ) == []
 
+
+
+def _play_card(vector, encoder, card_id: int, *, lane: int = 0, seat: int = 0, attempts: int = 80) -> bool:
+    """Play one specific card as soon as it is in hand and affordable."""
+
+    wait = np.zeros((vector.count, 2), dtype=np.int32)
+    rows, cols = int(vector.schema.rows), int(vector.schema.cols)
+    for _ in range(attempts):
+        batch = encoder.encode()
+        elixir = int(batch.elixir_raw[lane, seat]) - int(batch.elixir_reserved_raw[lane, seat])
+        for slot in range(int(vector.schema.hand_slots)):
+            if int(batch.hand_card_id[lane, seat, slot]) != int(card_id):
+                continue
+            if elixir < int(batch.hand_cost[lane, seat, slot]) * 10_000:
+                continue
+            cells = np.argwhere(batch.placement_rows(seat)[lane, slot])
+            if not cells.size:
+                continue
+            y, x = (int(value) for value in cells[len(cells) // 2])
+            actions = wait.copy()
+            actions[lane, seat] = 1 + slot * rows * cols + y * cols + x
+            vector.step(actions)
+            return True
+        vector.step(wait)
+    return False
+
+
+def test_batched_spatial_planes_match_the_per_lane_oracle(crforge_runtime: None) -> None:
+    """Every explicit plane, lane by lane, including the building footprint fill."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=4) as vector:
+        _, tables = _builder(tensorizer, vector)
+        builder = VectorSpatialPlaneBuilder(tensorizer, tables)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+
+        # A Tesla (2x2) pins the building-category footprint fill.  A queued
+        # play runs a few ticks later, so wait for the building row to appear.
+        assert _play_card(vector, encoder, 27000006), "the fixture could not deploy a Tesla"
+        wait = np.zeros((vector.count, 2), dtype=np.int32)
+        section = builder.build(encoder.encode(batch=batch))
+        for _ in range(8):
+            if bool((section.planes[:, 2] > 0).any()):
+                break
+            vector.step(wait)
+            section = builder.build(encoder.encode(batch=batch))
+        assert bool((section.planes[:, 2] > 0).any()), "the forced Tesla produced no building plane"
+        assert compare_spatial_plane_section(section, tensorizer, batch, tables=tables) == []
+
+        saw_ground = False
+        for step in range(50):
+            section = builder.build(batch)
+            assert tuple(section.planes.shape) == (batch.count, 14, 32, 18)
+            saw_ground = saw_ground or bool((section.planes[:, 0] > 0).any())
+            mismatches = compare_spatial_plane_section(section, tensorizer, batch, tables=tables)
+            assert mismatches == [], f"step {step}: {mismatches}"
+            _step(vector, 600 + step)
+            encoder.encode(batch)
+        assert saw_ground, "the fixture never fielded a ground troop"
+
+
+def test_spatial_plane_tables_project_the_archetype_metadata(crforge_runtime: None) -> None:
+    """Airborne, threat and the persistent-root rule come from the same metadata."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=1) as vector:
+        _, tables = _builder(tensorizer, vector)
+        archetypes = tensorizer.entity_archetype_catalog
+        for index in range(tables.vocab_size):
+            info = archetypes.metadata_for_vocab_id(int(tables.archetype_id[index]))
+            expected_airborne = bool(info.is_airborne) if info.is_airborne_known else False
+            assert bool(tables.is_airborne[index]) == expected_airborne
+            expected_damage = (
+                float(info.static_damage_basis)
+                if info.static_damage_basis_known and info.static_damage_basis is not None
+                else 0.0
+            )
+            assert float(tables.static_damage[index]) == expected_damage
+            assert bool(tables.is_persistent_area_root[index]) == (
+                tables.child_kind[index] in {"area", "effect"}
+            )
+
+
+def test_spatial_planes_skip_towers_and_neutral_rows(crforge_runtime: None) -> None:
+    """Towers are a separate section, and an ownerless row is not a plane entity."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=2) as vector:
+        _, tables = _builder(tensorizer, vector)
+        builder = VectorSpatialPlaneBuilder(tensorizer, tables)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+
+        # A reset scene is towers only, which this section never draws.
+        section = builder.build(batch)
+        assert not bool(section.planes.any())
+        assert compare_spatial_plane_section(section, tensorizer, batch, tables=tables) == []
+
+        row = None
+        for step in range(80):
+            _step(vector, 1000 + step)
+            encoder.encode(batch)
+            hits = np.argwhere(batch.entity_valid & ~batch.entity_is_tower)
+            if hits.size:
+                row = (int(hits[0][0]), int(hits[0][1]))
+                break
+        assert row is not None, "the fixture never fielded a troop"
+        lane, slot = row
+        original_side = int(batch.entity_side[lane, slot])
+
+        # A neutral row contributes nothing: the neutral build equals the build
+        # with the row removed, on both the batched and the oracle path.
+        batch.entity_side[lane, slot] = 2
+        neutral = builder.build(batch).planes.numpy()
+        assert compare_spatial_plane_section(
+            builder.build(batch), tensorizer, batch, tables=tables
+        ) == []
+        batch.entity_valid[lane, slot] = False
+        batch.entity_side[lane, slot] = original_side
+        removed = builder.build(batch).planes.numpy()
+        assert np.array_equal(neutral, removed)

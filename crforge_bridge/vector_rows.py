@@ -15,6 +15,7 @@ Sections here:
   the 16.635 21-column pending-execution columns;
 * :class:`VectorTowerBuilder` — the six-row tower section (health, active,
   target), with the tower troop as a static build input;
+* :class:`VectorSpatialPlaneBuilder` — the 14-channel explicit spatial planes;
 * :class:`VectorCandidateBuilder` — the actor's legal deploy candidates, with
   the native placement grid and the static building geometry the decoder needs;
 * :class:`VectorRelationBuilder` — target/reverse-target and card→group edges.
@@ -182,6 +183,20 @@ def _kind_rule(card_id: int, card_specs: dict[int, Any]) -> str:
     return "effect" if int(card_id) <= 0 else "unknown"
 
 
+def _tile_positions(
+    world_x: np.ndarray, world_y: np.ndarray, *, config: Any, perspective: Any
+) -> tuple[np.ndarray, np.ndarray]:
+    """The tensorizer's ``_tile_position`` over arrays: flip, scale, clamp."""
+
+    x = float(WORLD_WIDTH) - world_x if perspective.flip_x else world_x
+    y = float(WORLD_HEIGHT) - world_y if perspective.flip_y else world_y
+    x = x / (float(WORLD_WIDTH) / float(config.board_width))
+    y = y / (float(WORLD_HEIGHT) / float(config.board_height))
+    x = np.minimum(np.maximum(x, 0.0), float(config.board_width) - 1e-4)
+    y = np.minimum(np.maximum(y, 0.0), float(config.board_height) - 1e-4)
+    return x, y
+
+
 @dataclass(frozen=True)
 class VectorEntityTables:
     """Static policy semantics for every row of the vector vocabulary.
@@ -205,6 +220,9 @@ class VectorEntityTables:
     footprint_half_h: np.ndarray
     radius: np.ndarray
     is_hero_or_building: np.ndarray
+    is_airborne: np.ndarray
+    static_damage: np.ndarray
+    is_persistent_area_root: np.ndarray
 
     @classmethod
     def build(cls, *, tensorizer: Any, vocabulary: Sequence[str], bridge_catalog: Any) -> VectorEntityTables:
@@ -234,6 +252,9 @@ class VectorEntityTables:
         footprint_h = np.zeros(size, dtype=np.float64)
         radius = np.zeros(size, dtype=np.float64)
         is_hero_or_building = np.zeros(size, dtype=bool)
+        is_airborne = np.zeros(size, dtype=bool)
+        static_damage = np.zeros(size, dtype=np.float64)
+        is_persistent_area_root = np.zeros(size, dtype=bool)
 
         for index, name in enumerate(names):
             value = bridge_catalog.card_id(name)
@@ -267,6 +288,19 @@ class VectorEntityTables:
                 resolved = kind
             child_kind.append(resolved)
             child_type[index] = CHILD_TYPE.get(resolved, CHILD_TYPE["unknown"])
+
+            # Spatial-plane semantics are the same archetype metadata
+            # ``_entity_child_kind`` / ``_entity_is_airborne`` /
+            # ``_entity_static_damage`` read, compiled once per row.
+            is_airborne[index] = bool(metadata.is_airborne) if metadata.is_airborne_known else False
+            static_damage[index] = (
+                float(metadata.static_damage_basis)
+                if metadata.static_damage_basis_known and metadata.static_damage_basis is not None
+                else 0.0
+            )
+            # ``_entity_is_persistent_area_root`` also tests a persistent-effect
+            # causal group, which the bridge envelope never carries.
+            is_persistent_area_root[index] = resolved in {"area", "effect"}
 
             if kind in {"hero", "building"}:
                 is_hero_or_building[index] = True
@@ -325,6 +359,9 @@ class VectorEntityTables:
             footprint_half_h=footprint_h,
             radius=radius,
             is_hero_or_building=is_hero_or_building,
+            is_airborne=is_airborne,
+            static_damage=static_damage,
+            is_persistent_area_root=is_persistent_area_root,
         )
 
 
@@ -422,18 +459,12 @@ class VectorGroupBuilder:
         }
 
     def _tile_positions(self, batch: VectorObservationBatch, valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        config = self.config
-        x = np.where(valid, batch.entity_x, 0).astype(np.float64)
-        y = np.where(valid, batch.entity_y, 0).astype(np.float64)
-        if self.perspective.flip_x:
-            x = float(WORLD_WIDTH) - x
-        if self.perspective.flip_y:
-            y = float(WORLD_HEIGHT) - y
-        x = x / (float(WORLD_WIDTH) / float(config.board_width))
-        y = y / (float(WORLD_HEIGHT) / float(config.board_height))
-        x = np.minimum(np.maximum(x, 0.0), float(config.board_width) - 1e-4)
-        y = np.minimum(np.maximum(y, 0.0), float(config.board_height) - 1e-4)
-        return x, y
+        return _tile_positions(
+            np.where(valid, batch.entity_x, 0).astype(np.float64),
+            np.where(valid, batch.entity_y, 0).astype(np.float64),
+            config=self.config,
+            perspective=self.perspective,
+        )
 
     # ---- sort keys ---------------------------------------------------------
 
@@ -1001,6 +1032,7 @@ class VectorTowerBuilder:
             )
         self.flip_x = bool(tensorizer.perspective.flip_x)
         self.flip_y = bool(tensorizer.perspective.flip_y)
+        self.perspective = tensorizer.perspective
         self.tower_type = dict(TOWER_TYPE)
         self.tower_troop_type = dict(TOWER_TROOP_TYPE)
         # ``_model_tower_kind`` swaps the princesses under a horizontal flip, so
@@ -1044,7 +1076,9 @@ class VectorTowerBuilder:
         row_max_hp = gather(batch.tower_max_hp.astype(np.float64))
         row_target = gather(target)
         row_present = gather(present)
-        tile_x, tile_y = self._tile_positions(gather(world_x), gather(world_y))
+        tile_x, tile_y = _tile_positions(
+            gather(world_x), gather(world_y), config=self.config, perspective=self.perspective
+        )
 
         half_extent = np.where(row_type == self.tower_type["king"], 2.0, 1.5)
         position = np.stack([tile_x, tile_y], axis=-1)
@@ -1092,15 +1126,135 @@ class VectorTowerBuilder:
         )
         return VectorTowerSection(towers=towers, tower_index=tower_index)
 
-    def _tile_positions(self, world_x: np.ndarray, world_y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        config = self.config
-        x = float(WORLD_WIDTH) - world_x if self.flip_x else world_x
-        y = float(WORLD_HEIGHT) - world_y if self.flip_y else world_y
-        x = x / (float(WORLD_WIDTH) / float(config.board_width))
-        y = y / (float(WORLD_HEIGHT) / float(config.board_height))
-        x = np.minimum(np.maximum(x, 0.0), float(config.board_width) - 1e-4)
-        y = np.minimum(np.maximum(y, 0.0), float(config.board_height) - 1e-4)
-        return x, y
+
+@dataclass(frozen=True)
+class VectorSpatialPlaneSection:
+    """The batched ``_spatial_planes`` output for every lane."""
+
+    planes: torch.Tensor
+
+    def lane(self, lane: int) -> torch.Tensor:
+        index = int(lane)
+        return self.planes[index : index + 1].clone()
+
+
+class VectorSpatialPlaneBuilder:
+    """Fill the explicit spatial planes for a whole vector batch in one pass.
+
+    ``_spatial_planes`` writes a 14-channel board per decision: for each side,
+    four occupancy categories (ground, airborne, building, projectile), a
+    hitpoint channel, a shield channel and a threat channel.  Every entity lands
+    its category at its tile cell — a building fills its whole footprint — while
+    hitpoints, shield and threat always go to the entity's own cell.
+
+    The batch already carries the facts: position, side, hitpoints and shield per
+    row, and the archetype metadata behind the category (child kind, airborne)
+    and the threat value (static damage).  ``VectorEntityTables`` compiles the
+    last group once.  Two rules decide membership: a tower is not an entity for
+    this section, and an ownerless row (neutral) is skipped, exactly as the
+    per-lane loop skips ``owner is None``.  Persistent area roots are skipped too,
+    but the bridge's entity envelope carries none (it emits characters and
+    towers only); the table still encodes the rule.
+    """
+
+    def __init__(self, tensorizer: Any, tables: VectorEntityTables) -> None:
+        self.tensorizer = tensorizer
+        self.tables = tables
+        self.config = tensorizer.config
+        self.perspective = tensorizer.perspective
+        self.actor = int(tensorizer.actor_owner)
+        if self.actor != 0:
+            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.channels = int(self.config.explicit_spatial_channels)
+        if self.channels != 14:
+            raise ValueError(f"the spatial plane build assumes 14 channels, config has {self.channels}")
+        self.enemy_base = self.channels // 2
+        self.board_w = int(self.config.board_width)
+        self.board_h = int(self.config.board_height)
+
+    def build(self, batch: VectorObservationBatch) -> VectorSpatialPlaneSection:
+        lanes = int(batch.count)
+        planes = np.zeros((lanes, self.channels, self.board_h, self.board_w), dtype=np.float32)
+        # Flatten once and work on the kept entities only: the (lanes, entities)
+        # grid is ~15k cells, while a real board carries a few hundred entities.
+        row_width = batch.entity_valid.shape[1]
+        side_all = batch.entity_side
+        rv_all = np.clip(batch.entity_row_vocab, 0, self.tables.vocab_size - 1)
+        keep = (
+            batch.entity_valid
+            & ~batch.entity_is_tower
+            & ((side_all == 0) | (side_all == 1))
+            & ~self.tables.is_persistent_area_root[rv_all]
+        ).ravel()
+        index = np.flatnonzero(keep)
+        if index.size == 0:
+            return VectorSpatialPlaneSection(planes=torch.from_numpy(planes))
+
+        lane_of = index // row_width
+        rv = rv_all.ravel()[index]
+        side = side_all.ravel()[index]
+        x, y = _tile_positions(
+            batch.entity_x.ravel()[index].astype(np.float64),
+            batch.entity_y.ravel()[index].astype(np.float64),
+            config=self.config,
+            perspective=self.perspective,
+        )
+        cell_x = np.clip(x.astype(np.int64), 0, self.board_w - 1)
+        cell_y = np.clip(y.astype(np.int64), 0, self.board_h - 1)
+        base = np.where(side == self.actor, 0, self.enemy_base)
+        child = self.tables.child_type[rv]
+        building = child == CHILD_TYPE["building"]
+        projectile = child == CHILD_TYPE["projectile"]
+        airborne = self.tables.is_airborne[rv]
+        category = np.where(projectile, 3, np.where(building, 2, np.where(airborne, 1, 0)))
+
+        # A building fills the policy cells whose centres lie inside its exact
+        # footprint; everything else (and a building with no mapped cell) marks
+        # its own cell.
+        half_w = self.tables.footprint_half_w[rv]
+        half_h = self.tables.footprint_half_h[rv]
+        start_x = np.maximum(0, np.ceil(x - half_w - 0.5)).astype(np.int64)
+        stop_x = np.minimum(self.board_w, np.ceil(x + half_w - 0.5)).astype(np.int64)
+        start_y = np.maximum(0, np.ceil(y - half_h - 0.5)).astype(np.int64)
+        stop_y = np.minimum(self.board_h, np.ceil(y + half_h - 0.5)).astype(np.int64)
+        count_x = np.maximum(0, stop_x - start_x)
+        count_y = np.maximum(0, stop_y - start_y)
+        footprint = building & (count_x > 0) & (count_y > 0)
+        owner_plane = lane_of * self.channels + base
+
+        flat = planes.reshape(lanes * self.channels, self.board_h * self.board_w)
+        point = ~footprint
+        point_rows = (owner_plane + category)[point]
+        point_cols = (cell_y * self.board_w + cell_x)[point]
+        if point_rows.size:
+            np.add.at(flat, (point_rows, point_cols), 1.0)
+
+        if footprint.any():
+            spans_x = int(count_x.max())
+            spans_y = int(count_y.max())
+            for dx in range(spans_x):
+                for dy in range(spans_y):
+                    take = footprint & (count_x > dx) & (count_y > dy)
+                    if not take.any():
+                        continue
+                    rows = (owner_plane + 2)[take]
+                    cols = ((start_y + dy) * self.board_w + (start_x + dx))[take]
+                    np.add.at(flat, (rows, cols), 1.0)
+
+        all_rows = owner_plane
+        all_cols = cell_y * self.board_w + cell_x
+        hp_raw = batch.entity_hp.ravel()[index]
+        shield_raw = batch.entity_shield.ravel()[index]
+        hitpoints = np.where(hp_raw >= 0, hp_raw, 0).astype(np.float64) / 10_000.0
+        shield = np.where(shield_raw > 0, shield_raw, 0).astype(np.float64) / 10_000.0
+        threat = self.tables.static_damage[rv].astype(np.float64) / 5_000.0
+        # ``ufunc.at`` with float64 operands accumulates in float64 and narrows
+        # once, while the per-lane loop adds float32 values one at a time; cast
+        # first so a cell shared by two entities matches to the last bit.
+        np.add.at(flat, (all_rows + 4, all_cols), hitpoints.astype(np.float32))
+        np.add.at(flat, (all_rows + 5, all_cols), shield.astype(np.float32))
+        np.add.at(flat, (all_rows + 6, all_cols), threat.astype(np.float32))
+        return VectorSpatialPlaneSection(planes=torch.from_numpy(planes))
 
 
 @dataclass(frozen=True)
@@ -2081,6 +2235,39 @@ def compare_tower_section(
     return mismatches
 
 
+def compare_spatial_plane_section(
+    section: VectorSpatialPlaneSection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """Every spatial plane, lane by lane, against the oracle."""
+
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        # ``_spatial_planes`` reads six per-frame caches keyed by entity id, and
+        # vector lanes reuse ids, so clear them exactly as ``tensorize`` does.
+        for name in (
+            "_frame_tile_position_cache",
+            "_frame_base_card_id_cache",
+            "_frame_spatial_extent_cache",
+            "_frame_spatial_radius_cache",
+            "_frame_archetype_id_cache",
+            "_frame_child_kind_cache",
+        ):
+            getattr(tensorizer, name).clear()
+        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer)
+        expected = tensorizer._spatial_planes(observation)
+        if not torch.equal(section.lane(lane), expected):
+            mismatches.append(f"explicit_spatial_planes lane={lane}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
+
+
 def reference_entities(
     batch: VectorObservationBatch, lane: int, *, tables: VectorEntityTables, tensorizer: Any, seat: int = 0
 ) -> tuple[EntityStateV1, ...]:
@@ -2262,6 +2449,8 @@ __all__ = [
     "VectorGroupSection",
     "VectorRelationBuilder",
     "VectorRelationSection",
+    "VectorSpatialPlaneBuilder",
+    "VectorSpatialPlaneSection",
     "VectorTowerBuilder",
     "VectorTowerSection",
     "candidate_geometry",
@@ -2269,6 +2458,7 @@ __all__ = [
     "compare_card_section",
     "compare_group_section",
     "compare_relation_section",
+    "compare_spatial_plane_section",
     "compare_tower_section",
     "oracle_groups",
     "reference_action_mask",

@@ -3517,13 +3517,13 @@ decisions, 32 lanes verified after step 0):
 
 | path | total | ms/lane |
 | --- | ---: | ---: |
-| batched tower section | **0.289 ms** | **0.00113** |
-| per-lane `_towers` oracle | 9.52 ms | 0.0372 |
+| batched tower section | **0.267 ms** | **0.00104** |
+| per-lane `_towers` oracle | 8.92 ms | 0.0349 |
 
 **Equivalence: pass**, `mismatches: []` over 40 decisions, all six towers present
 on every lane, 61,440 active tower rows and 61,263 rows with a visible target
-exercised. **33×** the per-lane oracle (two full runs: 0.00113 vs 0.0365–0.0372,
-i.e. 32–33×); quote the paired artifact rather than the ratio alone.
+exercised. **33.5×** the per-lane oracle (three full runs: 0.00104–0.00113 vs
+0.0349–0.0372, i.e. 32–33.5×); quote the paired artifact rather than the ratio alone.
 
 Section arithmetic only: replacing the live profile's 0.145 share with 0.00113
 projects **0.848 ms/decision** with groups, cards, relations and candidates also
@@ -3552,3 +3552,93 @@ Evidence: `runs/crforge-c3/batched-towers.json`,
 `crforge_bridge/vector_rows.py`,
 `crforge_bridge/tests/test_vector_rows.py`,
 `tools/crforge/batched_towers.py`.
+
+### 3.51 The batched explicit spatial planes — C3-B continues (2026-11-19)
+
+`_spatial_planes` is 0.117 of the 0.992 CPU ms/decision packet: a 14-channel
+board per decision. Per side (own base 0, enemy base 7) it carries four
+occupancy categories — ground, airborne, building, projectile — plus a hitpoint
+channel (`/10 000`), a shield channel and a threat channel (`/5 000`). Every
+entity marks its category at its cell; a building fills the whole footprint;
+hitpoints, shield and threat always go to the entity's own cell.
+
+The audit found the facts were already there or archetype-static:
+
+| plane input | source |
+| --- | --- |
+| position, side, hitpoints, shield | the entity row (already in the batch) |
+| category (child kind, airborne) | archetype metadata, compiled into `VectorEntityTables` |
+| threat | archetype `static_damage_basis`, compiled into the tables |
+| building footprint | `native_building_footprint` half extents, already in the tables |
+| persistent area root | `child_kind in {area, effect}`; the envelope carries no causal groups |
+
+So the work is `VectorSpatialPlaneBuilder`: flatten the kept entities once, then
+one gather for the category/health planes and one scatter per footprint cell.
+
+#### Two rules decide membership, and one is easy to miss
+
+Towers are a separate six-row section and are never drawn into the planes —
+a board of towers alone is an all-zero plane tensor. An **ownerless** row is
+skipped too, exactly as the per-lane loop skips `owner is None`; the batched
+build filters `side in {0, 1}` before anything else. A neutral row and a removed
+row must produce bit-identical planes.
+
+#### Float32 accumulation is part of the contract
+
+Two entities can share a cell. The per-lane loop adds each entity's value to a
+float32 plane one at a time, so the result is a sequence of float32 roundings,
+not the correctly rounded sum. `np.add.at` with float64 operands accumulates in
+float64 and narrows once — a one-ULP difference that the digest comparison
+caught (threat 81/5000 + 112/5000: `0.038599998` vs `0.0386`). Casting the addends
+to float32 before the scatter reproduces the loop exactly. Category values are
+`1.0`, so footprint/point order is free.
+
+#### Flatten first: 2.4× becomes 12.7×
+
+The first version masked over the whole `(lanes, max_entities)` grid (~15k
+cells) for every expression and cost **0.0188 ms/lane (2.44×)**. Flattening once
+to the kept entities (a few hundred) and working in one dimension cut it to
+**0.00392 ms/lane (12.7×)** — the perf cProfile put 75 % of the time in
+`build`'s own boolean indexing, not in `np.add.at`.
+
+`compare_spatial_plane_section` clears the six per-frame caches per lane, exactly
+as `tensorize` clears them per decision (they are keyed by entity id and vector
+lanes reuse ids), then runs the stock `_spatial_planes`.
+
+#### The gate
+
+`tools/crforge/batched_spatial_planes.py` — 256 learner-deck lanes, full-plane
+equivalence every step, paired timing. `runs/crforge-c3/batched-spatial-planes.json`
+(256 lanes × 40 decisions, 60 WAIT warmup decisions, 32 lanes verified after step
+0):
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched explicit planes | **1.004 ms** | **0.00392** |
+| per-lane `_spatial_planes` oracle | 12.78 ms | 0.0499 |
+
+**Equivalence: pass**, `mismatches: []` over 40 decisions; 35 frames carried a
+building, 28,224 ground cells and 24,866 building cells exercised. **12.7×** the
+per-lane oracle. Section arithmetic: replacing the live 0.117 share projects
+**0.879 ms/decision** with groups, cards, relations, candidates and towers also
+batched, before `_scalars` and the empty effects/events.
+
+#### Tests
+
+`test_vector_rows.py` adds 3 tests (21 in the file, bridge suite **43**): a
+50-decision plane equivalence with a **forced Tesla** (the random policy alone
+never fielded a building, so the footprint fill is pinned deterministically);
+the archetype projection behind airborne/threat/persistent-root; and the
+neutral-row/removed-row equivalence plus the towers-only zero board. Ruff clean.
+
+#### What remains for C3-B
+
+`_scalars` (the clock, phase, elixir multiplier, crowns, counts and the tracker's
+`[0, 10]` fallback) and the empty effects/events, then a facts-only `tensorize`
+returning one `UniversalSemanticBatchV4` per lane, `batch_digest`-identical to
+the per-lane path on a captured sequence.
+
+Evidence: `runs/crforge-c3/batched-spatial-planes.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_spatial_planes.py`.
