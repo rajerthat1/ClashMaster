@@ -46,6 +46,7 @@ from crforge_bridge.vector_rows import (
     VectorEntityTables,
     VectorGroupBuilder,
     VectorRelationBuilder,
+    VectorTowerBuilder,
     compare_card_section,
     compare_relation_section,
     oracle_groups,
@@ -163,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     groups_builder = VectorGroupBuilder(tensorizer, tables)
     cards_builder = VectorCardBuilder(tensorizer)
     relations_builder = VectorRelationBuilder(tensorizer)
+    tower_builder = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP)
     rng = np.random.default_rng(args.seed)
 
     card_mismatches: list[str] = []
@@ -176,7 +178,8 @@ def main(argv: list[str] | None = None) -> int:
             lanes = list(range(args.count)) if step == 0 else list(range(min(args.verify_lanes, args.count)))
             groups = groups_builder.build(batch)
             cards = cards_builder.build(batch)
-            relations = relations_builder.build(batch, cards, groups)
+            towers = tower_builder.build(batch)
+            relations = relations_builder.build(batch, cards, groups, towers)
             mismatch_sets = [("cards", compare_card_section(cards, tensorizer, batch, tables=tables, lanes=lanes))]
             if step == 0 or step % 4 == 0:
                 mismatch_sets.append(
@@ -217,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
 
         frame_cards = cards_builder.build(batch)
         frame_groups = groups_builder.build(batch)
+        frame_towers = tower_builder.build(batch)
 
         def batched_cards() -> None:
             cards_builder.build(batch)
@@ -226,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
                 tensorizer._card_sets(observation)
 
         def batched_relations() -> None:
-            relations_builder.build(batch, frame_cards, frame_groups)
+            relations_builder.build(batch, frame_cards, frame_groups, frame_towers)
 
         def oracle_relations() -> None:
             for observation, (own, opponent, tower_index, groups, group_index) in zip(

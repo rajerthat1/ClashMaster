@@ -9,16 +9,19 @@ gate the earlier section gates could not run:
 * it steps real 256-lane learner-deck battles (WAIT warmup past the start
   cooldown, then sampled play so candidates and played entities exist);
 * for every checked lane it drives the stock
-  ``UniversalObservationTensorizerV4.tensorize`` with a ``reference_observation``
-  projected from the same facts, records the same sampled micro-action on both
-  paths, and compares the **whole record** field by field plus
+  ``UniversalObservationTensorizerV4.tensorize`` for each requested actor seat
+  (``--seats 0 1`` gates both owners) with a ``reference_observation`` projected
+  from the same facts, records the same sampled micro-action on both paths, and
+  compares the **whole record** field by field plus
   ``batch_digest``-for-``batch_digest``;
 * it times the stacked build, the stock per-lane build and the observation
   facts layer paired on the same final frame, so the ≤0.5 ms/lane claim includes
-  the facts layer rather than only the row build.
+  the facts layer rather than only the row build.  With two seats one lane is
+  two lane-decisions (one per actor), and the combined cost is reported both
+  per seat and per lane-decision.
 
     .venv/bin/python tools/crforge/batched_tensorize.py \
-        --count 256 --steps 40 --verify-lanes 32 \
+        --count 256 --steps 40 --verify-lanes 32 --seats 0 1 \
         --output runs/crforge-c3/batched-tensorize.json
 """
 
@@ -81,10 +84,10 @@ def _checkpoint_config(checkpoint: Path) -> ModelConfigV4:
     return config_from_contract(contract)
 
 
-def _tensorizer(config: ModelConfigV4) -> UniversalObservationTensorizerV4:
+def _tensorizer(config: ModelConfigV4, seat: int = 0) -> UniversalObservationTensorizerV4:
     bundle = production_semantic_bundle(RELEASE)
     return UniversalObservationTensorizerV4(
-        actor_owner=0,
+        actor_owner=int(seat),
         card_catalog=bundle.card_catalog,
         ability_catalog=bundle.ability_catalog,
         entity_archetype_catalog=bundle.entity_archetype_catalog,
@@ -183,7 +186,16 @@ def _action_sequence(candidates: Any, config: ModelConfigV4) -> ActionSequenceV4
     )
 
 
-def _reference(stock: Any, tables: Any, timeline: Any, batch: Any, lane: int, episode_id: str) -> Any:
+def _reference(
+    stock: Any, tables: Any, timeline: Any, batch: Any, lane: int, episode_id: str, *, seat: int = 0
+) -> Any:
+    """The per-lane oracle observation for one actor seat.
+
+    ``model_frame=False`` leaves the native placement grid intact: the stock
+    ``tensorize`` applies the actor perspective itself, so a pre-flipped grid
+    would be transformed twice.
+    """
+
     return reference_scalar_observation(
         batch,
         lane,
@@ -191,7 +203,8 @@ def _reference(stock: Any, tables: Any, timeline: Any, batch: Any, lane: int, ep
         tensorizer=stock,
         timeline=timeline,
         tower_troop_id=TOWER_TROOP,
-        action_mask=reference_action_mask(batch, lane, tensorizer=stock),
+        seat=int(seat),
+        action_mask=reference_action_mask(batch, lane, tensorizer=stock, seat=int(seat), model_frame=False),
         episode_id=episode_id,
     )
 
@@ -210,6 +223,14 @@ def main(argv: list[str] | None = None) -> int:
         help="WAIT-only decisions before the loop, past the start cooldown",
     )
     parser.add_argument("--play-rate", type=float, default=0.5)
+    parser.add_argument(
+        "--seats",
+        type=int,
+        nargs="+",
+        default=[0],
+        choices=(0, 1),
+        help="actor seats to tensorize (0 1 gates both owners of every lane)",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--checkpoint", type=Path, default=Path(".resource/RoyaleFish/models/B-general-v275.pt"))
     parser.add_argument("--output", type=Path, default=Path("runs/crforge-c3/batched-tensorize.json"))
@@ -221,33 +242,46 @@ def main(argv: list[str] | None = None) -> int:
     env_jvm._started_with = Path(DEFAULT_INSTALL).expanduser().resolve()
     catalog = Catalog.load()
     config = _checkpoint_config(args.checkpoint)
-    tensorizer = _tensorizer(config)
+    seats = tuple(dict.fromkeys(int(seat) for seat in args.seats))
+    if not seats or any(seat not in (0, 1) for seat in seats):
+        raise SystemExit(f"--seats must be a subset of 0 1, got {args.seats}")
+    tensorizers = {seat: _tensorizer(config, seat) for seat in seats}
     timeline = load_game_mode_timeline(STANDARD_GAME_MODE).timeline
     vector = _vector(args.count)
     encoder = VectorObservationEncoder(vector, catalog)
     encoder.reset()
     batch = encoder.encode()
-    rows = VectorTensorizer(
-        tensorizer,
-        vocabulary=list(vector.vocabulary),
-        bridge_catalog=catalog,
-        timeline=timeline,
-        tower_troop_id=TOWER_TROOP,
-    )
-    rows.reset(batch)
+    rows_by_seat = {
+        seat: VectorTensorizer(
+            tensorizers[seat],
+            vocabulary=list(vector.vocabulary),
+            bridge_catalog=catalog,
+            timeline=timeline,
+            tower_troop_id=TOWER_TROOP,
+        )
+        for seat in seats
+    }
+    for rows in rows_by_seat.values():
+        rows.reset(batch)
     rng = np.random.default_rng(args.seed)
     for _ in range(args.warmup_steps):
         _step(vector, rng, 0.0)
     encoder.encode(batch)
 
     mismatches: list[str] = []
-    stock_by_lane: dict[int, Any] = {}
-    stock_batches: dict[int, Any] = {}
+    stock_by_lane: dict[tuple[int, int], Any] = {}
+    stock_batches: dict[tuple[int, int], Any] = {}
     # Lanes that are checked on every step need their own previous-action
     # history.  Step 0 checks every lane against an empty previous action, so a
     # single instance can serve the one-shot lanes after ``start_episode``.
     persistent_lanes = set(range(min(args.verify_lanes, args.count)))
-    cold_stock = _tensorizer(config)
+    cold_stock = {seat: _tensorizer(config, seat) for seat in seats}
+    digest_matches_by_seat = {seat: 0 for seat in seats}
+    lane_decisions_by_seat = {seat: 0 for seat in seats}
+    candidates_by_seat = {seat: 0 for seat in seats}
+    max_candidates_by_seat = {seat: 0 for seat in seats}
+    max_relations_by_seat = {seat: 0 for seat in seats}
+    max_entities_by_seat = {seat: 0 for seat in seats}
     digest_matches = 0
     lane_decisions = 0
     steps_run = 0
@@ -259,89 +293,152 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for step in range(args.steps):
             lanes = list(range(args.count)) if step == 0 else list(range(min(args.verify_lanes, args.count)))
-            stacked = rows.tensorize(batch, validate=(step == 0))
-            if tuple(stacked.match_scalars.shape) != (args.count, int(config.generic_scalar_dim)):
-                mismatches.append(f"step={step} stacked shape")
-            for lane in lanes:
-                stock = stock_by_lane.get(lane)
-                if stock is None and lane in persistent_lanes:
-                    stock = _tensorizer(config)
-                    stock_by_lane[lane] = stock
-                    stock.start_episode(_reference(stock, rows.tables, timeline, batch, lane, f"lane{lane}"))
-                if stock is None:
-                    stock = cold_stock
-                    stock.start_episode(_reference(stock, rows.tables, timeline, batch, lane, f"lane{lane}"))
-                view = _reference(stock, rows.tables, timeline, batch, lane, f"lane{lane}")
-                expected = stock.tensorize(view, validate=False)
-                if lane in persistent_lanes:
-                    stock_batches[lane] = expected
-                actual = lane_batch(stacked, lane)
-                found = compare_semantic_batches(actual, expected)
-                if found:
-                    mismatches.extend(f"step={step} lane={lane} {value}" for value in found)
-                elif batch_digest(actual) == batch_digest(expected):
-                    digest_matches += 1
-                else:
-                    mismatches.append(f"step={step} lane={lane} digest")
-                lane_decisions += 1
-                max_candidates = max(max_candidates, int(actual.candidates.mask.sum()))
-                max_relations = max(max_relations, int(actual.relation_edges.mask.sum()))
-                max_entities = max(max_entities, int(actual.groups.mask.sum()))
-                if int(actual.candidates.mask.sum()) > 0:
-                    decisions_with_candidates += 1
+            stacked_by_seat = {}
+            for seat in seats:
+                rows = rows_by_seat[seat]
+                stacked = rows.tensorize(batch, validate=(step == 0))
+                stacked_by_seat[seat] = stacked
+                if tuple(stacked.match_scalars.shape) != (args.count, int(config.generic_scalar_dim)):
+                    mismatches.append(f"step={step} seat={seat} stacked shape")
+                for lane in lanes:
+                    key = (seat, lane)
+                    stock = stock_by_lane.get(key)
+                    if stock is None and lane in persistent_lanes:
+                        stock = _tensorizer(config, seat)
+                        stock_by_lane[key] = stock
+                        stock.start_episode(
+                            _reference(stock, rows.tables, timeline, batch, lane, f"lane{lane}", seat=seat)
+                        )
+                    if stock is None:
+                        stock = cold_stock[seat]
+                        stock.start_episode(
+                            _reference(stock, rows.tables, timeline, batch, lane, f"lane{lane}", seat=seat)
+                        )
+                    view = _reference(stock, rows.tables, timeline, batch, lane, f"lane{lane}", seat=seat)
+                    expected = stock.tensorize(view, validate=False)
+                    if lane in persistent_lanes:
+                        stock_batches[key] = expected
+                    actual = lane_batch(stacked, lane)
+                    found = compare_semantic_batches(actual, expected)
+                    if found:
+                        mismatches.extend(f"step={step} seat={seat} lane={lane} {value}" for value in found)
+                    elif batch_digest(actual) == batch_digest(expected):
+                        digest_matches += 1
+                        digest_matches_by_seat[seat] += 1
+                    else:
+                        mismatches.append(f"step={step} seat={seat} lane={lane} digest")
+                    lane_decisions += 1
+                    lane_decisions_by_seat[seat] += 1
+                    lane_candidates = int(actual.candidates.mask.sum())
+                    lane_relations = int(actual.relation_edges.mask.sum())
+                    lane_entities = int(actual.groups.mask.sum())
+                    max_candidates = max(max_candidates, lane_candidates)
+                    max_relations = max(max_relations, lane_relations)
+                    max_entities = max(max_entities, lane_entities)
+                    max_candidates_by_seat[seat] = max(max_candidates_by_seat[seat], lane_candidates)
+                    max_relations_by_seat[seat] = max(max_relations_by_seat[seat], lane_relations)
+                    max_entities_by_seat[seat] = max(max_entities_by_seat[seat], lane_entities)
+                    if lane_candidates > 0:
+                        decisions_with_candidates += 1
+                        candidates_by_seat[seat] += 1
             if mismatches:
                 steps_run = step
                 break
 
-            sequence = _action_sequence(stacked.candidates, config)
-            rows.record_action(sequence, stacked, validate=True)
-            for lane in persistent_lanes:
-                if lane in lanes:
-                    stock_by_lane[lane].record_action(
-                        lane_sequence(sequence, lane), stock_batches[lane], row=0, validate=True
-                    )
-            micro_actions_recorded += int(sequence.micro_action_count.sum())
+            for seat in seats:
+                sequence = _action_sequence(stacked_by_seat[seat].candidates, config)
+                rows_by_seat[seat].record_action(sequence, stacked_by_seat[seat], validate=True)
+                for lane in persistent_lanes:
+                    if lane in lanes:
+                        stock_by_lane[(seat, lane)].record_action(
+                            lane_sequence(sequence, lane),
+                            stock_batches[(seat, lane)],
+                            row=0,
+                            validate=True,
+                        )
+                micro_actions_recorded += int(sequence.micro_action_count.sum())
 
             steps_run = step + 1
             _step(vector, rng, args.play_rate)
             encoder.encode(batch)
 
         # ---- paired timing on the final frame ------------------------------
-        timing_stock = _tensorizer(config)
-        references = [
-            _reference(timing_stock, rows.tables, timeline, batch, lane, "timing")
-            for lane in range(args.count)
-        ]
-        timing_stock.start_episode(references[0])
-        stacked = rows.tensorize(batch)
-        sequence = _action_sequence(stacked.candidates, config)
+        timing_stock = {seat: _tensorizer(config, seat) for seat in seats}
+        references = {
+            seat: [
+                _reference(timing_stock[seat], rows_by_seat[seat].tables, timeline, batch, lane, "timing", seat=seat)
+                for lane in range(args.count)
+            ]
+            for seat in seats
+        }
+        for seat in seats:
+            timing_stock[seat].start_episode(references[seat][0])
+        stacked_by_seat = {seat: rows_by_seat[seat].tensorize(batch) for seat in seats}
+        sequences = {seat: _action_sequence(stacked_by_seat[seat].candidates, config) for seat in seats}
 
         def facts() -> None:
             encoder.encode(batch)
 
         def batched() -> None:
-            rows.tensorize(batch)
+            for seat in seats:
+                rows_by_seat[seat].tensorize(batch)
 
         def oracle() -> None:
-            for view in references:
-                timing_stock.tensorize(view, validate=False)
+            for seat in seats:
+                stock = timing_stock[seat]
+                for view in references[seat]:
+                    stock.tensorize(view, validate=False)
 
         def record() -> None:
-            rows.record_action(sequence, stacked, validate=False)
+            for seat in seats:
+                rows_by_seat[seat].record_action(sequences[seat], stacked_by_seat[seat], validate=False)
+
+        def _seat_batched(seat: int) -> None:
+            rows_by_seat[seat].tensorize(batch)
+
+        def _seat_oracle(seat: int) -> None:
+            stock = timing_stock[seat]
+            for view in references[seat]:
+                stock.tensorize(view, validate=False)
+
+        def _seat_record(seat: int) -> None:
+            rows_by_seat[seat].record_action(sequences[seat], stacked_by_seat[seat], validate=False)
 
         facts_median = statistics.median([_timed(facts, args.timing_repeats) for _ in range(args.timing_samples)])
-        batched_samples = [_timed(batched, args.timing_repeats) for _ in range(args.timing_samples)]
-        oracle_samples = [_timed(oracle, args.timing_repeats) for _ in range(args.timing_samples)]
+        per_seat_batched = {
+            seat: statistics.median(
+                [_timed(lambda seat=seat: _seat_batched(seat), args.timing_repeats) for _ in range(args.timing_samples)]
+            )
+            for seat in seats
+        }
+        per_seat_oracle = {
+            seat: statistics.median(
+                [_timed(lambda seat=seat: _seat_oracle(seat), args.timing_repeats) for _ in range(args.timing_samples)]
+            )
+            for seat in seats
+        }
+        per_seat_record = {
+            seat: statistics.median(
+                [_timed(lambda seat=seat: _seat_record(seat), args.timing_repeats) for _ in range(args.timing_samples)]
+            )
+            for seat in seats
+        }
+        batched_median = statistics.median(
+            [_timed(batched, args.timing_repeats) for _ in range(args.timing_samples)]
+        )
+        oracle_median = statistics.median([_timed(oracle, args.timing_repeats) for _ in range(args.timing_samples)])
         record_median = statistics.median([_timed(record, args.timing_repeats) for _ in range(args.timing_samples)])
-        batched_median = statistics.median(batched_samples)
-        oracle_median = statistics.median(oracle_samples)
-        batched_per_lane = batched_median / args.count
+        # One decision per actor per lane: a two-seat run is ``count * seats``
+        # lane-decisions, so the per-lane cost stays comparable to the
+        # single-seat C3-B artifact.
+        lane_decisions_timed = args.count * len(seats)
+        batched_per_lane = batched_median / lane_decisions_timed
         facts_per_lane = facts_median / args.count
-        record_per_lane = record_median / args.count
-        end_to_end_per_lane = facts_per_lane + batched_per_lane + record_per_lane
+        record_per_lane = record_median / lane_decisions_timed
+        end_to_end_per_lane = (facts_median + batched_median + record_median) / lane_decisions_timed
 
         artifact = {
-            "schema": "crforge-batched-tensorize.v1",
+            "schema": "crforge-batched-tensorize.v2",
             "measured": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "shape": {
                 "count": args.count,
@@ -351,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
                 "verify_lanes_after": args.verify_lanes,
                 "play_rate": args.play_rate,
                 "seed": args.seed,
+                "seats": list(seats),
             },
             "substrate": {
                 "release": RELEASE,
@@ -361,7 +459,10 @@ def main(argv: list[str] | None = None) -> int:
                 "timeline": timeline.name,
                 "game_mode": STANDARD_GAME_MODE,
                 "tower_troop": TOWER_TROOP,
-                "scopes": "seat 0; no tracker, events, reveals, effects, ability runtime or tower status",
+                "scopes": (
+                    "both actor seats (game-frame facts, per-seat model perspective); no tracker, events, "
+                    "reveals, effects, ability runtime or tower status"
+                ),
             },
             "equivalence": {
                 "steps": steps_run,
@@ -373,6 +474,17 @@ def main(argv: list[str] | None = None) -> int:
                 "micro_actions_recorded": micro_actions_recorded,
                 "mismatches": mismatches[:40],
                 "pass": not mismatches,
+                "by_seat": {
+                    str(seat): {
+                        "lane_decisions": lane_decisions_by_seat[seat],
+                        "digest_matches": digest_matches_by_seat[seat],
+                        "decisions_with_candidates": candidates_by_seat[seat],
+                        "max_candidates_per_lane": max_candidates_by_seat[seat],
+                        "max_relation_edges_per_lane": max_relations_by_seat[seat],
+                        "max_active_groups_per_lane": max_entities_by_seat[seat],
+                    }
+                    for seat in seats
+                },
             },
             "counts": {
                 "max_candidates_per_lane": max_candidates,
@@ -381,12 +493,14 @@ def main(argv: list[str] | None = None) -> int:
             },
             "timing": {
                 "lanes": args.count,
+                "seats": list(seats),
+                "lane_decisions": lane_decisions_timed,
                 "facts_ms": facts_median,
                 "facts_ms_per_lane": facts_per_lane,
                 "batched_ms": batched_median,
                 "batched_ms_per_lane": batched_per_lane,
                 "oracle_ms": oracle_median,
-                "oracle_ms_per_lane": oracle_median / args.count,
+                "oracle_ms_per_lane": oracle_median / lane_decisions_timed,
                 "record_actions_ms": record_median,
                 "record_actions_ms_per_lane": record_per_lane,
                 "speedup": (oracle_median / batched_median) if batched_median else 0.0,
@@ -394,6 +508,20 @@ def main(argv: list[str] | None = None) -> int:
                 "c3_packet_ms": C3_PACKET_MS,
                 "gate_ms_per_lane": GATE_MS_PER_LANE,
                 "gate_pass": end_to_end_per_lane <= GATE_MS_PER_LANE,
+                "by_seat": {
+                    str(seat): {
+                        "batched_ms": per_seat_batched[seat],
+                        "batched_ms_per_lane": per_seat_batched[seat] / args.count,
+                        "oracle_ms": per_seat_oracle[seat],
+                        "oracle_ms_per_lane": per_seat_oracle[seat] / args.count,
+                        "record_actions_ms": per_seat_record[seat],
+                        "record_actions_ms_per_lane": per_seat_record[seat] / args.count,
+                        "speedup": (
+                            per_seat_oracle[seat] / per_seat_batched[seat] if per_seat_batched[seat] else 0.0
+                        ),
+                    }
+                    for seat in seats
+                },
             },
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)

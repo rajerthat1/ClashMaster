@@ -137,7 +137,7 @@ class VectorTensorizer:
         groups = self.group_builder.build(batch)
         empty = self.empty_builder.build(batch)
         candidates = self.candidate_builder.build(batch)
-        relations = self.relation_builder.build(batch, cards, groups)
+        relations = self.relation_builder.build(batch, cards, groups, towers)
         planes = self.plane_builder.build(batch)
         scalars = self.scalar_builder.build(batch, groups=groups, candidates=candidates)
         return VectorTensorSections(

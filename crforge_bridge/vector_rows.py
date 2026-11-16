@@ -670,10 +670,16 @@ class VectorGroupBuilder:
         group_features[..., _G_SPAN_Y] = g_extent[..., 3] - g_extent[..., 1]
         group_features[..., _G_ABILITY] = 0.0
         group_features[..., _G_TARGET] = g_target.astype(np.float32)
-        group_features[..., _G_VELOCITY_X] = np.where(g_velocity_valid, g_velocity[..., 0] / 10.0, 0.0)
-        group_features[..., _G_VELOCITY_Y] = np.where(g_velocity_valid, g_velocity[..., 1] / 10.0, 0.0)
+        # The stock accumulator starts at ``0.0`` and adds each member's model
+        # velocity, so a singleton group whose velocity is ``-0.0`` lands on
+        # ``+0.0`` (``0.0 + -0.0 == 0.0``).  Reproduce that signed-zero rule;
+        # the bytes are part of the digest, even though ``torch.equal`` agrees.
+        velocity_x = np.add(0.0, g_velocity[..., 0])
+        velocity_y = np.add(0.0, g_velocity[..., 1])
+        group_features[..., _G_VELOCITY_X] = np.where(g_velocity_valid, velocity_x / 10.0, 0.0)
+        group_features[..., _G_VELOCITY_Y] = np.where(g_velocity_valid, velocity_y / 10.0, 0.0)
         group_features[..., _G_SPEED] = np.where(
-            g_velocity_valid, np.hypot(g_velocity[..., 0], g_velocity[..., 1]) / 10.0, 0.0
+            g_velocity_valid, np.hypot(velocity_x, velocity_y) / 10.0, 0.0
         )
         group_position[..., 0] = g_x
         group_position[..., 1] = g_y
@@ -1775,9 +1781,18 @@ class VectorRelationBuilder:
             raise ValueError(f"relation token space {token_count} exceeds the 128-token packing")
 
     def build(
-        self, batch: VectorObservationBatch, cards: VectorCardSection, groups: VectorGroupSection
+        self,
+        batch: VectorObservationBatch,
+        cards: VectorCardSection,
+        groups: VectorGroupSection,
+        towers: VectorTowerSection,
     ) -> VectorRelationSection:
         lanes = int(batch.count)
+        # The stock ``_relations`` receives ``tower_token_by_entity`` from
+        # ``_towers``: a tower's token is its **model row**, not its native id.
+        # Those differ for seat 1 (actor-first order) and under a mirror.
+        tower_index = towers.tower_index
+        tower_columns = int(tower_index.shape[1])
         lane_axis = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], batch.entity_id.shape)
         group_rank = groups.group_index.astype(np.int64)
         valid_entity = batch.entity_valid & ~batch.entity_is_tower
@@ -1805,9 +1820,11 @@ class VectorRelationBuilder:
                 resolved = np.where(matched, lookup_values[clipped], -1).reshape(ids.shape)
             else:
                 resolved = np.full(ids.shape, -1, dtype=np.int64)
-            # A tower target is a token regardless of whether it is an entity row.
+            # A tower target is a token through the same model-row map.
             tower_target = (ids >= 0) & (ids < self.tower_count)
-            return np.where(tower_target, ids, resolved)
+            safe = np.clip(ids, 0, tower_columns - 1)
+            tower_token = np.take_along_axis(tower_index, safe, axis=1)
+            return np.where(tower_target, tower_token, resolved)
 
         target_token = resolve(target_id)
 
@@ -1833,18 +1850,21 @@ class VectorRelationBuilder:
 
         # Tower sources: the fixed six-row section, whose visible target lives
         # on the shared entity row for that tower id.  A tower can target an
-        # entity as well as another tower.
+        # entity as well as another tower.  The source token is the tower's
+        # model row, exactly as the oracle's ``tower_token_by_entity``.
         tower_slot = self._tower_slots(batch)
         tower_row_target = np.take_along_axis(raw_target, np.maximum(tower_slot, 0), axis=1)
         tower_valid = (tower_slot >= 0) & (tower_row_target >= 0)
-        tower_ids = np.broadcast_to(np.arange(self.tower_count, dtype=np.int64)[None, :], tower_valid.shape)
+        tower_source = tower_index
         tower_resolved = resolve(np.where(tower_valid, tower_row_target, -1))
-        tower_edges = tower_valid & (tower_resolved >= 0) & (tower_resolved != tower_ids)
+        tower_edges = (
+            tower_valid & (tower_source >= 0) & (tower_resolved >= 0) & (tower_resolved != tower_source)
+        )
         tower_lanes = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], tower_valid.shape)
         edges.append(
             (
                 tower_lanes[tower_edges],
-                tower_ids[tower_edges],
+                tower_source[tower_edges],
                 tower_resolved[tower_edges],
                 np.full(int(tower_edges.sum()), REL_TARGETS, dtype=np.int64),
             )
@@ -1853,7 +1873,7 @@ class VectorRelationBuilder:
             (
                 tower_lanes[tower_edges],
                 tower_resolved[tower_edges],
-                tower_ids[tower_edges],
+                tower_source[tower_edges],
                 np.full(int(tower_edges.sum()), REL_TARGETED_BY, dtype=np.int64),
             )
         )
@@ -2344,6 +2364,7 @@ def compare_empty_section(
     batch: VectorObservationBatch,
     *,
     tables: VectorEntityTables,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """The empty effect/event records, lane by lane, against the oracle."""
@@ -2351,7 +2372,7 @@ def compare_empty_section(
     mismatches: list[str] = []
     selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
     for lane in selected:
-        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer)
+        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer, seat=int(seat))
         tensorizer._frame_players.clear()
         _own, _opponent, _card_to_row = tensorizer._card_sets(observation)
         _groups, group_index, child_index, _group_overflow, _child_overflow = oracle_groups(
@@ -2402,6 +2423,7 @@ def compare_scalar_section(
     tables: VectorEntityTables,
     timeline: Any,
     native_tick_offset: int = 0,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Every match scalar, lane by lane, against the oracle.
@@ -2421,7 +2443,8 @@ def compare_scalar_section(
             tensorizer=tensorizer,
             timeline=timeline,
             native_tick_offset=native_tick_offset,
-            action_mask=reference_action_mask(batch, lane, tensorizer=tensorizer),
+            seat=int(seat),
+            action_mask=reference_action_mask(batch, lane, tensorizer=tensorizer, seat=int(seat)),
         )
         tensorizer._frame_players.clear()
         _own, _opponent, card_to_row = tensorizer._card_sets(observation)
@@ -2538,6 +2561,7 @@ def compare_candidate_section(
     batch: VectorObservationBatch,
     *,
     tables: VectorEntityTables,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Every candidate tensor field, lane by lane, against the oracle."""
@@ -2550,7 +2574,8 @@ def compare_candidate_section(
             lane,
             tables=tables,
             tensorizer=tensorizer,
-            action_mask=reference_action_mask(batch, lane, tensorizer=tensorizer),
+            seat=int(seat),
+            action_mask=reference_action_mask(batch, lane, tensorizer=tensorizer, seat=int(seat)),
         )
         tensorizer._frame_players.clear()
         _own, _opponent, card_to_row = tensorizer._card_sets(observation)
@@ -2582,6 +2607,7 @@ def compare_card_section(
     batch: VectorObservationBatch,
     *,
     tables: VectorEntityTables,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Own and opponent card tensors, lane by lane, against the oracle."""
@@ -2591,7 +2617,7 @@ def compare_card_section(
     mismatches: list[str] = []
     selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
     for lane in selected:
-        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer)
+        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer, seat=int(seat))
         # ``_player`` caches by ``id(observation)``; a per-lane view is freed
         # after each lane, so a reused id could answer with another lane's row.
         tensorizer._frame_players.clear()
@@ -2614,6 +2640,7 @@ def compare_relation_section(
     *,
     tables: VectorEntityTables,
     tower_troop_id: int | None = None,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Every relation edge, lane by lane, against the oracle sections."""
@@ -2624,7 +2651,7 @@ def compare_relation_section(
     selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
     for lane in selected:
         observation = reference_observation(
-            batch, lane, tables=tables, tensorizer=tensorizer, tower_troop_id=tower_troop_id
+            batch, lane, tables=tables, tensorizer=tensorizer, tower_troop_id=tower_troop_id, seat=int(seat)
         )
         tensorizer._frame_players.clear()
         own, opponent, _card_to_row = tensorizer._card_sets(observation)
@@ -2656,6 +2683,7 @@ def compare_tower_section(
     *,
     tables: VectorEntityTables,
     tower_troop_id: int | None = None,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Every tower tensor field and row index, lane by lane, against the oracle."""
@@ -2664,7 +2692,7 @@ def compare_tower_section(
     selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
     for lane in selected:
         observation = reference_observation(
-            batch, lane, tables=tables, tensorizer=tensorizer, tower_troop_id=tower_troop_id
+            batch, lane, tables=tables, tensorizer=tensorizer, tower_troop_id=tower_troop_id, seat=int(seat)
         )
         expected, index_by_entity = tensorizer._towers(observation)
         actual, actual_index = section.lane(lane)
@@ -2694,6 +2722,7 @@ def compare_spatial_plane_section(
     batch: VectorObservationBatch,
     *,
     tables: VectorEntityTables,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Every spatial plane, lane by lane, against the oracle."""
@@ -2712,7 +2741,7 @@ def compare_spatial_plane_section(
             "_frame_child_kind_cache",
         ):
             getattr(tensorizer, name).clear()
-        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer)
+        observation = reference_observation(batch, lane, tables=tables, tensorizer=tensorizer, seat=int(seat))
         expected = tensorizer._spatial_planes(observation)
         if not torch.equal(section.lane(lane), expected):
             mismatches.append(f"explicit_spatial_planes lane={lane}")
@@ -2871,6 +2900,7 @@ def compare_group_section(
     batch: VectorObservationBatch,
     *,
     tables: VectorEntityTables,
+    seat: int = 0,
     lanes: Sequence[int] | None = None,
 ) -> list[str]:
     """Every group/child tensor field, lane by lane, against the oracle."""
@@ -2878,7 +2908,7 @@ def compare_group_section(
     mismatches: list[str] = []
     selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
     for lane in selected:
-        entities = reference_entities(batch, lane, tables=tables, tensorizer=tensorizer)
+        entities = reference_entities(batch, lane, tables=tables, tensorizer=tensorizer, seat=int(seat))
         groups, group_index, child_index, group_overflow, child_overflow = oracle_groups(tensorizer, entities)
         if int(section.group_overflow[lane]) != int(group_overflow):
             mismatches.append(f"group_overflow lane={lane}")

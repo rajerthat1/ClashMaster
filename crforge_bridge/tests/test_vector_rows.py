@@ -9,6 +9,7 @@ from crforge_bridge.catalog import Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_rows import (
+    GROUP_FEATURE_NAMES,
     VectorCandidateBuilder,
     VectorCardBuilder,
     VectorEmptySectionBuilder,
@@ -247,6 +248,7 @@ def test_batched_relations_match_the_per_lane_oracle(crforge_runtime: None) -> N
         group_builder, tables = _builder(tensorizer, vector)
         cards_builder = VectorCardBuilder(tensorizer)
         relations_builder = VectorRelationBuilder(tensorizer)
+        tower_builder = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP)
         encoder = VectorObservationEncoder(vector, Catalog.load())
         encoder.reset()
         batch = encoder.encode()
@@ -254,13 +256,75 @@ def test_batched_relations_match_the_per_lane_oracle(crforge_runtime: None) -> N
         for step in range(50):
             groups = group_builder.build(batch)
             cards = cards_builder.build(batch)
-            relations = relations_builder.build(batch, cards, groups)
+            towers = tower_builder.build(batch)
+            relations = relations_builder.build(batch, cards, groups, towers)
             saw_edges = saw_edges or bool(relations.mask.any())
             mismatches = compare_relation_section(relations, tensorizer, batch, tables=tables)
             assert mismatches == [], f"step {step}: {mismatches}"
             _step(vector, 300 + step)
             encoder.encode(batch)
         assert saw_edges, "the fixture produced no relation edges"
+
+
+def test_batched_relations_use_the_actor_one_tower_tokens(crforge_runtime: None) -> None:
+    """Seat 1's tower token is its model row, not its native entity id."""
+
+    tensorizer = _tensorizer(actor_owner=1)
+    with _vector(count=4) as vector:
+        group_builder, tables = _builder(tensorizer, vector)
+        cards_builder = VectorCardBuilder(tensorizer)
+        relations_builder = VectorRelationBuilder(tensorizer)
+        tower_builder = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        saw_tower_edges = False
+        for step in range(40):
+            groups = group_builder.build(batch)
+            cards = cards_builder.build(batch)
+            towers = tower_builder.build(batch)
+            relations = relations_builder.build(batch, cards, groups, towers)
+            saw_tower_edges = saw_tower_edges or bool(
+                (relations.source[:1, : int(relations.mask[0].sum())] < 6).any()
+            )
+            mismatches = compare_relation_section(
+                relations, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP, seat=1
+            )
+            assert mismatches == [], f"step {step}: {mismatches}"
+            tower_mismatches = compare_tower_section(
+                towers, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP, seat=1
+            )
+            assert tower_mismatches == [], f"step {step}: {tower_mismatches}"
+            _step(vector, 500 + step)
+            encoder.encode(batch)
+        assert saw_tower_edges, "the fixture produced no tower relation edges"
+
+
+def test_group_velocity_signed_zero_follows_the_stock_accumulator(crforge_runtime: None) -> None:
+    """A flipped zero velocity is ``+0.0`` because the stock sum starts at 0.0."""
+
+    tensorizer = _tensorizer(actor_owner=1)
+    with _vector(count=1) as vector:
+        builder, _tables = _builder(tensorizer, vector)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        for step in range(40):
+            _step(vector, 600 + step)
+            encoder.encode(batch)
+        valid = np.flatnonzero(batch.entity_valid[0] & ~batch.entity_is_tower[0])
+        assert valid.size, "the fixture never deployed an entity"
+        slot = int(valid[0])
+        batch.entity_velocity[0, slot] = 0.0
+        batch.entity_velocity_valid[0, slot] = True
+        section = builder.build(batch)
+        row = int(section.group_index[0, slot])
+        assert row >= 0
+        features = section.groups.features[0, row].numpy()
+        for name in ("mean_velocity_x_over_10", "mean_velocity_y_over_10"):
+            value = features[GROUP_FEATURE_NAMES.index(name)]
+            assert value == 0.0
+            assert not np.signbit(value), name
 
 
 def test_pending_card_cell_is_the_seat_frame_mirror(crforge_runtime: None) -> None:

@@ -6,45 +6,53 @@
 
 ## Decisions — what changed
 
-### 2026-11-19 — BLOCKER: crforge observations are seat-framed; the native model is game-framed
+### 2026-11-19 — the game-frame fix is closed; both actor seats pass the digest gate
 
-While starting seat 1, a coordinate-frame divergence surfaced that is more
-important than the seat-1 work. The native path feeds the model **game**
-coordinates; the crforge bridge and the vector facts layer feed the **seat
-frame**, which for seat 0 mirrors x (`Schema.toSeatX(0, x) = width - x`).
+The native model consumes **game** coordinates; crforge fed the **seat frame**,
+so every crforge board was horizontally mirrored relative to the native path.
+The conversion now happens once per layer: the facts layer writes game
+coordinates, the bridge converts entity rows at one point, each seat's pending
+point and placement mask are converted once, and every row builder is
+actor-seat aware. The old evidence and the new proof:
 
-Evidence measured today:
+| path | play | observed unit |
+| --- | --- | --- |
+| native x86_64 16.635.1 | Skeletons at game `(6500, 10500)` | **(6499, 11079)**, (5997, 10212), (6998, 10212) |
+| crforge before the fix | same play | `18000 - x` (the seat frame) |
+| crforge after the fix | same play | **the same three game points** |
 
-- Native x86_64 16.635.1 engine (`crx_engine_host.py`, `CR_NATIVE_BUILD_ABI=x86_64`):
-  a Skeletons play on game cell `(6, 10)` observes the units at
-  **(6500, 10500)** — the commanded game point.
-- The same play on `CrforgeResidentEnv` observes them at
-  **(11002–12003, ~10212–11079)**, i.e. `18000 - x`: the seat-0 frame.
-- The vector pending header for that play is `pending_x = 11501` for game
-  `6500`, so the engine's pending/mask/action space is seat-framed while
-  `BattleEnvV1.action_mask` builds model masks in game coordinates.
+The engine's internal action/mask space stays seat-framed (the play was
+addressed with seat cell `(11, 10)`), while the facts-layer pending point is
+game-framed (`pending_x = 6499`). `tools/crforge/frame_crosscheck.py` runs that
+comparison against a live engine and records it in
+`runs/crforge-c3/frame-crosscheck.json` (**status pass**); the result is repeated
+in `FINDINGS.md` §3.55.
 
-Consequence: a policy trained on the native path sees a horizontally mirrored
-board and a differently-framed placement mask during crforge training, and every
-crforge evaluation to date was mirrored. C0/C2's bridge-vs-bridge evidence is
-still valid for legality/parity, but it does not validate the native frame. This
-must be fixed before C4 and before seat 1 can be gated.
+`batched_tensorize.py --seats 0 1` gates both owners of every lane against their
+own stock tensorizer: **3,008/3,008 lane-decisions digest-identical** (1,504 per
+seat), **0.0811 ms/lane-decision** stacked vs 0.605 per lane (**7.46×**),
+**0.1029 ms/lane-decision end to end** (~9,719 decisions/s); seed 2 reproduces
+it at **3,008/3,008**, 0.0787, 8.50×, 0.0992. The seat-1 gate found and fixed
+two defects: relation tower tokens now resolve through the tower model-row map,
+and group mean velocity reproduces the stock accumulator's signed zero.
+**C4 is unblocked.** Evidence: `runs/crforge-c3/batched-tensorize.json`,
+`-seed2.json`, `FINDINGS.md` §3.55.
 
-**Fix in progress (uncommitted at session end)** — see the session-23 section
-below for the exact files and remaining steps.
+### 2026-11-19 — C3-B closed: the batched packet is 7–8.5× the stock tensorizer
 
-### 2026-11-19 — C3-B closed: the batched packet is 8.5× the stock tensorizer
-
-The facts-only path now produces the whole `UniversalSemanticBatchV4` for every
+The facts-only path produces the whole `UniversalSemanticBatchV4` for every
 lane: `crforge_bridge/vector_tensorize.py` (stacked record + batched previous
 action), gated by `tools/crforge/batched_tensorize.py` on 256 learner-deck lanes
-× 40 decisions. **1,504/1,504 lane-decisions are `batch_digest`-identical** to
-the per-lane tensorizer, field by field, with sampled actions recorded on both
-paths. Timing per lane: **facts 0.0315 + tensorize 0.0807 + record 0.0060 =
-0.118 ms** — ~8,460 decisions/s per process, under C1's 0.5 ms/lane gate and a
-**7.75×** speedup on the tensorizer half. C3-B is done; **C4's batched self-play
-loop is next**, starting with seat 1 (the facts layer and builders are seat 0
-only). Evidence: `runs/crforge-c3/batched-tensorize.json`, `FINDINGS.md` §3.54.
+× 40 decisions, now for **both actor seats**. **3,008/3,008 lane-decisions are
+`batch_digest`-identical** to the per-lane tensorizer, field by field, with
+sampled actions recorded on both paths. Combined timing per lane-decision:
+**facts 0.0160 (0.0320 ms/lane, shared by both actors) + tensorize 0.0811 +
+record 0.0058 = 0.1029 ms** — ~9,719 decisions/s per process, under C1's
+0.5 ms/lane gate and a **7.46×** speedup on the tensorizer half (seed 2:
+8.50×, 0.0992 ms). The original
+single-seat C3-B record was **1,504/1,504** at 0.118 ms (7.75×).
+Evidence: `runs/crforge-c3/batched-tensorize.json`, `-seed2.json`,
+`FINDINGS.md` §3.54–§3.55.
 
 ### 2026-11-15 — crforge is the bulk trainer; the native engine is the gate
 
@@ -296,15 +304,82 @@ do not start another R0 run.
 
 ---
 
-## Session 23 (partial, uncommitted at wrap-up) — seat 1 and the game-frame fix
+## Session 24 results (2026-11-19) — frame fix closed; both seats gated; C4 unblocked
 
-**Read first:** this section, the blocker entry at the top, and
-`FINDINGS.md` §3.55 (to be written — the evidence is in this section for now).
+**Read first:** this section, the top entries, and `FINDINGS.md` §3.55.
 
-The session started on seat 1 and immediately found a frame divergence that has
-to land first. The changes below are a coherent checkpoint (the full bridge
-suite passes and the seat-0 digest gate re-passes), but seat 1's digest gate and
-the full 256-lane measurement are **not** done.
+### What changed
+
+- **`tools/crforge/batched_tensorize.py`** now takes `--seats 0 1`: one
+  `VectorTensorizer` and one stock tensorizer per actor, per-seat
+  `reference_scalar_observation(..., seat=...)` and
+  `reference_action_mask(..., seat=..., model_frame=False)`, and combined timing
+  (facts once + both tensorizes + both record calls) per lane-decision. The
+  artifact is schema `v2` with `by_seat` equivalence and timing blocks.
+- **`crforge_bridge/vector_rows.py`** fixes two seat-1 defects the gate found:
+  - `VectorRelationBuilder.build(...)` now takes the `VectorTowerSection` and
+    resolves tower sources/targets through `tower_index`. The stock relation
+    token for a tower is its **model row**, not its native id; under a flip
+    they differ, so every seat-1 tower edge was wrong. The section comparators
+    also gained `seat`, and the relation/tower tests now gate actor 1.
+  - Group mean velocity now adds `0.0` before the scale divide, reproducing the
+    stock accumulator's signed-zero rule (`0.0 + -0.0 == +0.0`). `torch.equal`
+    accepts the two; `batch_digest` hashes bytes, which is how the gate caught
+    it.
+- **`tools/crforge/frame_crosscheck.py`** — the native cross-check. It plays
+  the same card at the same game point in the x86_64 engine and in a one-lane
+  `VectorBattle`, advances one tick at a time, and compares the first spawned
+  frame. `runs/crforge-c3/frame-crosscheck.json` is **status pass**:
+  native and crforge both at `(5997, 10212)`, `(6499, 11079)`, `(6998, 10212)`;
+  facts-layer pending `(6499, 10500)` (game frame) for a play addressed with
+  seat cell `(11, 10)`.
+- `test_vector_tensorize.py` parameterizes the played-sequence digest over both
+  seats; `test_vector_rows.py` adds the actor-1 relation/tower gate, the tower
+  token-map pin and the signed-zero velocity test. Bridge suite **55 tests**,
+  ruff clean.
+
+### Measured (256 lanes × 40 decisions, `--seats 0 1`)
+
+`runs/crforge-c3/batched-tensorize.json`:
+
+| measurement | combined | seat 0 | seat 1 |
+| --- | ---: | ---: | ---: |
+| lane-decisions digest-identical | **3,008/3,008** | 1,504/1,504 | 1,504/1,504 |
+| stacked tensorize, ms/lane-decision | **0.0811** | 0.0823 | 0.1180 |
+| per-lane oracle, ms/lane-decision | 0.605 | 0.600 | 0.684 |
+| speedup | **7.46×** | 7.29× | 5.79× |
+| batched `record_action` | 0.0058 | 0.0057 | 0.0070 |
+| **end to end** | **0.1029 ms/lane-decision** | | |
+
+Facts are 0.0320 ms/lane (shared by both actors); ~9,719 decisions/s per
+process. Seed 2 reproduces it: **3,008/3,008**, 0.0787 ms/lane-decision,
+**8.50×**, **0.0992 ms/lane end to end**, both seats at ~0.079. Seat 1's slower
+first run tracked the oracle's slower timing on the same loaded host; quote
+paired runs, not a fixed seat ratio.
+
+### Next session (session 25) — C4
+
+1. **Wire the stacked batch into the C4 producer.** `producer.py` calls
+   `tensorize`/`record_action` per lane per owner today; replace that pair with
+   one call per decision using two `VectorTensorizer`s (one per actor) or extend
+   `VectorTensorizer` to both seats. The batched `ActionSequenceV4` is the row
+   source.
+2. **C4 gate, unchanged:** 8 lanes/process, 2–4 processes, 10 segments,
+   `rejected 0`, `eligible_act_rate > 0`, native eval not degrading; log
+   env-steps/s, tensorize ms, inference ms. Include NVIDIA MPS (the RoyaleFish
+   `ever_*` recipe).
+3. **Run the native cross-check** (`tools/crforge/frame_crosscheck.py`, engine
+   first) after every adapter change and alongside the 256-lane gate.
+4. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
+## Session 23 (committed as 2234c79) — seat 1 and the game-frame fix
+
+**Read first:** this section, the top entries, and `FINDINGS.md` §3.55.
+
+The session started on seat 1 and immediately found a frame divergence that had
+to land first. The changes below were a coherent checkpoint; session 24 finished
+the gate and the measurement (see the session-24 section above).
 
 ### The finding
 
@@ -352,35 +427,25 @@ record; its model-frame claim was never valid.
   tests; the pending-cell fixture is game-frame; the Tesla play helper converts
   its chosen game cell back to the engine's seat-frame action index.
 
-### Status
+### Status at session 23 end
 
-- `crforge_bridge/tests`: **52 passed** (includes the 4 `test_vector_tensorize`
-  tests).
+- `crforge_bridge/tests`: **52 passed** at that point.
 - Seat-0 digest spot-check after the change (64 lanes × 12 decisions, verify 8):
   **152/152 digest-identical**, 0.105 ms/lane tensorize, **0.148 ms/lane** end to
   end, 6.65× (`/tmp/opencode/seat0-after-frame.json`).
-- **Not done:** the 256 × 40 seat-0 artifact in
-  `runs/crforge-c3/batched-tensorize.json` predates the frame change and must be
-  re-run; `tools/crforge/batched_tensorize.py` has no `--seats` yet, so no
-  seat-1 digest, no two-seat timing, and `FINDINGS.md` §3.55 is not written.
-  The session-22 numbers in this file still describe the old (seat-framed)
-  facts; requote them after the re-run.
+- **Left open at that point:** the 256 × 40 artifact predated the frame change,
+  `batched_tensorize.py` had no `--seats`, and `FINDINGS.md` §3.55 was not
+  written. **Session 24 closed all three** (see the session-24 section).
 
-### Next session (session 24) — finish the frame fix, then C4
+### Session 24 carried these (now done)
 
-1. **Add `--seats 0 1`** to `batched_tensorize.py`: one `VectorTensorizer` and
-   one stock tensorizer per actor, per-seat `reference_scalar_observation(...,
-   seat=...)` and `reference_action_mask(..., seat=..., model_frame=False)`, and
-   a combined end-to-end cost (facts once + both tensorizes + both records).
-2. **Gate seat 1** against the stock actor-1 tensorizer on the same facts. This
-   is the first test of the dataclass-perspective path; expect the stock
-   `_card_sets`/`_candidates` pending and mask transforms to be the fragile
-   parts.
-3. **Re-run 256 × 40 for both seats** and replace the session-22 artifact
-   numbers. Add a native cross-check to the gate: a position from the x86 engine
-   and crforge must agree (the one-off used here is not a test yet).
-4. **Then C4** with the producer's per-lane pair replaced by the stacked
-   `VectorTensorizer` call. Do not scale lanes/GPUs before the two-seat gate.
+1. `--seats 0 1` with one tensorizer per actor and combined end-to-end timing.
+2. Seat 1 gated against the stock actor-1 tensorizer; it found the relation
+   tower-token and signed-zero velocity defects.
+3. 256 × 40 re-run for both seats; native cross-check
+   (`tools/crforge/frame_crosscheck.py`).
+4. **Next:** C4, with the producer's per-lane pair replaced by the stacked
+   `VectorTensorizer` call. Do not scale lanes/GPUs before C4's own gate.
 5. **Parity cadence:** unchanged — 50–150 native matches every N updates and
    after every adapter change; never promote on crforge.
 
@@ -455,11 +520,10 @@ files.
 
 ### Next session (session 23) — C4's batched self-play loop
 
-> **Session 23 started item 1 and stopped on a blocker:** seat 1 uncovered that
-> crforge observations were seat-framed while the native model is game-framed.
-> The fix is in the working tree (facts + bridge + seat-aware builders, 52 tests
-> pass); seat 1's digest gate and the re-measurement are still open. See the
-> session-23 section above.
+> **Closed in session 24:** the frame fix landed (commit `2234c79`) and both
+> seats now pass the whole-record digest gate (**3,008/3,008**), with the
+> x86_64 native cross-check passing. See the session-24 section above and
+> `FINDINGS.md` §3.55. The remaining work is C4.
 
 1. **Seat 1 is the open scope item.** The facts layer and every builder are
    seat 0 only, but self-play tensorizes both owners of each lane. Add a seat
@@ -1747,7 +1811,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | Vectorized observation facts | **new 2026-11-18, extended 2026-11-19** — `crforge_bridge/vector_observation.py` fills a fixed-size batch from `VectorBattle` for all lanes: both seats' headers/cards, all six towers, placement-mask views, champion ability slots (command ticks = a waiting ability), derived `age_ms`/`velocity`. **0.0317 ms/lane** (31,555 decisions/s) at 256 lanes/1 thread, **4.8×** the bridge's per-lane decoders, equivalence pass (`runs/crforge-c3/vector-observation.json`, `FINDINGS.md` §3.46). It is the precondition for C3-B, not the row build |
 | Batched group row build | **new 2026-11-19** — `crforge_bridge/vector_rows.py` builds `_groups`+children for all lanes from the facts layer; `VectorEntityTables` compiles card/archetype/child/extent/runtime-form semantics once. **Equivalence pass** over 40 decisions (256 lanes step 0, 32 after), `mismatches: []`; **0.0539 ms/lane** vs 0.2207 per-lane oracle (**4.09×**) at 256 lanes, max 14 entities/lane (`runs/crforge-c3/batched-groups.json`, `FINDINGS.md` §3.47). Section only — the rest of C3-B is open |
 | Batched card row build | **new 2026-11-19** — `VectorCardBuilder` fills the actor's eight-row set and the opponent's nine-row set for all lanes, including the **21-column** pending-execution schema (`pending_execution`, target cell with the even-footprint offset, ability pending; tick column neutralised by the checkpoint). **0.00161 ms/lane** vs 0.0718 oracle (**44.5×**), equivalence pass, 4 pending rows max (`runs/crforge-c3/batched-cards.json`, `FINDINGS.md` §3.48) |
-| Batched relation row build | **new 2026-11-19** — `VectorRelationBuilder` fills target/reverse-target and card→group edges; `VectorRelationSection.lane(n)` slices back to the per-lane `(1, count)` record. **0.00984 ms/lane** vs 0.0522 oracle (**5.30×**), equivalence pass, 40 edges max (`FINDINGS.md` §3.48) |
+| Batched relation row build | **new 2026-11-19** — `VectorRelationBuilder` fills target/reverse-target and card→group edges; tower sources/targets resolve through `VectorTowerSection.tower_index` (the model row, not the native id — the seat-1 fix); `VectorRelationSection.lane(n)` slices back to the per-lane `(1, count)` record. **0.00984 ms/lane** vs 0.0522 oracle (**5.30×**), equivalence pass, 40 edges max (`FINDINGS.md` §3.48, §3.55) |
 | Batched candidate row build | **new 2026-11-19** — `VectorCandidateBuilder` fills one row per legal hand slot: card/form/cost, own-card row, the native 32×18 placement grid, building half-footprint + `model_subcell_offset`, UID; `CandidateGeometry` compiles the card-static placement facts once. Slot rule is `BattleEnvV1`'s (in hand, not queued, affordable, ≥1 legal tile), not crforge's tile block. **0.00086 ms/lane** vs 0.0531 oracle (**61×**), equivalence pass over 40 decisions, 5,181 queued slots and 1,171 building rows exercised (`runs/crforge-c3/batched-candidates.json`, `FINDINGS.md` §3.49) |
 | Batched tower row build | **new 2026-11-19** — `VectorTowerBuilder` fills the six-row tower section per lane: actor-first/model-kind/native-id order, tile position, kind-sized extent, HP ratio, active and visible-target flags; the model view swaps the princess kinds under a flip. `VectorTowerSection.tower_index` is the `_relations` tower-token map. Pins: `status` empty, `tower_troop_id` static (`159000000`). **0.00104 ms/lane** vs 0.0349 oracle (**33.5×**), equivalence pass over 40 decisions, 61,440 active rows and 61,263 targeted rows (`runs/crforge-c3/batched-towers.json`, `FINDINGS.md` §3.50) |
 | Batched spatial planes | **new 2026-11-19** — `VectorSpatialPlaneBuilder` fills the 14-channel board per lane: per-side ground/airborne/building/projectile occupancy, hitpoints, shield and threat; a building fills its footprint, the health/threat channels always mark the entity's cell, and towers/ownerless rows are skipped. Archetype `is_airborne` / `static_damage_basis` / persistent-root facts are compiled into `VectorEntityTables`. Float32 addends preserve the per-lane loop's sequential rounding. **0.00392 ms/lane** vs 0.0499 oracle (**12.7×**), equivalence pass over 40 decisions, 35 building frames (`runs/crforge-c3/batched-spatial-planes.json`, `FINDINGS.md` §3.51) |
@@ -2583,7 +2647,7 @@ Scale options, in order of leverage:
 | `.resource/crforge/env/build/install/env` | Installed JVM env distribution for `VectorBattle` |
 | `~/.crforge/tables/16.635.8` | Pinned game tables (also 16.635.3); record the lock with every run |
 | `crforge_bridge/` | `BattleEnvV1` bridge for evaluation/parity; 152/152 cards, 118 forms. `native_runner/crforge_resident.py` presents the same surface in-process |
-| `crforge_bridge/vector_rows.py` | **C3-B row build** — `VectorGroupBuilder` (`_groups`+children), `VectorCardBuilder` (own/opponent sets incl. the 21-column pending schema), `VectorTowerBuilder` (the six-row tower section + `_relations` tower-token map), `VectorSpatialPlaneBuilder` (the 14-channel explicit planes), `VectorScalarBuilder` (the 18 match scalars), `VectorEmptySectionBuilder` (the empty effect/event records), `VectorCandidateBuilder` (legal hand slots, native placement grid, building geometry), `VectorRelationBuilder` (target/reverse/card→group edges) over a whole `VectorBattle` batch; `reference_observation` / `reference_action_mask` project the per-lane oracle input from the same facts |
+| `crforge_bridge/vector_rows.py` | **C3-B row build** — `VectorGroupBuilder` (`_groups`+children), `VectorCardBuilder` (own/opponent sets incl. the 21-column pending schema), `VectorTowerBuilder` (the six-row tower section + the tower model-row map), `VectorSpatialPlaneBuilder` (the 14-channel explicit planes), `VectorScalarBuilder` (the 18 match scalars), `VectorEmptySectionBuilder` (the empty effect/event records), `VectorCandidateBuilder` (legal hand slots, native placement grid, building geometry), `VectorRelationBuilder` (target/reverse/card→group edges, tower tokens through `tower_index`) over a whole `VectorBattle` batch; every builder is actor-seat aware; `reference_observation` / `reference_action_mask` project the per-lane oracle input from the same facts |
 | `tools/crforge/batched_groups.py` | **C3-B group gate** — per-lane `_groups` oracle vs the batched section; writes `runs/crforge-c3/batched-groups.json` |
 | `tools/crforge/batched_cards.py` | **C3-B card/relation gate** — reads the checkpoint's own `model_config` (21 card columns), verifies both sections against the stock methods, then times them paired; writes `runs/crforge-c3/batched-cards.json` |
 | `tools/crforge/batched_towers.py` | **C3-B tower gate** — 256 learner-deck lanes, `TowerSetV4` validation and full section equivalence every step, paired timing, the two envelope pins on the artifact; writes `runs/crforge-c3/batched-towers.json` |
@@ -2591,10 +2655,12 @@ Scale options, in order of leverage:
 | `tools/crforge/batched_scalars.py` | **C3-B scalar gate** — 256 learner-deck lanes, full scalar equivalence with the oracle's own group/candidate counts, paired timing; writes `runs/crforge-c3/batched-scalars.json` |
 | `tools/crforge/batched_empty_sections.py` | **C3-B empty-record gate** — 256 learner-deck lanes, both records validated and compared every step, paired timing; writes `runs/crforge-c3/batched-empty-sections.json` |
 | `tools/crforge/batched_candidates.py` | **C3-B candidate gate** — 256 learner-deck lanes past the start cooldown, `ActionCandidatesV4` validation and full section equivalence every step, paired timing; writes `runs/crforge-c3/batched-candidates.json` |
+| `tools/crforge/batched_tensorize.py` | **C3-B end-to-end gate** — 256 learner-deck lanes × 40 decisions, `--seats 0 1` drives one `VectorTensorizer` and one stock tensorizer per actor, compares whole records field by field plus `batch_digest`, records actions on both paths, and reports combined timing per lane-decision; writes `runs/crforge-c3/batched-tensorize.json` |
+| `tools/crforge/frame_crosscheck.py` | **Native frame gate** — one play at the same game point in the x86_64 engine and a one-lane `VectorBattle`, compared on the first spawned frame; also records the facts-layer pending point; writes `runs/crforge-c3/frame-crosscheck.json` |
 | `crforge_bridge/tests/test_encoder_spike.py` | Pins the C1 encoders to the bridge's own facts and card-parameter packing |
 | `runs/crforge-c0-20261116/` | C0 legality soak: 20 games, `illegal`, `truncated`, `rejected_total` counters |
 | `runs/crforge-c1/` | C1 encoder-spike JSON (`encoder-spike.json`), default shape 256 × 200 × 3 |
-| `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json`; the C3-B section gates `vector-observation.json`, `batched-groups.json`, `batched-cards.json`, `batched-candidates.json`, `batched-towers.json`, `batched-spatial-planes.json`, `batched-scalars.json`, `batched-empty-sections.json`; `learner-deck/` holds the locked-deck match config, the clean 2-game rollout and its tensorizer profile |
+| `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json`; the C3-B section gates `vector-observation.json`, `batched-groups.json`, `batched-cards.json`, `batched-candidates.json`, `batched-towers.json`, `batched-spatial-planes.json`, `batched-scalars.json`, `batched-empty-sections.json`; the both-seat end-to-end gate `batched-tensorize.json` (+ `-seed2.json`) and the native frame check `frame-crosscheck.json`; `learner-deck/` holds the locked-deck match config, the clean 2-game rollout and its tensorizer profile |
 | `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator and **locked X-Bow learner deck** constants (`DECK`, `LEARNER_DECK`, form availability), tower troop, release scope, one session per seat — used by all crforge tools; takes `port=` (socket bridge) or `native=` (resident adapter) |
 | `tools/crforge/resident_parity.py` | **C2 deliverable** — resident vs bridge, decision for decision: parity digests (native/rich/atomic, masks, rewards, terminals) + paired `env.step` timing; writes `runs/crforge-c2/resident-parity.json` |
 | `tools/crforge/profile_tensorizer.py` | **C3 deliverable** — replays a live policy episode's `tensorize`+`record_action` under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical; `--profile-decisions 0` is the timing-only A/B mode |

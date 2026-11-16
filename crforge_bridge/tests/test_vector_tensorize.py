@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 from crforge_bridge.catalog import Catalog
@@ -32,11 +33,11 @@ RELEASE = "16.635.1"
 STANDARD_GAME_MODE = 72_000_006
 
 
-def _tensorizer() -> UniversalObservationTensorizerV4:
+def _tensorizer(seat: int = 0) -> UniversalObservationTensorizerV4:
     bundle = production_semantic_bundle(RELEASE)
     identity = load_release(RELEASE).identity
     return UniversalObservationTensorizerV4(
-        actor_owner=0,
+        actor_owner=int(seat),
         card_catalog=bundle.card_catalog,
         ability_catalog=bundle.ability_catalog,
         entity_archetype_catalog=bundle.entity_archetype_catalog,
@@ -106,7 +107,7 @@ def _rows(vector, tensorizer):
     return encoder, batch, rows
 
 
-def _reference(stock, rows, batch, lane: int):
+def _reference(stock, rows, batch, lane: int, seat: int = 0):
     return reference_scalar_observation(
         batch,
         lane,
@@ -114,7 +115,8 @@ def _reference(stock, rows, batch, lane: int):
         tensorizer=stock,
         timeline=rows.scalar_builder.timeline,
         tower_troop_id=TOWER_TROOP,
-        action_mask=reference_action_mask(batch, lane, tensorizer=stock),
+        seat=int(seat),
+        action_mask=reference_action_mask(batch, lane, tensorizer=stock, seat=int(seat), model_frame=False),
         episode_id=f"lane{lane}",
     )
 
@@ -153,17 +155,20 @@ def _action_sequence(candidates, config: ModelConfigV4) -> ActionSequenceV4:
     )
 
 
-def test_facts_tensorize_is_digest_identical_over_a_played_sequence(crforge_runtime: None) -> None:
-    """Every lane of the stacked record equals the stock tensorizer, row for row."""
+@pytest.mark.parametrize("seat", [0, 1])
+def test_facts_tensorize_is_digest_identical_over_a_played_sequence(
+    crforge_runtime: None, seat: int
+) -> None:
+    """Every lane of the stacked record equals the actor's stock tensorizer, row for row."""
 
-    tensorizer = _tensorizer()
+    tensorizer = _tensorizer(seat)
     config = tensorizer.config
     with _vector(count=2) as vector:
         encoder, batch, rows = _rows(vector, tensorizer)
         stock_by_lane = {}
         for lane in range(2):
-            stock = _tensorizer()
-            stock.start_episode(_reference(stock, rows, batch, lane))
+            stock = _tensorizer(seat)
+            stock.start_episode(_reference(stock, rows, batch, lane, seat))
             stock_by_lane[lane] = stock
         for _ in range(60):
             _step(vector, 1, 0.0)
@@ -174,7 +179,7 @@ def test_facts_tensorize_is_digest_identical_over_a_played_sequence(crforge_runt
             stacked = rows.tensorize(batch, validate=(step == 0))
             for lane in range(2):
                 stock = stock_by_lane[lane]
-                expected = stock.tensorize(_reference(stock, rows, batch, lane), validate=False)
+                expected = stock.tensorize(_reference(stock, rows, batch, lane, seat), validate=False)
                 actual = lane_batch(stacked, lane)
                 assert compare_semantic_batches(actual, expected) == []
                 assert batch_digest(actual) == batch_digest(expected)
@@ -183,7 +188,9 @@ def test_facts_tensorize_is_digest_identical_over_a_played_sequence(crforge_runt
             for lane in range(2):
                 stock_by_lane[lane].record_action(
                     lane_sequence(sequence, lane),
-                    stock_by_lane[lane].tensorize(_reference(stock_by_lane[lane], rows, batch, lane), validate=False),
+                    stock_by_lane[lane].tensorize(
+                        _reference(stock_by_lane[lane], rows, batch, lane, seat), validate=False
+                    ),
                     row=0,
                     validate=True,
                 )
