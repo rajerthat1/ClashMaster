@@ -6,6 +6,44 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — C4 stores a rollout, and the reward is the native reward
+
+`crforge_bridge/rollout.py` turns `tools/crforge/self_play.py` from a probe into
+a collector: every decision stores the stacked observation, the sampled action,
+the behaviour log-probability, the behaviour value and a reward, and each
+segment finalizes into the shared `StoredRolloutV4` — the same GAE
+(`generalized_advantage_estimate`) and validation the native PPO path uses.
+Storing is the default; `--no-rollout` keeps the throughput probe.
+
+- **The reward is `BattleEnvV1._rewards` rebuilt from the facts:** the terminal
+  result plus potential-based shaping over crowns and tower damage
+  (`shaping_beta 0.05`, `gamma_per_decision 0.9997`). It is gated against the
+  native `_potential`/`_rewards` on the same towers and against the engine's own
+  terminal reward on every ended lane (**0 mismatches** in the gate run). A
+  time-limit cut stores no shaping term, because the engine has already
+  autoreset the lane.
+- **Gate shape green with storage on:** 8 × 10 × 64 = **10,240 lane-decisions**,
+  **429 ACT / 9,877 eligible (4.34 %)**, **0 rejected**, **37.8
+  lane-decisions/s** (39.0 probe-only), forward still 94 % of the packet.
+  Storage costs ~3.2 ms/decision and 57 MiB per 64-decision segment (16 rows,
+  fp16), 573 MiB for the ten-segment run.
+- **Autoreset lanes are stored correctly:** the 4-lane `--max-ticks 600` run
+  stores 4 autoresets as 8 mid-rollout truncations and 8 `episode_start` rows at
+  the following decision, with finite GAE.
+- **The second micro-action is exercised by a run, not just a unit test:**
+  `--force-second-micro` appends a *different* legal play at the sampled play's
+  own delay bin — **22 forced, 18 shifted, 4 dropped, 0 illegal**. The first
+  version duplicated the sampled play and the engine refused it: the action's
+  slot was closed at the next tick (the queued play, or a tile the play
+  invalidated). The probe now picks another hand slot and a tile its own
+  placement grid opens.
+- **Open:** `distributed_ppo_update_v4` requires one episode per lane, so a
+  segment that autoresets a lane cannot feed it yet; the update has to honour
+  `episode_start` mid-rollout (the evaluation path already does). CUDA/MPS
+  throughput and the native parity cadence are unchanged.
+
+See the session-27 section below and `FINDINGS.md` §3.58.
+
 ### 2026-11-19 — upstream PR #12 (visual decks, exact offline duels) merged
 
 `FirstLight_CR#12` (SeiShonagon520) is in `main` as `f5d9485`. What it changes
@@ -380,6 +418,99 @@ do not start another R0 run.
 
 ---
 
+## Session 27 results (2026-11-19) — C4 stores a rollout; the native reward and the second micro-action
+
+**Read first:** this section, `FINDINGS.md` §3.58, and the session-26 section
+below.
+
+### What landed
+
+- **`crforge_bridge/rollout.py`** — the C4 rollout store. Per decision it
+  retains the stacked observation, the sampled `ActionSequenceV4`, the behaviour
+  log-probability and value, the reward (`(lanes, seats)`, flattened to
+  `lane * seats + seat`) and the per-lane `episode_start` / `terminated` /
+  `truncated` masks. `finalize(boundary_value=...)` returns a validated
+  `StoredRolloutV4`, so C4 shares the native GAE and minibatch contract instead
+  of growing a second rollout format.
+- **`PotentialShapingReward`** — `BattleEnvV1._rewards` from the vectorized
+  facts: terminal result + potential shaping (crowns, king weight 3, princess 1,
+  antisymmetric, zero terminal potential), with `CrforgeRewardConfig` pinning
+  `shaping_beta` and `gamma_per_decision`. A `max_ticks` cut stores a zero
+  shaping term because the lane has already autoreset.
+- **`rollout_next_values`** — next-step values with the segment-end truncation
+  bootstrap and no trace across a terminal; a mid-rollout time-limit cut
+  bootstraps from zero.
+- **`tools/crforge/self_play.py`** — the post-window facts encode moved to the
+  end of the decision (it is both the reward state and the next observation);
+  the terminal result is read on the tick it is written, before the autoreset
+  clears it; each segment does one boundary forward and finalizes its rollout;
+  new flags `--no-rollout`, `--shaping-beta`, `--gae-lambda`,
+  `--force-second-micro {off,shift,drop,alternate}`. Artifact schema is now
+  `crforge-self-play.v2` with a `rollout` block and a `reward_result_mismatches`
+  gate.
+- **The forced two-action probe** appends a *different* legal play from the open
+  candidates at the first play's own delay bin: shift when the first play runs
+  before the window's last tick, drop when it already runs there. It is refused
+  with rollout storage (the stored sampled action would not be what ran).
+- **`crforge_bridge/tests/test_rollout.py`** — 7 tests, including the native
+  `_rewards` differential and a live inference-mode record.
+
+### Measured
+
+Gate shape with storage, `runs/crforge-c4/self-play-rollout.json`:
+
+| measurement | value |
+| --- | ---: |
+| decisions / lane-decisions | 640 / **10,240** |
+| ACT / eligible | **429 / 9,877 (4.34 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| reward vs engine-terminal mismatches | **0** |
+| lane-decisions per second | **37.8** (probe-only: 39.0) |
+| wall | 270.7 s (probe-only: 262.4 s) |
+| tensorize / forward / decode / five steps | 19.2 / **355.0** / 3.4 / 6.7 ms |
+| post-window facts / reward + store write | 1.83 / 3.18 ms |
+| stored | 64 × 16 rows, 57.2–57.4 MiB/segment, **573.1 MiB** |
+| episode starts / terminals / boundary truncations | 16 / 0 / 16 |
+| GAE | finite, advantage mean −0.068, std 0.110 |
+
+Autoreset store (`--count 4 --segments 2 --decisions-per-segment 60
+--max-ticks 600`, `runs/crforge-c4/self-play-autoreset-rollout.json`): **4
+autoresets**, **8 mid-rollout truncations**, **8 `episode_start` rows at the next
+decision**, 0 terminals, 0 illegal, GAE finite.
+
+Second micro-action (`--count 8 --decisions-per-segment 40
+--force-second-micro alternate --no-rollout`,
+`runs/crforge-c4/self-play-two-micro.json`): **22 forced, 18 shifted, 4 dropped,
+0 illegal, gate pass**.
+
+### Found by running it
+
+1. **A duplicate micro-action is illegal.** The first forced probe repeated the
+   sampled play one tick later; the engine refused it because the queued hand
+   slot is closed at the next tick. The probe now appends a different slot.
+2. **The reward/result agreement check earns its keep.** The producer asserts
+   `vector.rewards == terminal result` on every ended lane; it is now a gate
+   field (`reward_result_mismatches`, 0 in both runs).
+3. **Storage is a real resource:** ~0.9 MiB per decision at 16 rows. A
+   64-decision segment is ~57 MiB, so a store must be finalized per segment (as
+   the producer does) rather than accumulated.
+
+### Next session (session 28) — make the rollout updatable
+
+1. **PPO update over an episode-boundary rollout.** `distributed_ppo_update_v4`
+   rejects an `episode_start` after step 0; either teach it per-lane episode
+   boundaries (`evaluate_recurrent_sequence` already takes `episode_start` per
+   step and GAE already stops the trace), or have the producer end a lane at its
+   terminal. Gate: one update over the stored gate-shape rollout, 0 rejected.
+2. **CUDA path + throughput.** The forward is still 88 % of wall (355 ms at 16
+   rows on CPU). Run the same gate shape on the A6000 and with MPS, and log
+   lane-decisions/s at 8 and 32 rows.
+3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
+   and after every adapter change; crforge is never a promotion gate.
+4. **Keep the forced probe in the gate set.** The sampled policy still emits one
+   micro-action, so `--force-second-micro` is the only run that exercises the
+   collision/drop path.
+
 ## Session 26 results (2026-11-19) — the C4 producer loop and its gate
 
 **Read first:** this section, `FINDINGS.md` §3.57, and the session-25 section
@@ -453,10 +584,17 @@ artifact says so.
 
 ### Next session (session 27) — make C4 a trainer
 
+> **Session 27 did items 1 and 4** (`FINDINGS.md` §3.58): the producer stores a
+> validated `StoredRolloutV4` per segment behind the native reward, and
+> `--force-second-micro` exercises the shift/drop path through the engine. Item
+> 2 (CUDA) needs a GPU box; item 3 (parity cadence) is unchanged. The update
+> itself is still open — it has to honour an `episode_start` after step 0. See
+> the session-27 section above.
+
 1. **Rollout storage.** Store the per-decision packet (batch, state, sampled
    action, log-prob, value, reward, `episode_start`) and compute returns/GAE on
    autoreset boundaries. The recurrent state is already per row and the previous
-   action is already the training record.
+   action is already the training record. **Done 2026-11-19.**
 2. **CUDA path + throughput.** Run the same gate shape on the A6000 (and with
    MPS, the RoyaleFish `ever_*` recipe). The forward is 88 % of CPU wall, so
    batch/device are the only remaining knobs; log lane-decisions/s at 8 and 32
@@ -466,6 +604,8 @@ artifact says so.
 4. **Second micro-action exercise.** The sampled policy produced none; either
    find a checkpoint/state that emits two actions or drive the loop with a forced
    two-action sequence so the collision/drop counters are exercised end to end.
+   **Done 2026-11-19** (`--force-second-micro`: 22 forced, 18 shifted, 4
+   dropped, 0 illegal).
 
 ## Session 25 results (2026-11-19) — C4's missing half: the batched action decode
 
@@ -2092,7 +2232,9 @@ Yes — but as a **parity oracle**, not the training engine.
 | Batched-group gate | **new 2026-11-19** — `tools/crforge/batched_groups.py`; steps real learner-deck vector lanes, compares every group/child tensor against the stock `_groups` oracle on facts-projected `EntityStateV1` rows, then times both paired over all 256 lanes |
 | Batched-card gate | **new 2026-11-19** — `tools/crforge/batched_cards.py`; reads the checkpoint's own `model_config` (21 card columns for `B-general-v275`), compares card and relation tensors against the stock sections every step, then times both paired. This is the gate that proves the 16.x schema, not the default 16-column one |
 | Batched-row tests | `crforge_bridge/tests/test_vector_rows.py` (26 tests): 50-decision group equivalence, forced overflow, empty-board masks, reference-entity projection, seat-0 guard, 21-column card equivalence, relation equivalence, pending-cell mirror rule, waiting-ability column, tracker guard, 50-decision candidate equivalence with record validation, the candidate slot rule (pending / unaffordable / empty tile block), the 2×2 vs 3×3 building geometry, the Mirror refusal, tower equivalence, the tower model-view flip, the static tower-troop pin, destroyed/absent tower rows, spatial-plane equivalence with a forced Tesla, the archetype projection for airborne/threat, towers-only/neutral rows, scalar equivalence, the standard phase schedule, the tracker refusal, empty effect/event equivalence with record validation, the empty-section seat guard. Bridge suite **66 tests**, all pass |
-| **C4 self-play producer** | **new 2026-11-19** — `tools/crforge/self_play.py` plays one `VectorBattle` (8 lanes), both actor seats in one recurrent forward, decodes both seats back into engine indices, and steps the engine one tick at a time so the second micro-action keeps its delay bin (`plan_window_ticks`). **Gate shape 8 × 10 × 64: 10,240 lane-decisions, 429/9,877 eligible lanes acted (4.34 %), 0 illegal / 0 faults / 0 rejected, 39.0 lane-decisions/s, 97.6 env-steps/s on CPU**; the forward is 359.7 of ~410 ms per decision. Autoreset run (4 lanes, `--max-ticks 600`): 4 resets, 29/790 acted, 0 rejected. No rollout storage/PPO yet (`runs/crforge-c4/self-play.json`, `-autoreset.json`, `FINDINGS.md` §3.57) |
+| **C4 self-play producer** | **new 2026-11-19** — `tools/crforge/self_play.py` plays one `VectorBattle` (8 lanes), both actor seats in one recurrent forward, decodes both seats back into engine indices, and steps the engine one tick at a time so the second micro-action keeps its delay bin (`plan_window_ticks`). **Gate shape 8 × 10 × 64: 10,240 lane-decisions, 429/9,877 eligible lanes acted (4.34 %), 0 illegal / 0 faults / 0 rejected, 39.0 lane-decisions/s, 97.6 env-steps/s on CPU**; the forward is 359.7 of ~410 ms per decision. Autoreset run (4 lanes, `--max-ticks 600`): 4 resets, 29/790 acted, 0 rejected. Rollout storage on by default since session 27 (`--no-rollout` is the probe). `runs/crforge-c4/self-play.json`, `-autoreset.json`, `FINDINGS.md` §3.57, §3.58 |
+| **C4 rollout storage** | **new 2026-11-19** — `crforge_bridge/rollout.py`: the native PPO reward (terminal result + potential shaping over crowns/tower damage, gated against `BattleEnvV1._rewards` and against the engine's own terminal reward) and one validated `StoredRolloutV4` per segment with a boundary bootstrap. **Gate shape unchanged: 10,240 lane-decisions, 429/9,877 ACT (4.34 %), 0 rejected, 37.8 lane-decisions/s; 0 reward/terminal mismatches; 57.2–57.4 MiB per 64-decision segment, 573.1 MiB total.** Autoreset run: 4 autoresets → 8 mid-rollout truncations + 8 `episode_start` rows, GAE finite. **Open:** `distributed_ppo_update_v4` requires one episode per lane, so the update must honour a mid-rollout `episode_start` (`runs/crforge-c4/self-play-rollout.json`, `-autoreset-rollout.json`, `FINDINGS.md` §3.58) |
+| **Second micro-action probe** | **new 2026-11-19** — `self_play.py --force-second-micro {shift,drop,alternate}` appends a different legal play at the sampled play's own delay bin; a duplicated play is refused by the engine (the queued slot closes). 8 lanes × 40 decisions: **22 forced, 18 shifted, 4 dropped, 0 illegal, gate pass** (`runs/crforge-c4/self-play-two-micro.json`) |
 
 ### State at handoff (processes are ephemeral)
 
