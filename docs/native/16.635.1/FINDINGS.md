@@ -4111,3 +4111,125 @@ The bridge suite is **62 tests**, all passing; ruff clean.
 Evidence: `runs/crforge-c4/vector-decode.json`,
 `crforge_bridge/vector_actions.py`, `crforge_bridge/tests/test_vector_actions.py`,
 `tools/crforge/vector_decode.py`.
+
+### 3.57 The C4 producer loop — batched self-play over the vector engine (2026-11-19)
+
+C3-B stacks the facts and §3.56 decodes a stacked action row, but nothing yet
+closed the loop: there was no crforge self-play producer at all. Session 25
+established that `producer.py` and the PPO worker are native `ObservationV1`
+lanes, so this is a new file, not a port. `tools/crforge/self_play.py` plays one
+`VectorBattle` of `--count` matches in lockstep: per policy decision it encodes
+the facts for every lane, tensorizes both actor seats, stacks the `count * 2`
+rows into one batch, runs **one** recurrent forward, decodes both seats'
+sampled actions back into engine indices, and steps the vector.
+
+#### Shape
+
+| element | value |
+| --- | --- |
+| engine cadence | `LadderConfig(decision_ticks=1)`, five `vector.step()` per policy decision |
+| policy cadence | the checkpoint's own `decision_ticks` (5 for `B-general-v275`) |
+| actor rows | `count * 2` in `lane * 2 + seat` order, one `RecurrentPolicyStateV4` |
+| `episode_start` | per row, from the vector's own `reset` info flag |
+| previous action | `record_action` every decision, `reset_rows` on exactly the autoreset lanes |
+| warmup | 90 ticks (`FIRST_PLAYABLE_TICK`), no actions |
+| candidates | deploy only (the §3.56 envelope) |
+| rollout storage | none — this is the collection/throughput probe |
+
+#### The second micro-action keeps its own tick
+
+The vector action index carries **one action per seat per step**, so a five-tick
+engine step would execute the first micro-action and silently discard the
+second. The producer steps one tick at a time and `plan_window_ticks`
+(`crforge_bridge/vector_actions.py`) places each micro-action: its execute offset
+is `1 + delay_offset_ms // 50`, so the action is given at `offset - 1` ticks
+inside the window (bins 0–4 map onto ticks 0–4 of the five-tick window). Two
+actions that would share a tick push the later one one tick forward; an action
+that would leave the window is dropped. Both events are counted per segment and
+in the totals, so a timing difference can never be silently absorbed. The
+producer also refuses a checkpoint whose window is shorter than
+`1 + max(delay_offset_ms) // 50` ticks.
+
+#### Two defects found by running it
+
+* **The warmup loop never exited.** `int(batch.tick[:, 0].min(initial=0))` looks
+  like "minimum, or zero when empty", but `initial` seeds the reduction: with
+  non-negative ticks it returns `0` every time. The producer stepped whole
+  matches (the counter passed 346,000 iterations, ~57 matches) instead of 90
+  ticks, which is what the first "hang" was. Plain `min()` fixes it.
+* **The previous-action record was an inference tensor.** `record_action` copied
+  the sampled `gate`/`micro_action_count` with `.clone()` inside the collection's
+  `inference_mode`, so the record inherited that mode and `reset_rows` — and any
+  PPO write — raised *inplace update to inference tensor outside InferenceMode*.
+  `VectorTensorizer._empty_previous_action` and those two copies now build under
+  `torch.inference_mode(False)`: the record is owned training data, not model
+  output. A test samples under `inference_mode` and then resets rows outside it.
+
+The autoreset plumbing that the loop needs also landed here: the encoder tracks
+its tick offset **per lane** (a self-play vector restarts one lane at a time, so
+a single barrier made every other lane jump backwards) and clears that lane's
+derived `age_ms`/velocity, and `VectorTensorizer.reset_rows(mask)` clears only the
+lanes that started a new episode.
+
+#### Gate
+
+`tools/crforge/self_play.py --count 8 --segments 10 --decisions-per-segment 64`
+(both seats, validated every decision), `runs/crforge-c4/self-play.json`:
+
+| measurement | value |
+| --- | ---: |
+| decisions / lane-decisions | 640 / **10,240** |
+| ACT lane-decisions / eligible | **429 / 9,877 (4.34 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| lane-decisions per second | **39.0** |
+| env steps per second (lane-ticks) | **97.6** |
+| wall (10 segments) | 262.4 s |
+| facts + reset rows, ms/decision | 1.73 |
+| stacked tensorize (both seats), ms/decision | 13.41 |
+| **recurrent forward, ms/decision** | **359.7** |
+| both decodes + `record_action`, ms/decision | 3.19 |
+| five engine steps, ms/decision | 6.36 |
+
+Per actor row the forward costs ~22.5 ms, so it is **94 % of the timed packet**
+and 88 % of the 410 ms wall per decision: facts, tensorize, decode and stepping
+together are ~25 ms. A first run of the same shape measured 43.4
+lane-decisions/s (235.8 s), so the run-to-run spread is ~10 % on this host. That is
+the C4 conclusion the loop was built to produce — the bridge half is no longer
+the cost, and further CPU tuning cannot help. The comparison that matters is the
+native PPO worker's **29 lane-decisions/s** (1 engine × 8 lanes, §3.37) against
+**39.0** here on the same 17M model and the same CPU.
+
+A second run (`runs/crforge-c4/self-play-autoreset.json`, 4 lanes, 2 × 60
+decisions, `--max-ticks 600`) exercises the reset path: **4 autoresets, 29/790
+eligible lanes acted (3.67 %), 0 illegal, 0 faults**. The gate-shape run starts
+at tick 90 and covers 3,200 ticks, so it sees no terminal; the short-episode run
+is the one that proves an autoreset mid-window does not send the old episode's
+actions into the new one.
+
+The sampled policy produced **no two-micro-action decisions** in either run, so
+the collision/drop counters are 0: the rule is gated by unit tests, not by the
+sampled policy. That is recorded here rather than presented as exercised.
+
+#### Fidelity pins (unchanged, and now on the artifact)
+
+* deploy candidates only — no ability source, no Mirror runtime;
+* one extra `vector.step()` when a terminal lands on the window's last tick, so
+  the next decision reads a live episode (shifts the cadence by one tick; the
+  terminal case is the autoreset run, not the gate shape);
+* no rollout storage, returns or PPO update yet — the artifact says so;
+* CPU device, `seed 1`, checkpoint `B-general-v275`
+  (`fd756235…f781c`), tables 16.635.8, release 16.635.1.
+
+#### Tests
+
+`plan_window_ticks` is gated in `test_vector_actions.py` (delay bins, a
+collision shift, a full-window drop, bin order, the window/offset guards) with
+the rest of the decode, and the per-lane clock, `reset_rows` and the
+inference-mode record each have a test in their own file. Bridge suite **66
+tests**, all passing; the touched files are ruff clean.
+
+Evidence: `runs/crforge-c4/self-play.json`,
+`runs/crforge-c4/self-play-autoreset.json`, `tools/crforge/self_play.py`,
+`crforge_bridge/vector_actions.py` (`plan_window_ticks`),
+`crforge_bridge/vector_observation.py` (per-lane clock),
+`crforge_bridge/vector_tensorize.py` (`reset_rows`, owned record).

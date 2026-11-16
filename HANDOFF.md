@@ -6,6 +6,30 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — C4's producer loop runs; the forward is the whole packet
+
+`tools/crforge/self_play.py` is the first crforge self-play producer: one
+`VectorBattle` of 8 lanes, both actor seats in **one** recurrent forward, both
+seats' sampled actions decoded back into engine indices, and the engine stepped
+**one tick at a time** so a second micro-action keeps its own delay bin
+(`plan_window_ticks` in `crforge_bridge/vector_actions.py`). The C4 gate shape
+passes — 10,240 lane-decisions, **429/9,877 eligible lanes acted (4.34 %)**,
+**0 illegal, 0 faults, 0 rejected**, **39.0 lane-decisions/s**, 97.6
+env-steps/s on CPU (`runs/crforge-c4/self-play.json`, `FINDINGS.md` §3.57).
+
+The measurement that decides the next step: the **forward is 359.7 ms of a
+~410 ms decision (88 % of wall, 94 % of the timed packet)**; facts 1.7,
+tensorize 13.4, both decodes 3.2, five engine steps 6.4. The bridge half is
+done; C4's remaining work is GPU throughput and rollout storage/PPO, not more
+CPU tuning.
+
+Two defects were found by running it, both recorded: the warmup loop's
+`np.min(initial=0)` (which seeds the reduction and pinned the minimum to zero,
+so the loop stepped ~57 matches) and the previous-action record being an
+inference tensor (so `reset_rows` and a future PPO write raised outside
+`inference_mode`). The per-lane tick clock and `VectorTensorizer.reset_rows`
+landed as the autoreset plumbing. See the session-26 section below.
+
 ### 2026-11-19 — C4's action path is closed, and there is no producer yet
 
 The model's sampled `ActionSequenceV4` now decodes straight into the vector
@@ -319,6 +343,93 @@ do not start another R0 run.
 > §3.43.
 
 ---
+
+## Session 26 results (2026-11-19) — the C4 producer loop and its gate
+
+**Read first:** this section, `FINDINGS.md` §3.57, and the session-25 section
+below.
+
+### What landed
+
+- **`tools/crforge/self_play.py`** — the crforge self-play producer. One
+  `VectorBattle` (`--count` lanes), the checkpoint's model, two
+  `VectorTensorizer`s and two `VectorActionDecoder`s. Per decision: `reset_rows`
+  for autoreset lanes → `encode` → two stacked `tensorize` calls → interleave to
+  `lane * 2 + seat` → **one** `sample_for_ppo_rollout` with a `count * 2`
+  recurrent state and a per-row `episode_start` → two decodes + `record_action`
+  → five engine steps. It counts env-steps/s, facts/tensorize/inference/decode
+  ms, ACT rate, micro-action timings, resets, illegals and faults.
+- **`plan_window_ticks`** (`crforge_bridge/vector_actions.py`) — the second
+  micro-action's timing. The engine is stepped one tick at a time, so each
+  micro-action is given at `offset - 1` inside the five-tick window; a collision
+  shifts the later action one tick, a full window drops it, and both are
+  counted. A checkpoint whose window is shorter than its delay bins is refused.
+- **The autoreset plumbing the loop needs:**
+  `crforge_bridge/vector_observation.py` tracks its tick offset **per lane** and
+  clears that lane's derived `age_ms`/velocity when a lane restarts;
+  `VectorTensorizer.reset_rows(mask)` clears only the lanes that started a new
+  episode.
+- **Owned previous-action record** — `record_action` used to leave an inference
+  tensor in the record when sampling inside `inference_mode`, which made
+  `reset_rows` (and any future PPO write) raise. `_empty_previous_action` and the
+  sampled `gate`/`micro_action_count` copies are now built under
+  `torch.inference_mode(False)`.
+
+### Measured — the gate shape passes
+
+`runs/crforge-c4/self-play.json` (8 lanes × 2 seats, 10 segments × 64 decisions,
+validated every decision, CPU):
+
+| measurement | value |
+| --- | ---: |
+| decisions / lane-decisions | 640 / **10,240** |
+| ACT lane-decisions / eligible | **429 / 9,877 (4.34 %)** |
+| illegal / faults / rejected | **0 / 0 / 0** |
+| lane-decisions per second | **39.0** |
+| env steps per second (lane-ticks) | **97.6** |
+| wall (10 segments) | 262.4 s |
+| facts + reset rows, ms/decision | 1.73 |
+| stacked tensorize (both seats), ms/decision | 13.41 |
+| **recurrent forward, ms/decision** | **359.7** |
+| both decodes + `record_action`, ms/decision | 3.19 |
+| five engine steps, ms/decision | 6.36 |
+
+`runs/crforge-c4/self-play-autoreset.json` (4 lanes, 2 × 60 decisions,
+`--max-ticks 600`): **4 autoresets, 29/790 eligible lanes acted (3.67 %),
+0 illegal, 0 faults**. The gate shape starts at tick 90 and covers only 3,200
+ticks, so it never reaches a terminal; the short-episode run is the one that
+proves a mid-window autoreset does not send the old episode's actions into the
+new one.
+
+**The forward is 94 % of the timed packet** (~22.5 ms/actor row; 359.7 ms
+against 24.7 ms for facts, tensorize, decode and stepping together), and 88 %
+of the 410 ms wall per decision. A first run of the same shape measured 43.4
+lane-decisions/s (235.8 s); the spread between runs is host noise, not a code
+change. Facts, tensorize, decode and stepping are done; the
+next C4 lever is GPU throughput and the rollout store. For scale: the native PPO
+worker is **29 lane-decisions/s** (1 engine × 8 lanes, §3.37) and this CPU
+producer is **39.0** on the same model.
+
+Two honesty notes on the artifact: the sampled policy chose **no two-action
+decisions**, so the collision/drop counters are 0 (the rule is unit-gated), and
+the tool stores no rollout — it is a collection/throughput probe, and the
+artifact says so.
+
+### Next session (session 27) — make C4 a trainer
+
+1. **Rollout storage.** Store the per-decision packet (batch, state, sampled
+   action, log-prob, value, reward, `episode_start`) and compute returns/GAE on
+   autoreset boundaries. The recurrent state is already per row and the previous
+   action is already the training record.
+2. **CUDA path + throughput.** Run the same gate shape on the A6000 (and with
+   MPS, the RoyaleFish `ever_*` recipe). The forward is 88 % of CPU wall, so
+   batch/device are the only remaining knobs; log lane-decisions/s at 8 and 32
+   rows.
+3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
+   and after every adapter change; crforge is never a promotion gate.
+4. **Second micro-action exercise.** The sampled policy produced none; either
+   find a checkpoint/state that emits two actions or drive the loop with a forced
+   two-action sequence so the collision/drop counters are exercised end to end.
 
 ## Session 25 results (2026-11-19) — C4's missing half: the batched action decode
 
@@ -1944,7 +2055,8 @@ Yes — but as a **parity oracle**, not the training engine.
 | Batched-empty gate | **new 2026-11-19** — `tools/crforge/batched_empty_sections.py`; 256 learner-deck lanes, both empty records validated and compared field for field every step, paired timing |
 | Batched-group gate | **new 2026-11-19** — `tools/crforge/batched_groups.py`; steps real learner-deck vector lanes, compares every group/child tensor against the stock `_groups` oracle on facts-projected `EntityStateV1` rows, then times both paired over all 256 lanes |
 | Batched-card gate | **new 2026-11-19** — `tools/crforge/batched_cards.py`; reads the checkpoint's own `model_config` (21 card columns for `B-general-v275`), compares card and relation tensors against the stock sections every step, then times both paired. This is the gate that proves the 16.x schema, not the default 16-column one |
-| Batched-row tests | `crforge_bridge/tests/test_vector_rows.py` (26 tests): 50-decision group equivalence, forced overflow, empty-board masks, reference-entity projection, seat-0 guard, 21-column card equivalence, relation equivalence, pending-cell mirror rule, waiting-ability column, tracker guard, 50-decision candidate equivalence with record validation, the candidate slot rule (pending / unaffordable / empty tile block), the 2×2 vs 3×3 building geometry, the Mirror refusal, tower equivalence, the tower model-view flip, the static tower-troop pin, destroyed/absent tower rows, spatial-plane equivalence with a forced Tesla, the archetype projection for airborne/threat, towers-only/neutral rows, scalar equivalence, the standard phase schedule, the tracker refusal, empty effect/event equivalence with record validation, the empty-section seat guard. Bridge suite **48 tests**, all pass |
+| Batched-row tests | `crforge_bridge/tests/test_vector_rows.py` (26 tests): 50-decision group equivalence, forced overflow, empty-board masks, reference-entity projection, seat-0 guard, 21-column card equivalence, relation equivalence, pending-cell mirror rule, waiting-ability column, tracker guard, 50-decision candidate equivalence with record validation, the candidate slot rule (pending / unaffordable / empty tile block), the 2×2 vs 3×3 building geometry, the Mirror refusal, tower equivalence, the tower model-view flip, the static tower-troop pin, destroyed/absent tower rows, spatial-plane equivalence with a forced Tesla, the archetype projection for airborne/threat, towers-only/neutral rows, scalar equivalence, the standard phase schedule, the tracker refusal, empty effect/event equivalence with record validation, the empty-section seat guard. Bridge suite **66 tests**, all pass |
+| **C4 self-play producer** | **new 2026-11-19** — `tools/crforge/self_play.py` plays one `VectorBattle` (8 lanes), both actor seats in one recurrent forward, decodes both seats back into engine indices, and steps the engine one tick at a time so the second micro-action keeps its delay bin (`plan_window_ticks`). **Gate shape 8 × 10 × 64: 10,240 lane-decisions, 429/9,877 eligible lanes acted (4.34 %), 0 illegal / 0 faults / 0 rejected, 39.0 lane-decisions/s, 97.6 env-steps/s on CPU**; the forward is 359.7 of ~410 ms per decision. Autoreset run (4 lanes, `--max-ticks 600`): 4 resets, 29/790 acted, 0 rejected. No rollout storage/PPO yet (`runs/crforge-c4/self-play.json`, `-autoreset.json`, `FINDINGS.md` §3.57) |
 
 ### State at handoff (processes are ephemeral)
 
@@ -2777,13 +2889,14 @@ Scale options, in order of leverage:
 | `tools/crforge/batched_candidates.py` | **C3-B candidate gate** — 256 learner-deck lanes past the start cooldown, `ActionCandidatesV4` validation and full section equivalence every step, paired timing; writes `runs/crforge-c3/batched-candidates.json` |
 | `tools/crforge/batched_tensorize.py` | **C3-B end-to-end gate** — 256 learner-deck lanes × 40 decisions, `--seats 0 1` drives one `VectorTensorizer` and one stock tensorizer per actor, compares whole records field by field plus `batch_digest`, records actions on both paths, and reports combined timing per lane-decision; writes `runs/crforge-c3/batched-tensorize.json` |
 | `tools/crforge/frame_crosscheck.py` | **Native frame gate** — one play at the same game point in the x86_64 engine and a one-lane `VectorBattle`, compared on the first spawned frame; also records the facts-layer pending point; writes `runs/crforge-c3/frame-crosscheck.json` |
-| `crforge_bridge/vector_actions.py` | **C4 action path** — one NumPy pass from a stacked `ActionSequenceV4` to the engine's flat index (`0` wait, `1 + slot*rows*cols + row*cols + col`), for both seats, every micro-action with its execute offset; deploy-only envelope; reports closed mask indices instead of repairing them |
+| `crforge_bridge/vector_actions.py` | **C4 action path** — one NumPy pass from a stacked `ActionSequenceV4` to the engine's flat index (`0` wait, `1 + slot*rows*cols + row*cols + col`), for both seats, every micro-action with its execute offset; `plan_window_ticks` maps those offsets onto the engine ticks of one decision window (collision shift / drop counted); deploy-only envelope; reports closed mask indices instead of repairing them |
 | `tools/crforge/vector_decode.py` | **C4 action gate** — 256 learner-deck lanes, both seats, every index/offset/candidate row against the stock per-lane decoder on the same facts, then the decoded indices are stepped into the engine; writes `runs/crforge-c4/vector-decode.json` |
+| `tools/crforge/self_play.py` | **C4 producer** — one `VectorBattle` of `--count` lanes, both actor seats in one recurrent forward, both seats decoded back into engine actions, engine stepped one tick at a time so each micro-action keeps its delay bin; counts ACT rate, resets, illegals/faults and the per-stage ms; writes `runs/crforge-c4/self-play.json` |
 | `crforge_bridge/tests/test_encoder_spike.py` | Pins the C1 encoders to the bridge's own facts and card-parameter packing |
 | `runs/crforge-c0-20261116/` | C0 legality soak: 20 games, `illegal`, `truncated`, `rejected_total` counters |
 | `runs/crforge-c1/` | C1 encoder-spike JSON (`encoder-spike.json`), default shape 256 × 200 × 3 |
 | `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json`; the C3-B section gates `vector-observation.json`, `batched-groups.json`, `batched-cards.json`, `batched-candidates.json`, `batched-towers.json`, `batched-spatial-planes.json`, `batched-scalars.json`, `batched-empty-sections.json`; the both-seat end-to-end gate `batched-tensorize.json` (+ `-seed2.json`) and the native frame check `frame-crosscheck.json`; `learner-deck/` holds the locked-deck match config, the clean 2-game rollout and its tensorizer profile |
-| `runs/crforge-c4/` | C4 artifacts: `vector-decode.json` (batched action decode vs the stock per-lane decoder, both seats, 3,008/3,008) |
+| `runs/crforge-c4/` | C4 artifacts: `vector-decode.json` (batched action decode vs the stock per-lane decoder, both seats, 3,008/3,008), `self-play.json` (producer gate shape: 10,240 lane-decisions, 0 rejected), `self-play-autoreset.json` (terminal/autoreset run: 4 resets, 0 rejected) |
 | `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator and **locked X-Bow learner deck** constants (`DECK`, `LEARNER_DECK`, form availability), tower troop, release scope, one session per seat — used by all crforge tools; takes `port=` (socket bridge) or `native=` (resident adapter) |
 | `tools/crforge/resident_parity.py` | **C2 deliverable** — resident vs bridge, decision for decision: parity digests (native/rich/atomic, masks, rewards, terminals) + paired `env.step` timing; writes `runs/crforge-c2/resident-parity.json` |
 | `tools/crforge/profile_tensorizer.py` | **C3 deliverable** — replays a live policy episode's `tensorize`+`record_action` under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical; `--profile-decisions 0` is the timing-only A/B mode |
