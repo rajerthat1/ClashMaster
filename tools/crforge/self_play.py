@@ -664,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
                     gate_temperature=float(model.ppo_gate_temperature),
                     action_temperature=float(model.ppo_action_temperature),
                     continue_temperature=float(model.ppo_continue_temperature),
+                    device=device,
                 )
             for decision in range(args.decisions_per_segment):
                 started = time.perf_counter()
@@ -677,14 +678,31 @@ def main(argv: list[str] | None = None) -> int:
                 tensorize_done = time.perf_counter()
 
                 episode_start = torch.from_numpy(np.repeat(episode_start_lanes, len(seats))).to(device)
+                # ``--no-validate`` covers the model's own contract check too: it is
+                # pure Python, and on a GPU every value it inspects syncs the device,
+                # so leaving it on makes a fast forward look slower than the CPU's.
+                validate_rows = not args.no_validate
                 with torch.inference_mode():
                     if args.greedy:
-                        output = model.act(stacked.to_model_input(device), state, episode_start=episode_start)
+                        output = model.act(
+                            stacked.to_model_input(device),
+                            state,
+                            episode_start=episode_start,
+                            validate=validate_rows,
+                        )
                     else:
                         output = model.sample_for_ppo_rollout(
-                            stacked.to_model_input(device), state, episode_start=episode_start
+                            stacked.to_model_input(device),
+                            state,
+                            episode_start=episode_start,
+                            validate=validate_rows,
                         )
                 state = output.next_state
+                if device.type == "cuda":
+                    # Every bucket below starts with a host read (``.cpu().numpy()``
+                    # in the decoder), which would otherwise absorb the queued
+                    # forward and make ``inference_ms`` a launch time, not a cost.
+                    torch.cuda.synchronize()
                 inference_done = time.perf_counter()
 
                 plans = {}

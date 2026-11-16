@@ -310,3 +310,26 @@ def test_resume_refuses_a_checkpoint_without_optimizer_state_or_loop_counters(tm
     with pytest.raises(ValueError, match="weights hash to"):
         load_resume_state(tampered, model, torch.optim.AdamW(model.parameters(), lr=1e-5))
 
+
+
+def test_an_update_runs_in_train_mode_and_restores_the_collection_mode(monkeypatch) -> None:
+    """cuDNN refuses an RNN backward in eval mode; the producer collects in it."""
+
+    import crforge_bridge.training as training_module
+
+    seen: dict[str, bool] = {}
+    original = training_module.distributed_ppo_update_v4
+
+    def spy(model, optimizer, rollout, **kwargs):
+        seen["training"] = bool(model.training)
+        return original(model, optimizer, rollout, **kwargs)
+
+    monkeypatch.setattr(training_module, "distributed_ppo_update_v4", spy)
+    model = _model().eval()
+    trainer = _trainer(model)
+    rollout = _rollout(model)
+    trainer.enqueue(rollout, segment=0, expected_policy_state_id=rollout.policy_state_id)
+
+    assert seen["training"] is True
+    assert model.training is False  # collection resumes in the mode it used
+    assert trainer.gate()["updates"] == 1

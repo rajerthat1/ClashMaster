@@ -344,14 +344,14 @@ class CrforgeRolloutStore:
     # -- collection -----------------------------------------------------------
 
     @staticmethod
-    def _row_mask(mask: np.ndarray, rows: int, *, label: str) -> Tensor:
+    def _row_mask(mask: np.ndarray, rows: int, *, label: str, device: torch.device | None = None) -> Tensor:
         value = np.asarray(mask)
         if value.ndim != 1:
             raise ValueError(f"{label} must be a per-lane mask")
         if rows % value.shape[0]:
             raise ValueError(f"{label} lane count does not divide the actor rows")
         repeated = np.repeat(value.astype(bool), rows // value.shape[0])
-        return torch.from_numpy(repeated).to(torch.bool)
+        return torch.from_numpy(repeated).to(torch.bool).to(device)
 
     def append(
         self,
@@ -374,13 +374,13 @@ class CrforgeRolloutStore:
         reward = np.asarray(rewards, dtype=np.float32)
         if reward.shape != (self.lanes, self.seats):
             raise ValueError("rewards must be (lanes, seats)")
-        log_prob = _rollout_float(log_prob, label="log-probability")
-        value = _rollout_float(value, label="value")
+        log_prob = _rollout_float(log_prob, label="log-probability").to(self.device)
+        value = _rollout_float(value, label="value").to(self.device)
         if log_prob.numel() != self.rows or value.numel() != self.rows:
             raise ValueError("log-probability and value need one entry per actor row")
-        episode_start_rows = self._row_mask(episode_start, self.rows, label="episode_start")
-        terminated_rows = self._row_mask(terminated, self.rows, label="terminated")
-        truncated_rows = self._row_mask(truncated, self.rows, label="truncated")
+        episode_start_rows = self._row_mask(episode_start, self.rows, label="episode_start", device=self.device)
+        terminated_rows = self._row_mask(terminated, self.rows, label="terminated", device=self.device)
+        truncated_rows = self._row_mask(truncated, self.rows, label="truncated", device=self.device)
         if bool((terminated_rows & truncated_rows).any()):
             raise ValueError("a decision cannot terminate and truncate")
 
@@ -388,7 +388,7 @@ class CrforgeRolloutStore:
         stored_actions = actions.to_storage(self.device, float_dtype=self.float_dtype)
         self.observations.append(stored_observation)
         self.actions.append(stored_actions)
-        self._rewards.append(torch.from_numpy(reward.reshape(-1).copy()))
+        self._rewards.append(torch.from_numpy(reward.reshape(-1).copy()).to(self.device))
         self._values.append(value)
         self._log_prob.append(log_prob)
         self._episode_start.append(episode_start_rows)

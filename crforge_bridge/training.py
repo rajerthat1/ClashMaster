@@ -435,19 +435,33 @@ class CrforgeTrainer:
         minibatch = min(minibatch, rows)
         optimizer_step = self.optimizer_steps
         started = time.perf_counter()
-        metrics = distributed_ppo_update_v4(
-            self.model,
-            self.optimizer,
-            rollout,
-            epochs=int(self.config.epochs),
-            lane_minibatch_size=minibatch,
-            sequence_chunk_steps=int(self.config.sequence_chunk_steps),
-            config=self.config.ppo_config(),
-            expected_policy_state_id=expected_policy_state_id,
-            autocast_dtype=None,
-            validate=bool(self.config.validate),
-        )
+        # cuDNN refuses an RNN backward in eval mode, and the native trainer's
+        # ``eval()`` habit only survives on CPU. The model has no dropout
+        # (config ``dropout=0.0``) and no batch norm, so train mode changes
+        # nothing but that gate; the collection mode is restored either way.
+        was_training = self.model.training
+        self.model.train()
+        try:
+            metrics = distributed_ppo_update_v4(
+                self.model,
+                self.optimizer,
+                rollout,
+                epochs=int(self.config.epochs),
+                lane_minibatch_size=minibatch,
+                sequence_chunk_steps=int(self.config.sequence_chunk_steps),
+                config=self.config.ppo_config(),
+                expected_policy_state_id=expected_policy_state_id,
+                autocast_dtype=None,
+                validate=bool(self.config.validate),
+            )
+        finally:
+            self.model.train(was_training)
+        if self.device.type == "cuda":
+            # The metrics read back tensors, so without this the wall would stop
+            # at the last kernel launch instead of the end of the update.
+            torch.cuda.synchronize()
         wall = time.perf_counter() - started
+
         rows_with_metrics = [row for row in metrics if isinstance(row, dict)]
         valid = sum(float(row.get("valid_count", 0.0)) for row in rows_with_metrics)
         finite = bool(rows_with_metrics) and all(
