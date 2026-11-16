@@ -13,6 +13,8 @@ Sections here:
 * :class:`VectorGroupBuilder` — causal groups and children;
 * :class:`VectorCardBuilder` — the actor's and opponent's card sets, including
   the 16.635 21-column pending-execution columns;
+* :class:`VectorTowerBuilder` — the six-row tower section (health, active,
+  target), with the tower troop as a static build input;
 * :class:`VectorCandidateBuilder` — the actor's legal deploy candidates, with
   the native placement grid and the static building geometry the decoder needs;
 * :class:`VectorRelationBuilder` — target/reverse-target and card→group edges.
@@ -73,6 +75,7 @@ from native_runner.training.v4.config import (
     CARD_RUNTIME_FEATURE_NAMES_V2,
     CHILD_FEATURE_NAMES,
     GROUP_FEATURE_NAMES,
+    TOWER_FEATURE_NAMES,
 )
 from native_runner.training.v4.decoding import candidate_uid_v4
 from native_runner.training.v4.native_actions import MIRROR_CARD_ID
@@ -83,6 +86,7 @@ from native_runner.training.v4.tensors import (
     BattleGroupSetV4,
     CardSetV4,
     RelationEdgesV4,
+    TowerSetV4,
 )
 
 from .catalog import FORM_EVOLVED, FORM_HERO
@@ -139,6 +143,17 @@ _C_X = CHILD_FEATURE_NAMES.index("x_over_board_width")
 _C_Y = CHILD_FEATURE_NAMES.index("y_over_board_height")
 _C_VELOCITY_X = CHILD_FEATURE_NAMES.index("velocity_x_over_10")
 _C_VELOCITY_Y = CHILD_FEATURE_NAMES.index("velocity_y_over_10")
+
+# Tower feature columns (``native_runner/training/v4/config.py``).  The bridge's
+# no-event envelope leaves the attack-state and tower-troop-runtime blocks at
+# zero, so only the six static/health columns are written.
+_T_HP_RATIO = TOWER_FEATURE_NAMES.index("hitpoints_ratio")
+_T_SHIELD_RATIO = TOWER_FEATURE_NAMES.index("shield_over_max_hitpoints")
+_T_ACTIVE = TOWER_FEATURE_NAMES.index("active")
+_T_TARGET = TOWER_FEATURE_NAMES.index("has_visible_target")
+_T_KING_ACTIVATED = TOWER_FEATURE_NAMES.index("king_activated")
+_T_HP = TOWER_FEATURE_NAMES.index("hitpoints_over_5000")
+_T_MAX_HP = TOWER_FEATURE_NAMES.index("max_hitpoints_over_5000")
 
 # Card runtime columns (the 16-column schema; the 16.635 21-column schema adds
 # the five pending-execution columns at the end).
@@ -911,6 +926,184 @@ class VectorCardBuilder:
 
 
 @dataclass(frozen=True)
+class VectorTowerSection:
+    """The batched ``_towers`` output for every lane.
+
+    ``towers`` carries the fixed six-row tower set with the lane count as the
+    batch dimension and ``tower_index`` maps a native tower id to its model row
+    (``-1`` when the row is absent), which is the ``index_by_entity`` dict the
+    tensorizer's ``_relations`` consumes as ``tower_token_by_entity``.
+    """
+
+    towers: TowerSetV4
+    tower_index: np.ndarray
+
+    def lane(self, lane: int) -> tuple[TowerSetV4, dict[int, int]]:
+        index = int(lane)
+        rows = self.tower_index[index]
+        return (
+            TowerSetV4(
+                tower_type=self.towers.tower_type[index : index + 1].clone(),
+                tower_troop_type=self.towers.tower_troop_type[index : index + 1].clone(),
+                owner_type=self.towers.owner_type[index : index + 1].clone(),
+                features=self.towers.features[index : index + 1].clone(),
+                position=self.towers.position[index : index + 1].clone(),
+                extent=self.towers.extent[index : index + 1].clone(),
+                mask=self.towers.mask[index : index + 1].clone(),
+            ),
+            {
+                entity_id: int(rows[entity_id]) for entity_id in np.flatnonzero(rows >= 0)
+            },
+        )
+
+
+class VectorTowerBuilder:
+    """Fill the six-row tower section for a whole vector batch in one pass.
+
+    ``_towers`` emits one row per tower, sorted actor-first and then by model
+    kind (king, princess left, princess right) and native id, and writes the
+    health/active/target columns plus the tile position and kind-sized extent.
+    The vector facts layer already carries every one of those facts per tower id,
+    so the batched build is one gather over a per-lane six-row view.
+
+    Two envelope facts are pinned here rather than derived:
+
+    * ``status`` is always empty because tower-activation events are not
+      supplied, so ``king_activated`` is zero.  A destroyed tower also never
+      reports "activated"; the per-lane path has the same gap.
+    * ``tower_troop_id`` is not in the vector frame.  Every player in a match
+      fields the same tower troop, so it is a static build input (the learner
+      deck's ``159000000`` = Tower Princess) and recorded as a fidelity pin on
+      the gate artifact.  ``None`` means "no tower troop", which is the shape the
+      bridge emits when the match config carries none.
+
+    The attack-state and tower-troop-runtime feature blocks stay zero for the
+    same reason the per-lane envelope leaves them at zero: the bridge supplies
+    neither a tower attack state nor a troop runtime.
+    """
+
+    def __init__(self, tensorizer: Any, *, tower_troop_id: int | None = None) -> None:
+        # Imported lazily so loading this module stays as light as the rest of
+        # the row build; the vocabularies are the tensorizer's own.
+        from native_runner.training.v4.tensorizer import TOWER_TROOP_TYPE, TOWER_TYPE
+
+        self.tensorizer = tensorizer
+        self.config = tensorizer.config
+        self.actor = int(tensorizer.actor_owner)
+        if self.actor != 0:
+            raise ValueError("the vector facts layer currently carries seat 0 only")
+        self.max_towers = int(self.config.max_towers)
+        if self.max_towers != 6:
+            raise ValueError(f"the batched tower build assumes six tower rows, config has {self.max_towers}")
+        if int(self.config.tower_feature_dim) != len(TOWER_FEATURE_NAMES):
+            raise ValueError(
+                f"tower feature schema of {int(self.config.tower_feature_dim)} columns is not a V4 profile"
+            )
+        self.flip_x = bool(tensorizer.perspective.flip_x)
+        self.flip_y = bool(tensorizer.perspective.flip_y)
+        self.tower_type = dict(TOWER_TYPE)
+        self.tower_troop_type = dict(TOWER_TROOP_TYPE)
+        # ``_model_tower_kind`` swaps the princesses under a horizontal flip, so
+        # both the sort order and the emitted type code follow the model view.
+        self.model_kind = np.asarray([0, 2, 1] if self.flip_x else [0, 1, 2], dtype=np.int64)
+        troop = 0
+        if tower_troop_id is not None:
+            key = int(tower_troop_id)
+            if key not in self.tower_troop_type:
+                raise ValueError(f"tower troop {key} is not a competitive Tower Troop")
+            troop = int(self.tower_troop_type[key])
+        self.tower_troop = troop
+
+    def build(self, batch: VectorObservationBatch) -> VectorTowerSection:
+        lanes = int(batch.count)
+        g = self.max_towers
+        slots = VectorRelationBuilder._tower_slots(batch)
+        present = slots >= 0
+        safe_slots = np.maximum(slots, 0)
+        tower_ids = np.broadcast_to(np.arange(g, dtype=np.int64)[None, :], present.shape)
+
+        # The oracle reads a tower's world point from the shared entity row, not
+        # from the tower block, so use the same source.
+        world_x = np.take_along_axis(batch.entity_x, safe_slots, axis=1).astype(np.float64)
+        world_y = np.take_along_axis(batch.entity_y, safe_slots, axis=1).astype(np.float64)
+        target = np.take_along_axis(batch.entity_target, safe_slots, axis=1).astype(np.int64)
+
+        # ``_towers`` order: actor first, then model kind, then native id.
+        model_type = self.model_kind[np.clip(batch.tower_kind, 0, 2)]
+        key = (((batch.tower_owner != self.actor).astype(np.int64) * 8) + model_type) * 8 + tower_ids
+        key = np.where(present, key, np.iinfo(np.int64).max)
+        order = np.argsort(key, axis=1, kind="stable")
+
+        def gather(values: np.ndarray) -> np.ndarray:
+            return np.take_along_axis(values, order[:, :g], axis=1)
+
+        row_owner = gather(batch.tower_owner.astype(np.int64))
+        row_type = gather(model_type)
+        row_ids = gather(tower_ids)
+        row_hp = gather(batch.tower_hp.astype(np.float64))
+        row_max_hp = gather(batch.tower_max_hp.astype(np.float64))
+        row_target = gather(target)
+        row_present = gather(present)
+        tile_x, tile_y = self._tile_positions(gather(world_x), gather(world_y))
+
+        half_extent = np.where(row_type == self.tower_type["king"], 2.0, 1.5)
+        position = np.stack([tile_x, tile_y], axis=-1)
+        extent = np.stack(
+            [tile_x - half_extent, tile_y - half_extent, tile_x + half_extent, tile_y + half_extent],
+            axis=-1,
+        )
+
+        features = np.zeros((lanes, g, len(TOWER_FEATURE_NAMES)), dtype=np.float32)
+        # A missing maximum divides by one, exactly as ``_finite`` does; the row
+        # is masked below anyway, and a live tower always carries its maximum.
+        features[..., _T_HP_RATIO] = row_hp / np.where(row_max_hp > 0, row_max_hp, 1.0)
+        features[..., _T_SHIELD_RATIO] = 0.0
+        features[..., _T_ACTIVE] = (row_present & (row_hp > 0)).astype(np.float32)
+        features[..., _T_TARGET] = (row_target >= 0).astype(np.float32)
+        features[..., _T_KING_ACTIVATED] = 0.0
+        features[..., _T_HP] = row_hp / 5000.0
+        features[..., _T_MAX_HP] = row_max_hp / 5000.0
+
+        owner_type = np.where(row_owner == self.actor, OWNER_SELF, OWNER_ENEMY).astype(np.int64)
+        troop_type = np.full((lanes, g), self.tower_troop, dtype=np.int64)
+
+        # The gathers above can carry a padded slot's row-0 values into a masked
+        # row, so reset every masked row to the oracle's padding.
+        features[~row_present] = 0.0
+        position[~row_present] = 0.0
+        extent[~row_present] = 0.0
+        owner_type[~row_present] = OWNER_NEUTRAL
+        row_type[~row_present] = 0
+        troop_type[~row_present] = 0
+
+        tower_index = np.full((lanes, g), -1, dtype=np.int64)
+        lane_rows = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], row_present.shape)
+        row_numbers = np.broadcast_to(np.arange(g, dtype=np.int64)[None, :], row_present.shape)
+        tower_index[lane_rows[row_present], row_ids[row_present]] = row_numbers[row_present]
+
+        towers = TowerSetV4(
+            tower_type=torch.from_numpy(row_type),
+            tower_troop_type=torch.from_numpy(troop_type),
+            owner_type=torch.from_numpy(owner_type),
+            features=torch.from_numpy(features),
+            position=torch.from_numpy(position.astype(np.float32)),
+            extent=torch.from_numpy(extent.astype(np.float32)),
+            mask=torch.from_numpy(row_present.astype(bool)),
+        )
+        return VectorTowerSection(towers=towers, tower_index=tower_index)
+
+    def _tile_positions(self, world_x: np.ndarray, world_y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        config = self.config
+        x = float(WORLD_WIDTH) - world_x if self.flip_x else world_x
+        y = float(WORLD_HEIGHT) - world_y if self.flip_y else world_y
+        x = x / (float(WORLD_WIDTH) / float(config.board_width))
+        y = y / (float(WORLD_HEIGHT) / float(config.board_height))
+        x = np.minimum(np.maximum(x, 0.0), float(config.board_width) - 1e-4)
+        y = np.minimum(np.maximum(y, 0.0), float(config.board_height) - 1e-4)
+        return x, y
+
+
+@dataclass(frozen=True)
 class CandidateGeometry:
     """Static placement facts for one card, as ``BattleEnvV1``'s mask entry carries them.
 
@@ -1311,10 +1504,9 @@ class VectorRelationBuilder:
         rows = np.flatnonzero(batch.entity_valid.ravel() & batch.entity_is_tower.ravel())
         if rows.size:
             lanes, columns = np.unravel_index(rows, batch.entity_valid.shape)
-            for lane, column in zip(lanes.tolist(), columns.tolist(), strict=True):
-                entity_id = int(batch.entity_id[lane, column])
-                if 0 <= entity_id < 6:
-                    slots[lane, entity_id] = column
+            ids = batch.entity_id[lanes, columns].astype(np.int64)
+            known = (ids >= 0) & (ids < 6)
+            slots[lanes[known], ids[known]] = columns[known]
         return slots
 
     def _card_token_map(self, vocab: np.ndarray, mask: np.ndarray, start: int) -> np.ndarray:
@@ -1850,6 +2042,45 @@ def compare_relation_section(
     return mismatches
 
 
+def compare_tower_section(
+    section: VectorTowerSection,
+    tensorizer: Any,
+    batch: VectorObservationBatch,
+    *,
+    tables: VectorEntityTables,
+    tower_troop_id: int | None = None,
+    lanes: Sequence[int] | None = None,
+) -> list[str]:
+    """Every tower tensor field and row index, lane by lane, against the oracle."""
+
+    mismatches: list[str] = []
+    selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
+    for lane in selected:
+        observation = reference_observation(
+            batch, lane, tables=tables, tensorizer=tensorizer, tower_troop_id=tower_troop_id
+        )
+        expected, index_by_entity = tensorizer._towers(observation)
+        actual, actual_index = section.lane(lane)
+        for name in (
+            "tower_type",
+            "tower_troop_type",
+            "owner_type",
+            "features",
+            "position",
+            "extent",
+            "mask",
+        ):
+            if not torch.equal(getattr(actual, name), getattr(expected, name)):
+                mismatches.append(f"towers.{name} lane={lane}")
+        for entity_id in range(int(batch.tower_rows)):
+            expected_row = int(index_by_entity.get(entity_id, -1))
+            if int(actual_index.get(entity_id, -1)) != expected_row:
+                mismatches.append(f"towers.index lane={lane} entity={entity_id}")
+        if len(mismatches) >= 20:
+            break
+    return mismatches
+
+
 def reference_entities(
     batch: VectorObservationBatch, lane: int, *, tables: VectorEntityTables, tensorizer: Any, seat: int = 0
 ) -> tuple[EntityStateV1, ...]:
@@ -2031,11 +2262,14 @@ __all__ = [
     "VectorGroupSection",
     "VectorRelationBuilder",
     "VectorRelationSection",
+    "VectorTowerBuilder",
+    "VectorTowerSection",
     "candidate_geometry",
     "compare_candidate_section",
     "compare_card_section",
     "compare_group_section",
     "compare_relation_section",
+    "compare_tower_section",
     "oracle_groups",
     "reference_action_mask",
     "reference_entities",

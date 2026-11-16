@@ -3461,3 +3461,94 @@ Evidence: `runs/crforge-c3/batched-candidates.json`,
 `crforge_bridge/vector_rows.py`,
 `crforge_bridge/tests/test_vector_rows.py`,
 `tools/crforge/batched_candidates.py`.
+
+### 3.50 The batched tower section — C3-B continues (2026-11-19)
+
+`_towers` is 0.145 of the 0.992 CPU ms/decision packet: six rows, sorted
+actor-first and then by model kind (king, princess left, princess right) and
+native id, each carrying a tile position, a kind-sized extent (half-extent 2.0
+for a king, 1.5 otherwise), a health ratio, an active flag, a visible-target
+flag and the two `/5000` health scales. §3.49 listed two envelope facts to
+carry; the audit for this section found no new per-frame fact was needed at all:
+
+| tower field | where it comes from |
+| --- | --- |
+| ownership, kind, health, maximum | `tower_owner` / `tower_kind` / `tower_hp` / `tower_max_hp` (already in the batch) |
+| model row order and type code | `tower_owner != actor`, then the model kind (a horizontal flip swaps the princesses) |
+| tile position | the shared entity row's `entity_x` / `entity_y`, then the tensorizer's flip/scale/clamp |
+| visible target | the shared entity row's `entity_target` |
+| tower troop | **static build input** — `tower_troop_id=159000000` (Tower Princess) for the learner deck |
+| `king_activated` | **always zero** — the bridge sends no `tower_activate` events |
+
+So the work is `VectorTowerBuilder`: one gather over a per-lane six-row view,
+one sort, and the health/target block. `VectorTowerSection` also carries
+`tower_index`, the `entity id -> model row` map the tensorizer's `_relations`
+consumes as `tower_token_by_entity`; `lane(n)` slices a lane back to the exact
+`TowerSetV4` + dict the per-lane path emits.
+
+#### The model view flips the princess kinds, not just the coordinates
+
+`_model_tower_kind` swaps `princess_left` and `princess_right` under
+`flip_x`, and `_towers` sorts by that model kind. The batched build therefore
+maps native kind code `[0, 1, 2]` to model code `[0, 2, 1]` when the perspective
+flips, and uses the same map for the emitted `tower_type` column. A build that
+only mirrored the coordinates would put the princess rows in the wrong order and
+mislabel their types — a mistake the mirror test pins.
+
+#### A destroyed tower is a zero-HP row; an absent one is padding
+
+The vector scene keeps a destroyed tower's row with zero HP and its original
+maximum, so the row stays present and `hitpoints_ratio` reads 0. A row that
+leaves the scene drops out of `_tower_slots`, and the section pads it with
+`tower_type 0`, `tower_troop_type 0`, `owner_type 2` (neutral), zero vectors and
+`mask False`, exactly as the oracle pads. "Destroyed" and "absent" are therefore
+different states, and the test asserts both.
+
+#### The oracle and the gate
+
+`compare_tower_section` projects the per-lane observation from the same facts and
+runs the stock `_towers`, comparing all seven tensors and the row index for every
+native tower id. `tools/crforge/batched_towers.py` is the gate: 256 learner-deck
+lanes, `TowerSetV4` validation every step, paired timing, and the two pins
+recorded on the artifact.
+
+`runs/crforge-c3/batched-towers.json` (256 lanes × 40 decisions, 60 WAIT warmup
+decisions, 32 lanes verified after step 0):
+
+| path | total | ms/lane |
+| --- | ---: | ---: |
+| batched tower section | **0.289 ms** | **0.00113** |
+| per-lane `_towers` oracle | 9.52 ms | 0.0372 |
+
+**Equivalence: pass**, `mismatches: []` over 40 decisions, all six towers present
+on every lane, 61,440 active tower rows and 61,263 rows with a visible target
+exercised. **33×** the per-lane oracle (two full runs: 0.00113 vs 0.0365–0.0372,
+i.e. 32–33×); quote the paired artifact rather than the ratio alone.
+
+Section arithmetic only: replacing the live profile's 0.145 share with 0.00113
+projects **0.848 ms/decision** with groups, cards, relations and candidates also
+batched, before spatial planes and scalars.
+
+#### Tests
+
+`test_vector_rows.py` adds 4 tests (18 in the file, bridge suite **40**): a
+50-decision equivalence over four lanes; the model-view flip (row order, type
+codes and `tower_index` under `horizontal_mirror=True`); the static tower-troop
+pin (pinned, absent, a non-competitive id, a non-zero seat); and the
+destroyed/absent row rules against the oracle. `_tower_slots` is now vectorized
+(the scan that fed both the tower and relation builds was a per-lane Python
+loop). Ruff clean.
+
+#### What remains for C3-B
+
+`_spatial_planes` (0.117), `_scalars` and the empty effects/events, and only
+then a facts-only `tensorize` returning one `UniversalSemanticBatchV4` per lane,
+`batch_digest`-identical to the per-lane path. `_spatial_planes` is the larger
+one: it needs airborne, spatial extent and threat facts the batch does not carry
+yet, and `_scalars` needs the match clock/phase/elixir-multiplier reconstruction
+that `BattleEnvV1.observe` derives from the tick and section.
+
+Evidence: `runs/crforge-c3/batched-towers.json`,
+`crforge_bridge/vector_rows.py`,
+`crforge_bridge/tests/test_vector_rows.py`,
+`tools/crforge/batched_towers.py`.

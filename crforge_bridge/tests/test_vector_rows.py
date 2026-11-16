@@ -14,11 +14,13 @@ from crforge_bridge.vector_rows import (
     VectorEntityTables,
     VectorGroupBuilder,
     VectorRelationBuilder,
+    VectorTowerBuilder,
     candidate_geometry,
     compare_candidate_section,
     compare_card_section,
     compare_group_section,
     compare_relation_section,
+    compare_tower_section,
     reference_entities,
     reference_pending_actions,
 )
@@ -44,7 +46,9 @@ def release_config() -> ModelConfigV4:
     )
 
 
-def _tensorizer(config: ModelConfigV4 | None = None) -> UniversalObservationTensorizerV4:
+def _tensorizer(
+    config: ModelConfigV4 | None = None, *, horizontal_mirror: bool = False
+) -> UniversalObservationTensorizerV4:
     bundle = production_semantic_bundle(RELEASE)
     return UniversalObservationTensorizerV4(
         actor_owner=0,
@@ -56,6 +60,7 @@ def _tensorizer(config: ModelConfigV4 | None = None) -> UniversalObservationTens
         deck=LEARNER_DECK,
         tracker=None,
         deck_roles=deck_roles_from_form_availability(LEARNER_DECK, LEARNER_FORMS),
+        horizontal_mirror=horizontal_mirror,
         config=config or release_config(),
         reject_unknown_public_semantics=True,
     )
@@ -456,4 +461,121 @@ def test_candidate_builder_refuses_mirror(crforge_runtime: None) -> None:
     finally:
         tensorizer.deck = original
         tensorizer.deck_roles = roles
+
+
+TOWER_TROOP = 159000000
+
+
+def _tower_fields() -> tuple[int, int, int, int]:
+    from native_runner.training.v4.config import TOWER_FEATURE_NAMES
+
+    return (
+        TOWER_FEATURE_NAMES.index("hitpoints_ratio"),
+        TOWER_FEATURE_NAMES.index("active"),
+        TOWER_FEATURE_NAMES.index("hitpoints_over_5000"),
+        TOWER_FEATURE_NAMES.index("max_hitpoints_over_5000"),
+    )
+
+
+def test_batched_towers_match_the_per_lane_oracle(crforge_runtime: None) -> None:
+    """Every tower tensor field and row index, lane by lane."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=4) as vector:
+        _, tables = _builder(tensorizer, vector)
+        builder = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        for step in range(50):
+            section = builder.build(batch)
+            assert int(section.towers.mask.sum()) == batch.count * 6
+            mismatches = compare_tower_section(
+                section, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP
+            )
+            assert mismatches == [], f"step {step}: {mismatches}"
+            _step(vector, 500 + step)
+            encoder.encode(batch)
+
+
+def test_tower_order_and_types_follow_the_model_view_under_mirror(crforge_runtime: None) -> None:
+    """A horizontal flip swaps the princess kinds, which reorders the rows."""
+
+    tensorizer = _tensorizer(horizontal_mirror=True)
+    with _vector(count=2) as vector:
+        _, tables = _builder(tensorizer, vector)
+        builder = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        section = builder.build(batch)
+        # Actor first, then enemy; the model's left princess is the native right
+        # tower (kind code 2), so each side is king, right, left.
+        assert section.towers.tower_type[0].tolist() == [0, 1, 2, 0, 1, 2]
+        assert section.towers.owner_type[0].tolist() == [0, 0, 0, 1, 1, 1]
+        assert int(section.tower_index[0, 2]) == 1
+        assert int(section.tower_index[0, 1]) == 2
+        assert compare_tower_section(
+            section, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP
+        ) == []
+
+
+def test_tower_troop_is_a_static_build_input(crforge_runtime: None) -> None:
+    """The frame carries no tower troop, so the builder pins it per match."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=1) as vector:
+        batch = VectorObservationEncoder(vector, Catalog.load()).encode()
+        pinned = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP).build(batch)
+        assert pinned.towers.tower_troop_type.tolist() == [[1] * 6]
+        bare = VectorTowerBuilder(tensorizer).build(batch)
+        assert bare.towers.tower_troop_type.tolist() == [[0] * 6]
+        with pytest.raises(ValueError, match="not a competitive Tower Troop"):
+            VectorTowerBuilder(tensorizer, tower_troop_id=123)
+        tensorizer.actor_owner = 1
+        try:
+            with pytest.raises(ValueError, match="seat 0"):
+                VectorTowerBuilder(tensorizer)
+        finally:
+            tensorizer.actor_owner = 0
+
+
+def test_destroyed_and_missing_towers_keep_the_oracle_shape(crforge_runtime: None) -> None:
+    """A dead tower is a zero-HP row; an absent one is padding, not a phantom."""
+
+    hp_ratio, active, hp, max_hp = _tower_fields()
+    tensorizer = _tensorizer()
+    builder = VectorTowerBuilder(tensorizer, tower_troop_id=TOWER_TROOP)
+    with _vector(count=2) as vector:
+        _, tables = _builder(tensorizer, vector)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+
+        # Destroy the enemy's right princess (tower id 5).  The row survives
+        # with zero HP and the original maximum, so the ratio reads 0.
+        batch.tower_hp[:, 5] = 0
+        section = builder.build(batch)
+        row = int(section.tower_index[0, 5])
+        assert row == 5
+        assert bool(section.towers.mask[0, row])
+        assert float(section.towers.features[0, row, active]) == 0.0
+        assert float(section.towers.features[0, row, hp_ratio]) == 0.0
+        max_hitpoints = int(batch.tower_max_hp[0, 5])
+        assert float(section.towers.features[0, row, max_hp]) == pytest.approx(max_hitpoints / 5000.0)
+        assert float(section.towers.features[0, row, hp]) == 0.0
+        assert compare_tower_section(
+            section, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP
+        ) == []
+
+        # A tower row that leaves the shared scene drops out of the section.
+        lanes, columns = np.nonzero(batch.entity_valid & batch.entity_is_tower & (batch.entity_id == 4))
+        batch.entity_valid[lanes[0], columns[0]] = False
+        batch.entity_is_tower[lanes[0], columns[0]] = False
+        section = builder.build(batch)
+        assert int(section.tower_index[lanes[0], 4]) == -1
+        assert section.towers.mask[lanes[0]].tolist() == [True] * 5 + [False]
+        assert compare_tower_section(
+            section, tensorizer, batch, tables=tables, tower_troop_id=TOWER_TROOP
+        ) == []
 
