@@ -4013,3 +4013,101 @@ Evidence: `runs/crforge-c3/batched-tensorize.json`,
 `runs/crforge-c3/frame-crosscheck.json`, `crforge_bridge/vector_tensorize.py`,
 `crforge_bridge/vector_rows.py`, `tools/crforge/batched_tensorize.py`,
 `tools/crforge/frame_crosscheck.py`.
+
+### 3.56 The batched action decode — C4's missing half (2026-11-19)
+
+C3-B stacks the observation into one `UniversalSemanticBatchV4` per decision, but
+the model's sampled `ActionSequenceV4` still had no path back into a
+`VectorBattle`. The stock `decode_action_sequence_v4` is a **per-lane** function
+over `ObservationV1` contracts, which is exactly the layer the bulk path
+removed. `crforge_bridge/vector_actions.py` is the batched replacement: one NumPy
+pass turns a stacked sequence into the flat action index the engine steps.
+
+#### Three frames, one conversion
+
+The decode is a coordinate problem before it is an action problem:
+
+* the **model** frame is the tensorizer's output — seat 0 reads the game frame
+  unchanged, seat 1 reads it rotated 180° (`PerspectiveTransformV1.flip_x` and
+  `flip_y` are both true for owner 1);
+* the **game** frame is the facts layer's output and the native probe's frame
+  (§3.55);
+* the **engine seat** frame is the vector action index: crforge mirrors x for
+  seat 0 and y for seat 1 (`Schema.toSeatX/toSeatY`).
+
+Composing the two legacy conversions gives one x flip for **both** seats under
+the default perspective: `model -> game` follows the tensorizer, `game ->
+engine` follows `Schema`. The decoder derives both flips from the tensorizer's
+own `perspective`, so a non-default `horizontal_mirror` still decodes. The
+engine index is `0` for wait and
+`1 + slot * rows * cols + row * cols + col` for a play, the formula
+`Schema.play` uses; the game cell `(6, 10)` of the native cross-check decodes to
+seat cell `(11, 10)` for seat 0 and `(6, 21)` for seat 1, which the unit test
+pins.
+
+#### What it decodes
+
+* **Every micro-action.** Slot `k` carries its own engine index and the execute
+  offset the stock decoder puts in `metadata` (`1 + delay_offset_ms // 50`
+  ticks), so a producer can either apply the first play per decision or step
+  one tick at a time and honour the second one.
+* **Deploy candidates only.** The bridge envelope emits no ability source and no
+  Mirror runtime, so an ABILITY/Mirror candidate and a non-GRID target raise
+  instead of guessing. That is the same envelope C3-B pins, not a new gap.
+* **The engine mask is authoritative, and the decode reports it.** `masked`
+  says whether the chosen index is open in `VectorBattle.masks`; a closed index
+  is returned as-is and flagged, because silently repairing a policy's action
+  would hide the producer bug.
+
+Neither subcell offsets nor the second play's timing exist in the vector action
+index; both are bridge-side concepts. That is a **fidelity pin for C4**, not a
+decode defect: the engine places an even-footprint building at its own anchor,
+and a second play in the same decision needs either a one-tick step loop or a
+rule that closes the delay until the next decision.
+
+#### Gate
+
+`tools/crforge/vector_decode.py` steps 256 real learner-deck lanes (WAIT past
+the start cooldown, then sampled play), builds a sampled sequence per seat — one
+micro-action for most lanes, two for lanes with a second open candidate, the
+second at the 100 ms bin — and compares every decoded index, offset and
+candidate row against the stock per-lane decoder driven by the same facts. It
+then **steps the decoded indices into the engine**, so a refusal or an illegal
+count fails the run.
+
+`runs/crforge-c4/vector-decode.json` (256 lanes × 40 decisions, `--seats 0 1`):
+
+| measurement | combined | seat 0 | seat 1 |
+| --- | ---: | ---: | ---: |
+| lane-decisions identical | **3,008/3,008** | 1,504/1,504 | 1,504/1,504 |
+| decoded deploy rows | 1,417 | 710 | 707 |
+| two-micro-action rows | 629 | 317 | 312 |
+| …of which the stock oracle accepted both | 567 | 281 | 286 |
+| mask-closed indices | **0** | 0 | 0 |
+| engine illegal / refusals | **0 / 0** | | |
+| batched decode, ms/lane-decision | **0.000232** | 0.000213 | 0.000222 |
+| per-lane stock decode, ms/lane-decision | 0.758 | | |
+| speedup on the decode half | **3,266×** | | |
+
+The 62 oracle refusals are `illegal under V4 shadow state`, i.e. the live
+shadow contract rejecting a sampled two-play pair; they are counted, not
+compared, and they are not decode failures. Every lane the oracle did accept
+matched on index **and** offset, and every applied index was open in the engine
+mask.
+
+The absolute number matters more than the ratio: at 0.23 µs/lane-decision the
+decode half is no longer a packet cost. It joins facts (0.032 ms/lane),
+tensorize (0.081 ms/lane-decision) and `record_action` (0.006) in the stacked
+path, which is what lets C4 spend its budget on the forward.
+
+#### Tests
+
+`crforge_bridge/tests/test_vector_actions.py` (7 tests) pins the seat frame,
+compares both seats against the stock decoder over a played sequence, decodes a
+two-micro-action row with its delay offset, decodes WAIT rows, rejects an
+unknown UID, and proves a closed engine mask is reported rather than repaired.
+The bridge suite is **62 tests**, all passing; ruff clean.
+
+Evidence: `runs/crforge-c4/vector-decode.json`,
+`crforge_bridge/vector_actions.py`, `crforge_bridge/tests/test_vector_actions.py`,
+`tools/crforge/vector_decode.py`.
