@@ -162,3 +162,41 @@ def test_derived_age_and_velocity_follow_the_frame(crforge_runtime: None) -> Non
                     assert bool(second.entity_velocity_valid[lane, slot])
                     assert np.isclose(float(second.entity_velocity[lane, slot, 0]), expected_x)
                     assert np.isclose(float(second.entity_velocity[lane, slot, 1]), expected_y)
+
+
+def test_one_lane_autoreset_restarts_its_clock_and_derived_state(crforge_runtime: None) -> None:
+    """A single-lane reset must not move the other lanes' tick or entity ages."""
+
+    catalog = Catalog.load()
+    with _vector(count=2) as vector:
+        encoder = VectorObservationEncoder(vector, catalog)
+        first = encoder.encode()
+        assert first.tick[:, 0].tolist() == [0, 0]
+        for step in range(12):
+            _step(vector, 60 + step)
+        before = encoder.encode()
+        before_ticks = before.tick[:, 0].copy()
+        assert before_ticks.min() > 0
+        before_lane1_entities = before.entity_id[1].copy()
+
+        vector.reset_env(0, 9_999)
+        after = encoder.encode()
+        # The reset lane restarts at tick zero; the other lane keeps its clock.
+        assert int(after.tick[0, 0]) == 0
+        assert int(after.tick[1, 0]) >= int(before_ticks[1])
+        # Derived state restarted with the episode: no inherited age or velocity.
+        valid = after.entity_valid[0]
+        assert int(after.entity_age_ms[0][valid].max()) == 0
+        assert not bool(after.entity_velocity_valid[0].any())
+        # The surviving lane's scene is untouched by the other lane's reset.
+        assert after.entity_valid[1].sum() == before.entity_valid[1].sum()
+        assert after.entity_id[1][before.entity_valid[1]].tolist() == before_lane1_entities[
+            before.entity_valid[1]
+        ].tolist()
+
+        # The per-lane clock also survives another encode of the reset episode.
+        for _ in range(6):
+            _step(vector, 70)
+        later = encoder.encode()
+        assert int(later.tick[0, 0]) >= 0
+        assert int(later.tick[1, 0]) > int(after.tick[1, 0])

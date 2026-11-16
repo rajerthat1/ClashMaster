@@ -155,20 +155,24 @@ class VectorTensorizer:
 
     def _empty_previous_action(self, lanes: int) -> PreviousActionV4:
         steps = int(self.config.max_micro_actions)
-        return PreviousActionV4(
-            gate=torch.full((lanes,), GATE_WAIT, dtype=torch.long),
-            micro_action_count=torch.zeros(lanes, dtype=torch.long),
-            variant=torch.zeros((lanes, steps), dtype=torch.long),
-            visible_card_vocab_id=torch.zeros((lanes, steps), dtype=torch.long),
-            effective_card_vocab_id=torch.zeros((lanes, steps), dtype=torch.long),
-            effective_form=torch.zeros((lanes, steps), dtype=torch.long),
-            ability_vocab_id=torch.zeros((lanes, steps), dtype=torch.long),
-            target_cell=torch.full((lanes, steps), -1, dtype=torch.long),
-            delay_offset_bin=torch.full((lanes, steps), -1, dtype=torch.long),
-            source_position=torch.zeros((lanes, steps, 2), dtype=torch.float32),
-            source_mask=torch.zeros((lanes, steps), dtype=torch.bool),
-            action_mask=torch.zeros((lanes, steps), dtype=torch.bool),
-        )
+        # The record is owned data, not model output: a producer samples inside
+        # ``inference_mode`` and a PPO update later writes these tensors, so the
+        # empty record must be an ordinary tensor even when it is created there.
+        with torch.inference_mode(False):
+            return PreviousActionV4(
+                gate=torch.full((lanes,), GATE_WAIT, dtype=torch.long),
+                micro_action_count=torch.zeros(lanes, dtype=torch.long),
+                variant=torch.zeros((lanes, steps), dtype=torch.long),
+                visible_card_vocab_id=torch.zeros((lanes, steps), dtype=torch.long),
+                effective_card_vocab_id=torch.zeros((lanes, steps), dtype=torch.long),
+                effective_form=torch.zeros((lanes, steps), dtype=torch.long),
+                ability_vocab_id=torch.zeros((lanes, steps), dtype=torch.long),
+                target_cell=torch.full((lanes, steps), -1, dtype=torch.long),
+                delay_offset_bin=torch.full((lanes, steps), -1, dtype=torch.long),
+                source_position=torch.zeros((lanes, steps, 2), dtype=torch.float32),
+                source_mask=torch.zeros((lanes, steps), dtype=torch.bool),
+                action_mask=torch.zeros((lanes, steps), dtype=torch.bool),
+            )
 
     @property
     def previous_action(self) -> PreviousActionV4 | None:
@@ -178,6 +182,33 @@ class VectorTensorizer:
         """Start a fresh sequence: empty previous action for every lane."""
 
         self._previous_action = self._empty_previous_action(int(batch.count))
+
+    def reset_rows(self, batch: VectorObservationBatch, lanes: Any) -> None:
+        """Clear the previous action of the lanes that started a new episode.
+
+        A vector autoresets one lane at a time, so the record cannot be dropped
+        wholesale: every other lane keeps its history.  ``lanes`` is a boolean
+        mask of length ``batch.count`` or an index sequence.
+        """
+
+        self._ensure_state(batch)
+        assert self._previous_action is not None  # narrowed by ``_ensure_state``
+        selector = np.asarray(lanes)
+        if selector.dtype == bool:
+            if selector.shape != (int(batch.count),):
+                raise ValueError("row reset mask must have one entry per lane")
+            if not selector.any():
+                return
+            selector = np.flatnonzero(selector)
+        index = np.asarray(selector, dtype=np.int64)
+        if index.size == 0:
+            return
+        if index.ndim != 1 or np.any(index < 0) or np.any(index >= int(batch.count)):
+            raise ValueError("row reset indices are outside the batch")
+        template = self._empty_previous_action(int(batch.count))
+        for item in fields(self._previous_action):
+            target = getattr(self._previous_action, item.name)
+            target[index] = getattr(template, item.name)[index]
 
     def _ensure_state(self, batch: VectorObservationBatch) -> None:
         if self._previous_action is None or int(self._previous_action.gate.shape[0]) != int(batch.count):
@@ -242,8 +273,13 @@ class VectorTensorizer:
         if validate:
             sequence.validate(self.config, candidate_count=int(candidates.mask.shape[1]))
         previous = self._empty_previous_action(lanes)
-        previous.gate = sequence.gate.detach().cpu().clone()
-        previous.micro_action_count = sequence.micro_action_count.detach().cpu().clone()
+        # The record outlives the collection step: a producer samples inside
+        # ``inference_mode`` and later resets rows or hands these tensors to a
+        # PPO update, and an inference tensor cannot be updated in place
+        # outside that mode.  Copy the sampled rows as ordinary tensors.
+        with torch.inference_mode(False):
+            previous.gate = sequence.gate.detach().cpu().clone()
+            previous.micro_action_count = sequence.micro_action_count.detach().cpu().clone()
         mask = candidates.mask.numpy()
         uid = candidates.uid.numpy()
         for lane in range(lanes):

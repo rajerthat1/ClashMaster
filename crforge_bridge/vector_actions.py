@@ -112,6 +112,64 @@ def engine_cell_from_game(col: int, row: int, *, seat: int, cols: int, rows: int
     return engine_col, engine_row
 
 
+def plan_window_ticks(
+    offsets: np.ndarray, window: int
+) -> tuple[np.ndarray, int, int]:
+    """Spread one decision's micro-actions over the engine ticks of its window.
+
+    The engine takes **one** action per seat per tick, while a V4 decision may
+    carry two micro-actions, each with its own native ``execute_offset_ticks``
+    (``1 + delay bin`` ticks after the decision).  Stepping the engine one tick
+    at a time is what keeps the second micro-action from being silently
+    dropped: this is the rule that says which tick carries which action.
+
+    ``offsets`` is :attr:`VectorActionPlan.offsets`, ``(lanes, steps)``, ``-1``
+    where the lane has no such micro-action.  An offset of ``1`` is the first
+    tick after the decision, so the tick inside the window is ``offset - 1``.
+
+    Two micro-actions that land on the same tick would lose one, so the later
+    one is shifted forward to the next free tick.  If the window has no free
+    tick left the action is **dropped**, and both the shift and the drop are
+    returned as counts: the producer records them on its artifact instead of
+    hiding a fidelity difference.
+
+    :returns: ``(ticks, shifted, dropped)`` — ``ticks[lane, step]`` is the tick
+        in ``[0, window)`` at which to give the action, or ``-1`` for none.
+    :raises ValueError: for a non-positive window or an offset ``<= 0``
+    """
+
+    window = int(window)
+    if window < 1:
+        raise ValueError("a decision window needs at least one engine tick")
+    source = np.asarray(offsets, dtype=np.int64)
+    if source.ndim != 2:
+        raise ValueError("offsets must be (lanes, steps)")
+    ticks = source - 1
+    if np.any(source == 0):
+        raise ValueError("an action's execute offset is at least one tick")
+    ticks[source < 0] = -1
+    lanes, steps = ticks.shape
+    shifted = 0
+    dropped = 0
+    for lane in range(lanes):
+        used: set[int] = set()
+        for step in range(steps):
+            value = int(ticks[lane, step])
+            if value < 0:
+                continue
+            start = value
+            while value < window and value in used:
+                value += 1
+            if value >= window:
+                ticks[lane, step] = -1
+                dropped += 1
+                continue
+            shifted += value - start
+            ticks[lane, step] = value
+            used.add(value)
+    return ticks, shifted, dropped
+
+
 def engine_action_from_native(action: Any, *, cols: int, rows: int, seat: int) -> int:
     """The engine index of one stock ``ActionV1`` from the per-lane decoder.
 

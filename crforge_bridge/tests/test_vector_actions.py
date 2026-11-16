@@ -14,6 +14,7 @@ from crforge_bridge.vector_actions import (
     engine_action_from_native,
     engine_action_index,
     engine_cell_from_game,
+    plan_window_ticks,
 )
 from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_rows import reference_action_mask, reference_scalar_observation
@@ -334,3 +335,36 @@ def test_a_closed_engine_mask_is_reported_not_repaired(crforge_runtime: None) ->
             vector.masks[0, 0, index] = saved
         assert int(closed.actions[0, 0]) == index
         assert not bool(closed.masked[0, 0])
+
+
+def test_plan_window_ticks_gives_each_micro_action_its_own_engine_tick() -> None:
+    """One action per seat per tick: the second micro-action gets its own tick, never dropped."""
+
+    # A waiting lane carries -1; one action with offset 1 lands on the first tick.
+    ticks, shifted, dropped = plan_window_ticks(np.array([[1, -1]]), 5)
+    assert ticks.tolist() == [[0, -1]]
+    assert (shifted, dropped) == (0, 0)
+
+    # Delay bins are honoured: offset 1 + bin, so bin 3 is the fourth engine tick.
+    ticks, shifted, dropped = plan_window_ticks(np.array([[1, 4]]), 5)
+    assert ticks.tolist() == [[0, 3]]
+    assert (shifted, dropped) == (0, 0)
+
+    # Two actions at the earliest bin would collide; the later one moves one tick.
+    ticks, shifted, dropped = plan_window_ticks(np.array([[1, 1]]), 5)
+    assert ticks.tolist() == [[0, 1]]
+    assert (shifted, dropped) == (1, 0)
+
+    # A full window drops the action instead of overwriting the first one.
+    ticks, shifted, dropped = plan_window_ticks(np.array([[5, 5]]), 5)
+    assert ticks.tolist() == [[4, -1]]
+    assert (shifted, dropped) == (0, 1)
+
+    # Order is the bin's, not the micro-action's: the earlier bin goes first.
+    ticks, shifted, dropped = plan_window_ticks(np.array([[3, 1]]), 5)
+    assert ticks.tolist() == [[2, 0]]
+
+    with pytest.raises(ValueError):
+        plan_window_ticks(np.array([[1, 1]]), 0)
+    with pytest.raises(ValueError):
+        plan_window_ticks(np.array([[0, 1]]), 5)

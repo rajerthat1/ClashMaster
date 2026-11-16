@@ -268,3 +268,71 @@ def test_stacked_record_validation_rejects_a_broken_lane(crforge_runtime: None) 
         broken = lane_batch(stacked, 0)
         broken.match_scalars[0, 0] = float("nan")
         assert "match_scalars.values" in compare_semantic_batches(broken, lane_batch(stacked, 0))
+
+
+def test_reset_rows_clears_only_the_lanes_that_started_a_new_episode(crforge_runtime: None) -> None:
+    """A vector autoreset is per lane, so the previous action must reset per lane."""
+
+    tensorizer = _tensorizer()
+    config = tensorizer.config
+    with _vector(count=3) as vector:
+        encoder, batch, rows = _rows(vector, tensorizer)
+        for _ in range(60):
+            _step(vector, 500, 0.0)
+        encoder.encode(batch)
+        stacked = rows.tensorize(batch)
+        sequence = _action_sequence(stacked.candidates, config)
+        if int(sequence.micro_action_count.sum()) == 0:
+            pytest.skip("this seed opened no candidate")
+        rows.record_action(sequence, stacked, validate=True)
+        previous = rows.previous_action
+        assert previous is not None
+        kept = int(sequence.gate[1])
+        kept_count = int(sequence.micro_action_count[1])
+        before_gate = previous.gate.clone()
+        before_target = previous.target_cell.clone()
+
+        rows.reset_rows(batch, np.array([True, False, False]))
+        reset = rows.previous_action
+        assert reset is not None
+        assert int(reset.gate[0]) == GATE_WAIT
+        assert int(reset.micro_action_count[0]) == 0
+        assert not bool(reset.action_mask[0].any())
+        assert int(reset.gate[1]) == kept
+        assert int(reset.micro_action_count[1]) == kept_count
+        assert torch.equal(reset.gate[1:], before_gate[1:])
+        assert torch.equal(reset.target_cell[1:], before_target[1:])
+
+        with pytest.raises(ValueError):
+            rows.reset_rows(batch, np.array([True, False]))
+
+
+def test_recorded_action_from_inference_mode_can_be_reset_outside_it(crforge_runtime: None) -> None:
+    """The previous-action record must be a normal tensor: collection samples in inference mode."""
+
+    tensorizer = _tensorizer()
+    config = tensorizer.config
+    with _vector(count=2) as vector:
+        encoder, batch, rows = _rows(vector, tensorizer)
+        for _ in range(60):
+            _step(vector, 700, 0.0)
+        encoder.encode(batch)
+        stacked = rows.tensorize(batch)
+        sequence = _action_sequence(stacked.candidates, config)
+        if int(sequence.micro_action_count.sum()) == 0:
+            pytest.skip("this seed opened no candidate")
+        with torch.inference_mode():
+            rows.record_action(sequence, stacked, validate=True)
+        previous = rows.previous_action
+        assert previous is not None
+        assert not previous.gate.is_inference()
+        assert not previous.micro_action_count.is_inference()
+
+        # The producer's per-lane autoreset happens outside inference mode.
+        rows.reset_rows(batch, np.array([True, False]))
+
+        # A second sampling step must not resurrect an inference tensor either.
+        with torch.inference_mode():
+            rows.record_action(sequence, stacked, validate=False)
+        assert not rows.previous_action.gate.is_inference()
+        rows.reset_rows(batch, np.array([False, True]))

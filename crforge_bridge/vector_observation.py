@@ -360,9 +360,12 @@ class VectorObservationEncoder:
         self._last_y = np.zeros((self.count, self.schema.max_entities), dtype=np.float64)
         self._last_tick = np.full((self.count, self.schema.max_entities), -1, dtype=np.int64)
         self._last_entity_id = np.full((self.count, self.schema.max_entities), -1, dtype=np.int64)
-        # The canonical tick offset: ``BattleEnvV1`` reports ticks from the
-        # episode's first readable observation, and the batch must agree.
-        self._start_tick: int | None = None
+        # The canonical tick offset.  ``BattleEnvV1`` reports ticks from the
+        # episode's first readable observation, and the batch must agree.  It is
+        # **per lane**: a self-play vector autoresets one lane at a time, and
+        # that lane's clock restarts while the others keep running.
+        self._start_tick = np.full(self.count, -1, dtype=np.int64)
+        self._last_raw_tick = np.full(self.count, -1, dtype=np.int64)
 
     def spec(self) -> dict[str, int]:
         s = self.schema
@@ -381,7 +384,20 @@ class VectorObservationEncoder:
 
     @property
     def start_tick(self) -> int | None:
-        """The native tick the first ``encode()`` treated as tick zero."""
+        """The native tick the first ``encode()`` treated as tick zero.
+
+        Kept for callers that read one scalar; a lane that autoreset has its
+        own offset in :attr:`lane_start_ticks`.
+        """
+
+        started = self._start_tick[self._start_tick >= 0]
+        if started.size == 0:
+            return None
+        return int(started.min())
+
+    @property
+    def lane_start_ticks(self) -> np.ndarray:
+        """Per-lane native tick treated as tick zero (``-1`` before first encode)."""
 
         return self._start_tick
 
@@ -394,7 +410,8 @@ class VectorObservationEncoder:
         self._birth_tick.fill(-1)
         self._last_tick.fill(-1)
         self._last_entity_id.fill(-1)
-        self._start_tick = None
+        self._start_tick.fill(-1)
+        self._last_raw_tick.fill(-1)
 
     def encode(self, batch: VectorObservationBatch | None = None) -> VectorObservationBatch:
         if batch is None:
@@ -413,9 +430,22 @@ class VectorObservationEncoder:
             return obs[:, :, list(H[name])]
 
         raw_tick = header("tick").astype(np.int64)
-        if self._start_tick is None:
-            self._start_tick = int(raw_tick[:, 0].min()) if self.count else 0
-        tick = raw_tick - self._start_tick
+        lane_tick = raw_tick[:, 0]
+        # A lane that has not been encoded yet, or whose native clock went
+        # backwards, started a new episode (``VectorBattle`` autoresets one lane
+        # at a time).  Its offset restarts and its derived entity state is stale:
+        # a tower row keeps its id across a reset, so the id rule alone would
+        # carry a negative age into the next episode.
+        restarted = (self._start_tick < 0) | (lane_tick < self._last_raw_tick)
+        if restarted.any():
+            self._start_tick[restarted] = lane_tick[restarted]
+            self._birth_tick[restarted] = -1
+            self._last_tick[restarted] = -1
+            self._last_entity_id[restarted] = -1
+            self._last_x[restarted] = 0.0
+            self._last_y[restarted] = 0.0
+        self._last_raw_tick[...] = lane_tick
+        tick = raw_tick - self._start_tick[:, None]
         batch.tick[...] = tick
         batch.result[...] = header("result")
         batch.time_ms[...] = header("time_ms")
@@ -786,7 +816,7 @@ def compare_lane_facts(
     catalog = encoder.catalog
     vocabulary = VocabularyView(list(vector.vocabulary))
     mismatches: list[str] = []
-    start_tick = 0 if encoder.start_tick is None else encoder.start_tick
+    lane_start_ticks = encoder.lane_start_ticks
 
     def add(name: str, lane: int, seat: int | None) -> None:
         mismatches.append(f"{name} lane={lane} seat={seat}" if seat is not None else f"{name} lane={lane}")
@@ -795,6 +825,7 @@ def compare_lane_facts(
         lane = int(lane)
         seat0 = vector.observations[lane, 0].tolist()
         rows, header = decode_rows(seat0, schema, vocabulary, catalog)
+        start_tick = 0 if lane_start_ticks[lane] < 0 else int(lane_start_ticks[lane])
         if batch.tick[lane, 0] != header["tick"] - start_tick:
             add("tick", lane, 0)
         for name, value in (
