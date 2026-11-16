@@ -50,6 +50,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -94,6 +95,33 @@ def policy_state_id(model: nn.Module, checkpoint_id: str) -> str:
     """Identity of the sampling weights *and* the checkpoint they came from."""
 
     return hashlib.sha256(f"{checkpoint_id}:{weights_digest(model)}".encode()).hexdigest()[:32]
+
+
+def copy_weights(source: nn.Module, target: nn.Module) -> None:
+    """Copy every parameter and buffer of ``source`` into ``target`` in place.
+
+    In place matters: the target's ``Parameter`` objects keep their identity, so
+    the optimizer built over them keeps addressing the same tensors.  The state
+    dicts must line up exactly; a name or shape disagreement is refused rather
+    than partially applied.
+    """
+
+    source_state = source.state_dict()
+    target_state = target.state_dict()
+    if set(source_state) != set(target_state):
+        missing = sorted(set(source_state) - set(target_state))
+        extra = sorted(set(target_state) - set(source_state))
+        raise ValueError(f"weight copy refused: missing {missing[:4]}, unexpected {extra[:4]}")
+    for name, value in source_state.items():
+        expected = target_state[name]
+        if tuple(value.shape) != tuple(expected.shape):
+            raise ValueError(
+                f"weight copy refused: {name} is {tuple(value.shape)} in the source, "
+                f"{tuple(expected.shape)} in the target"
+            )
+    with torch.no_grad():
+        for name, value in target_state.items():
+            value.copy_(source_state[name])
 
 
 def weights_finite(model: nn.Module) -> bool:
@@ -434,6 +462,15 @@ class CrforgeTrainer:
         minibatch = int(self.config.lane_minibatch_size) or rows
         minibatch = min(minibatch, rows)
         optimizer_step = self.optimizer_steps
+        # The weights the update is about to start from.  In the synchronous
+        # cadences this equals the sampling id; a pipelined collector (see
+        # ``OverlapUpdater``) samples a segment before the previous segment's
+        # update has landed, so the two ids diverge and the update is stale by
+        # construction.  Recording both is what makes that measurable instead
+        # of inferred from the id chain.
+        sampling_policy_state_id = str(expected_policy_state_id)
+        policy_state_at_update_start = policy_state_id(self.model, self.checkpoint_id)
+        stale = policy_state_at_update_start != sampling_policy_state_id
         started = time.perf_counter()
         # cuDNN refuses an RNN backward in eval mode, and the native trainer's
         # ``eval()`` habit only survives on CPU. The model has no dropout
@@ -494,6 +531,9 @@ class CrforgeTrainer:
             "finite": finite and weights_ok,
             "metrics_finite": finite,
             "weights_finite": weights_ok,
+            "sampling_policy_state_id": sampling_policy_state_id,
+            "policy_state_id_at_update_start": policy_state_at_update_start,
+            "stale": stale,
             "policy_state_id_before": str(expected_policy_state_id),
             "policy_state_id_after": policy_state_id(self.model, self.checkpoint_id),
             "metrics": metrics,
@@ -516,6 +556,9 @@ class CrforgeTrainer:
                 "approx_kl": _metric_mean(rows_with_metrics, "approx_kl"),
                 "clip_fraction": _metric_mean(rows_with_metrics, "clip_fraction"),
                 "gradient_norm": _metric_last(rows_with_metrics, "gradient_norm"),
+                "sampling_policy_state_id": sampling_policy_state_id,
+                "policy_state_id_at_update_start": policy_state_at_update_start,
+                "stale": stale,
                 "policy_state_id_before": str(expected_policy_state_id),
                 "policy_state_id_after": entry["policy_state_id_after"],
                 "finite": entry["finite"],
@@ -528,6 +571,12 @@ class CrforgeTrainer:
     @property
     def distinct_behaviour_ids(self) -> int:
         return len({str(entry["policy_state_id_after"]) for entry in self.update_entries})
+
+    @property
+    def stale_updates(self) -> int:
+        """Updates whose rollout was sampled by weights already replaced."""
+
+        return sum(1 for entry in self.update_entries if bool(entry.get("stale")))
 
     def gate(self) -> dict[str, Any]:
         """The training gate: two consecutive updates and a finite trace."""
@@ -548,6 +597,9 @@ class CrforgeTrainer:
             "optimizer_steps": self.optimizer_steps,
             "segments_updated": len(self.update_entries),
             "distinct_behaviour_ids": self.distinct_behaviour_ids,
+            "stale_updates": self.stale_updates,
+            "on_policy_updates": len(self.update_entries) - self.stale_updates,
+            "all_updates_on_policy": self.stale_updates == 0,
             "two_consecutive_updates": two_updates,
             "trace_finite": trace_finite,
             "reward_trace": rewards,
@@ -572,11 +624,207 @@ class CrforgeTrainer:
         }
 
 
+class OverlapUpdater:
+    """Run a segment's update while the *next* segment collects.
+
+    The synchronous loop spends ``collection + update`` per segment.  This class
+    hides most of the update behind the next segment's collection: the trainer
+    owns a second model (``trainer.model``), a worker thread applies the update to
+    it, and the collection model keeps the weights the current segment was
+    sampled with.  At the next segment boundary the worker is joined, the updated
+    weights are copied into the collection model, and the next update starts.
+
+    The price is explicit and measured, not hidden:
+
+    * **One update of staleness.**  Segment ``k`` is collected with the weights
+      left by update ``k-1``, but update ``k`` starts only after update ``k-1``
+      lands.  Every update but the first is therefore stale by exactly one
+      update.  The trainer records ``sampling_policy_state_id`` against
+      ``policy_state_id_at_update_start`` and ``stale`` on each trace row, so the
+      tax is a number (KL/clip) rather than an inference.
+    * **A weight sync at every boundary.**  The copy is done after the worker is
+      joined and before the next segment samples, so the collecting pass never
+      sees a partially applied update.  ``submit`` hashes the collection model
+      before the copy and refuses if it is not the id the segment was sampled
+      with — that is the "behaviour identity unchanged during collection" gate.
+    * **No third model.**  The update model is a full second copy of the network
+      (plus Adam's moments in the trainer), which is the memory the pipeline
+      costs on top of the synchronous loop.
+
+    ``submit`` and ``finish`` must be called from one thread (the collector); the
+    worker only calls ``trainer.enqueue``.  A worker exception is re-raised on the
+    collector at the next join.
+    """
+
+    def __init__(
+        self,
+        trainer: CrforgeTrainer,
+        collection_model: nn.Module,
+        *,
+        device: str | torch.device = "cpu",
+        verify_weights: bool = True,
+    ) -> None:
+        if trainer.model is collection_model:
+            raise ValueError(
+                "an overlapped update needs a second model: the trainer's model and the "
+                "collection model cannot be the same object"
+            )
+        self.trainer = trainer
+        self.collection_model = collection_model
+        self.device = torch.device(device)
+        self.verify_weights = bool(verify_weights)
+        self._thread: threading.Thread | None = None
+        self._error: list[BaseException] | None = None
+        self._started_at: float | None = None
+        self._last_join_wall = 0.0
+        self.sync_events: list[dict[str, Any]] = []
+        self.join_wall_s = 0.0
+        self.sync_wall_s = 0.0
+        self.update_in_flight_wall_s = 0.0
+        self.identity_checks = 0
+
+    @property
+    def busy(self) -> bool:
+        """True while a worker is applying an update."""
+
+        return self._thread is not None
+
+    # -- worker lifecycle -----------------------------------------------------
+
+    def _start(self, rollout: StoredRolloutV4, *, segment: int, expected_policy_state_id: str) -> None:
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                self.trainer.enqueue(
+                    rollout, segment=segment, expected_policy_state_id=expected_policy_state_id
+                )
+            except BaseException as error:  # noqa: BLE001 - re-raised on the collector thread
+                errors.append(error)
+
+        thread = threading.Thread(target=run, name=f"crforge-update-seg{segment}", daemon=True)
+        self._error = errors
+        self._thread = thread
+        self._started_at = time.perf_counter()
+        thread.start()
+
+    def _join(self) -> None:
+        thread = self._thread
+        if thread is None:
+            self._last_join_wall = 0.0
+            return
+        started = time.perf_counter()
+        thread.join()
+        join_wall = time.perf_counter() - started
+        if self._started_at is not None:
+            self.update_in_flight_wall_s += time.perf_counter() - self._started_at
+        self._thread = None
+        self._started_at = None
+        self.join_wall_s += join_wall
+        self._last_join_wall = join_wall
+        errors, self._error = self._error, None
+        if errors:
+            raise RuntimeError(f"the overlapped update failed: {errors[0]}") from errors[0]
+
+    # -- the boundary ---------------------------------------------------------
+
+    def _sync_weights(self, *, segment: int | None, expected_policy_state_id: str | None) -> dict[str, Any]:
+        """Copy the update model into the collection model at a segment boundary."""
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        observed = policy_state_id(self.collection_model, self.trainer.checkpoint_id)
+        if expected_policy_state_id is not None:
+            self.identity_checks += 1
+            if observed != str(expected_policy_state_id):
+                raise RuntimeError(
+                    "the collecting weights changed during the segment: sampled with "
+                    f"{expected_policy_state_id}, the model is now {observed}"
+                )
+        started = time.perf_counter()
+        source_digest = weights_digest(self.trainer.model) if self.verify_weights else ""
+        copy_weights(self.trainer.model, self.collection_model)
+        target_digest = weights_digest(self.collection_model) if self.verify_weights else ""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+        wall = time.perf_counter() - started
+        match = (not self.verify_weights) or source_digest == target_digest
+        if not match:
+            raise RuntimeError(
+                "the weight copy did not reproduce the update model: "
+                f"source {source_digest}, collection {target_digest}"
+            )
+        self.sync_wall_s += wall
+        event = {
+            "segment": segment,
+            "identity_checked": expected_policy_state_id is not None,
+            "collection_identity_unchanged": True,
+            "collection_policy_state_id": observed,
+            "source_weights_digest": source_digest,
+            "collection_weights_digest": target_digest,
+            "weights_match": match,
+            "sync_wall_s": wall,
+        }
+        self.sync_events.append(event)
+        return event
+
+    def submit(
+        self, rollout: StoredRolloutV4, *, segment: int, expected_policy_state_id: str
+    ) -> dict[str, Any]:
+        """Close a segment: join the previous update, sync weights, start this one.
+
+        Returns the boundary's clocks for the producer's per-segment ledger.  The
+        method returns as soon as the worker is started, so the caller's next
+        segment collects while the update runs.
+        """
+
+        if not expected_policy_state_id:
+            raise ValueError("an overlapped rollout must name the weights that sampled it")
+        boundary_started = time.perf_counter()
+        self._join()
+        event = self._sync_weights(segment=segment, expected_policy_state_id=expected_policy_state_id)
+        self._start(rollout, segment=segment, expected_policy_state_id=expected_policy_state_id)
+        return {
+            "segment": int(segment),
+            "join_wall_s": self._last_join_wall,
+            "sync_wall_s": float(event["sync_wall_s"]),
+            "boundary_wall_s": time.perf_counter() - boundary_started,
+            "collection_identity_unchanged": bool(event["collection_identity_unchanged"]),
+        }
+
+    def finish(self) -> dict[str, Any] | None:
+        """Join the last update and bring the collection model up to date."""
+
+        self._join()
+        return self._sync_weights(segment=None, expected_policy_state_id=None)
+
+    def summary(self) -> dict[str, Any]:
+        """The pipeline's clocks, identity checks and per-boundary events."""
+
+        checked = [event for event in self.sync_events if event["identity_checked"]]
+        return {
+            "enabled": True,
+            "boundaries": len(self.sync_events),
+            "collection_identity_checks": self.identity_checks,
+            "collection_identity_unchanged": all(
+                bool(event["collection_identity_unchanged"]) for event in checked
+            ),
+            "weights_verified": all(bool(event["weights_match"]) for event in self.sync_events),
+            "join_wall_s": self.join_wall_s,
+            "sync_wall_s": self.sync_wall_s,
+            "boundary_wall_s": self.join_wall_s + self.sync_wall_s,
+            "update_in_flight_wall_s": self.update_in_flight_wall_s,
+            "events": self.sync_events,
+        }
+
+
 __all__ = [
     "STATE_POLICIES",
     "CrforgeResumeState",
     "CrforgeTrainer",
     "CrforgeTrainingConfig",
+    "OverlapUpdater",
+    "copy_weights",
     "load_resume_state",
     "optimizer_signature",
     "policy_state_id",

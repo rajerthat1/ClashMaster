@@ -14,6 +14,7 @@ import torch
 from crforge_bridge.training import (
     CrforgeTrainer,
     CrforgeTrainingConfig,
+    copy_weights,
     load_resume_state,
     optimizer_signature,
     policy_state_id,
@@ -333,3 +334,58 @@ def test_an_update_runs_in_train_mode_and_restores_the_collection_mode(monkeypat
     assert seen["training"] is True
     assert model.training is False  # collection resumes in the mode it used
     assert trainer.gate()["updates"] == 1
+
+
+def test_an_update_records_the_weights_it_actually_started_from() -> None:
+    """A pipelined collector samples before the previous update lands.
+
+    The stored rollout names the sampling weights; the model has since moved.
+    The trace must record both ids and flag the update stale, instead of calling
+    it on-policy because ``policy_state_id_before`` is the sampling id.
+    """
+
+    torch.manual_seed(13)
+    model = _model().eval()
+    trainer = _trainer(model)
+    stale_rollout = _rollout(model)
+    sampled_id = stale_rollout.policy_state_id
+
+    # Simulate update k-1 landing between the sample and this update.
+    with torch.no_grad():
+        next(model.parameters()).add_(0.01)
+    update_start_id = policy_state_id(model, "fixture")
+    assert update_start_id != sampled_id
+
+    entry = trainer.enqueue(stale_rollout, segment=0, expected_policy_state_id=sampled_id)
+    assert entry is not None and entry[0]["stale"] is True
+    assert entry[0]["sampling_policy_state_id"] == sampled_id
+    assert entry[0]["policy_state_id_at_update_start"] == update_start_id
+    assert trainer.trace[0]["stale"] is True
+    assert trainer.gate()["stale_updates"] == 1
+    assert trainer.gate()["all_updates_on_policy"] is False
+
+    # A rollout sampled by the post-update weights is on-policy.
+    fresh = _rollout(model)
+    trainer.enqueue(fresh, segment=1, expected_policy_state_id=fresh.policy_state_id)
+    assert trainer.trace[1]["stale"] is False
+    assert trainer.gate()["on_policy_updates"] == 1
+
+
+def test_copy_weights_is_in_place_and_refuses_a_mismatch() -> None:
+    source = _model().eval()
+    target = _model().eval()
+    with torch.no_grad():
+        next(target.parameters()).add_(1.0)
+    assert weights_digest(source) != weights_digest(target)
+
+    target_parameters = [id(parameter) for parameter in target.parameters()]
+    copy_weights(source, target)
+
+    assert weights_digest(source) == weights_digest(target)
+    # The optimizer built over these Parameters keeps addressing the same tensors.
+    assert [id(parameter) for parameter in target.parameters()] == target_parameters
+
+    extra = _model().eval()
+    extra.extra_parameter = torch.nn.Parameter(torch.zeros(1))
+    with pytest.raises(ValueError, match="weight copy refused"):
+        copy_weights(source, extra)

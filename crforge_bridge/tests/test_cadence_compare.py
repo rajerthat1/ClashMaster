@@ -106,6 +106,45 @@ def test_summarize_run_refuses_a_trace_update_count_mismatch() -> None:
         cadence_compare.summarize_run(artifact)
 
 
+def test_classify_updates_prefers_the_measured_stale_verdict() -> None:
+    """A pipelined update's chain looks on-policy; the measured verdict does not."""
+
+    entries = [
+        {
+            "policy_state_id_before": "A",
+            "policy_state_id_after": "B",
+            "sampling_policy_state_id": "A",
+            "policy_state_id_at_update_start": "A",
+            "stale": False,
+        },
+        {
+            "policy_state_id_before": "B",
+            "policy_state_id_after": "C",
+            "sampling_policy_state_id": "B",
+            "policy_state_id_at_update_start": "C",
+            "stale": True,
+        },
+    ]
+    assert cadence_compare.classify_updates(entries) == [False, True]
+
+
+def test_summarize_run_reads_the_pipeline_block() -> None:
+    artifact = _artifact(policy="reset", segments_per_wave=1, updates=[(0, "A", "B"), (1, "B", "C")])
+    artifact["pipeline"] = {
+        "wall_s": 70.0,
+        "serial_equivalent_wall_s": 105.0,
+        "speedup": 1.5,
+        "wall_saved_s": 35.0,
+        "update_in_flight_wall_s": 60.0,
+        "collection_identity_unchanged": True,
+    }
+    summary = cadence_compare.summarize_run(artifact)
+    assert summary["pipeline_enabled"] is True
+    assert summary["pipeline_wall_s"] == pytest.approx(70.0)
+    assert summary["pipeline_speedup"] == pytest.approx(1.5)
+    assert summary["collection_identity_unchanged"] is True
+
+
 def test_build_comparison_reports_wave_cost_and_carry_delta() -> None:
     runs = []
     for policy, segments_per_wave, updates in (

@@ -54,6 +54,18 @@ training gate needs **two consecutive finite updates** — one update proves the
 mechanics, not the loop.  ``--save-checkpoint`` writes a V4 checkpoint (weights,
 persistent optimizer, loop counters) and reloads it to verify the weight bytes.
 
+``--overlap-update`` pipelines the loop: the trainer owns a second model and a
+worker thread, so segment ``k``'s update runs while segment ``k+1`` collects.  The
+collection model is changed only at a joined boundary, and every boundary records
+the two invariants — the collecting weights still hash to the id the segment was
+sampled with, and the copy reproduces the update model byte-for-byte.  The price
+is one update of staleness: segment ``k`` is sampled before update ``k-1`` lands,
+so every update after the first starts from newer weights than the data it reads.
+The trace records ``sampling_policy_state_id`` against
+``policy_state_id_at_update_start`` and flags the row ``stale``.  Whether that trade is
+worth it is not assumed: ``tools/crforge/overlap_compare.py`` measures the wall,
+the collection rate and the stale KL/clip against the serial loop.
+
 ``--force-second-micro`` is a **timing probe, not a rollout**: the sampled
 policy never emits two micro-actions, so this mode appends a different legal
 play from the open candidates at the sampled play's own delay bin.  The
@@ -93,6 +105,8 @@ from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, Pot
 from crforge_bridge.training import (
     CrforgeTrainer,
     CrforgeTrainingConfig,
+    OverlapUpdater,
+    copy_weights,
     load_resume_state,
     optimizer_signature,
     policy_state_id,
@@ -413,6 +427,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--overlap-update",
+        action="store_true",
+        help=(
+            "pipeline the loop: apply each segment's update on a second model in a worker "
+            "thread while the next segment collects; costs one update of staleness, which "
+            "the training trace records as 'stale'"
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -470,6 +493,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--wave-segments cannot exceed --segments")
     if args.resume and not args.ppo_update:
         raise SystemExit("--resume continues a training loop; pass --ppo-update as well")
+    if args.overlap_update and not args.ppo_update:
+        raise SystemExit("--overlap-update pipelines the training loop; pass --ppo-update as well")
+    if args.overlap_update and args.update_state_policy == "wave":
+        raise SystemExit(
+            "--overlap-update is the per-segment pipeline (reset/carry); the wave already batches "
+            "segments and is a diagnostic cadence, so combining them would measure neither"
+        )
     if args.ppo_update and (
         args.ppo_epochs < 1
         or args.ppo_sequence_chunk < 1
@@ -547,11 +577,22 @@ def main(argv: list[str] | None = None) -> int:
     if window < window_span:
         raise SystemExit(f"policy window is {window} ticks but its delay bins need {window_span}")
     state = model.initial_state(args.count * len(seats), device=device)
+    # The overlapped loop needs a second, independent model: the collector keeps
+    # sampling with stable weights while the worker updates this copy.  Loading
+    # the checkpoint twice (rather than deepcopy) makes the two models visibly
+    # separate objects and verifies they start from the same weight bytes.
+    trainer_model = model
+    if args.overlap_update:
+        update_policy = load_policy_v4(args.checkpoint, device=device)
+        trainer_model = update_policy.model
+        trainer_model.eval()
+        if weights_digest(trainer_model) != weights_digest(model):
+            raise SystemExit("the second model loaded different weights from the same checkpoint")
     trainer = (
         None
         if training_config is None
         else CrforgeTrainer(
-            model,
+            trainer_model,
             config=training_config,
             checkpoint_id=str(policy.checkpoint_id),
             device=device,
@@ -566,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
         # the loop counters from the same file, and refuses a checkpoint that
         # lacks them (a restart of Adam is a different run, not a resume).
         try:
-            resume_state = load_resume_state(args.checkpoint, model, trainer.optimizer, device=device)
+            resume_state = load_resume_state(args.checkpoint, trainer.model, trainer.optimizer, device=device)
         except (TypeError, ValueError) as error:
             raise SystemExit(f"--resume refused: {error}") from error
         # The cadence is a CLI setting, so a resume must state the one the
@@ -588,7 +629,18 @@ def main(argv: list[str] | None = None) -> int:
                 f"not {training_config.segments_per_wave}"
             )
         trainer.resume(resume_state)
+        if args.overlap_update:
+            # The worker's model holds the resumed weights; the collector must
+            # start from the same bytes or the first segment would bind the seed.
+            copy_weights(trainer.model, model)
+            if weights_digest(model) != resume_state.weights_digest:
+                raise SystemExit("--resume: the collection model did not receive the resumed weights")
         print(json.dumps({"event": "resumed", **resume_state.as_dict()}), flush=True)
+    overlap = None
+    if args.overlap_update:
+        if trainer is None:  # defensive: the flag check above already pairs it with --ppo-update
+            raise SystemExit("--overlap-update needs a trainer")
+        overlap = OverlapUpdater(trainer, model, device=device)
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
     info = vector.schema.info
@@ -634,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
     faults_before = dict(vector.fault_counts())
     reset_mask = np.ones(args.count, dtype=bool)
     flushed_partial_wave = 0
+    pipeline_started = time.perf_counter()
     try:
         for segment in range(args.segments):
             segment_started = time.perf_counter()
@@ -652,6 +705,7 @@ def main(argv: list[str] | None = None) -> int:
             illegal_peak = 0
             rollout_store = None
             segment_policy_state_id = None
+            boundary_wall = 0.0
             if rollout_enabled:
                 segment_policy_state_id = policy_state_id(model, str(policy.checkpoint_id))
                 rollout_store = CrforgeRolloutStore(
@@ -856,18 +910,35 @@ def main(argv: list[str] | None = None) -> int:
                 segment_rollout["summary"] = rollout_store.summary().as_dict()
                 segment_rollout["storage_mib"] = round(rollout_store.storage_bytes() / 2**20, 3)
                 if trainer is not None:
-                    # The optimizer steps at the wave boundary; the recurrence
-                    # policy decides whether the next segment keeps this state.
-                    updates = trainer.enqueue(
-                        rollout, segment=segment, expected_policy_state_id=str(segment_policy_state_id)
-                    )
-                    if updates is not None:
-                        segment_updates = updates
+                    if overlap is not None:
+                        # Close this segment: join the previous update, sync the
+                        # collection weights at the boundary, and start this
+                        # segment's update in the worker.  The next segment
+                        # collects while it runs.
+                        boundary = overlap.submit(
+                            rollout,
+                            segment=segment,
+                            expected_policy_state_id=str(segment_policy_state_id),
+                        )
+                        boundary_wall = float(boundary["boundary_wall_s"])
                         state = trainer.boundary_state(state, rows=args.count * len(seats))
+                    else:
+                        # The optimizer steps at the wave boundary; the recurrence
+                        # policy decides whether the next segment keeps this state.
+                        updates = trainer.enqueue(
+                            rollout, segment=segment, expected_policy_state_id=str(segment_policy_state_id)
+                        )
+                        if updates is not None:
+                            segment_updates = updates
+                            state = trainer.boundary_state(state, rows=args.count * len(seats))
 
             wall = time.perf_counter() - segment_started
             update_wall = sum(float(update["wall_s"]) for update in segment_updates)
             collection_wall = max(wall - update_wall, 0.0)
+            if overlap is not None:
+                # The segment clock includes the boundary join + weight sync that
+                # closes it; the update itself is in the worker's ledger.
+                collection_wall = max(wall - boundary_wall, 0.0)
             for name, values in samples.items():
                 timing[name].extend(values)
             entry = {
@@ -875,6 +946,7 @@ def main(argv: list[str] | None = None) -> int:
                 "wall_s": wall,
                 "update_wall_s": update_wall,
                 "collection_wall_s": collection_wall,
+                "boundary_wall_s": boundary_wall,
                 "decisions": counts["decisions"],
                 "lane_decisions": counts["lane_decisions"],
                 "lane_decisions_per_s": counts["lane_decisions"] / wall if wall else 0.0,
@@ -904,6 +976,21 @@ def main(argv: list[str] | None = None) -> int:
                 totals[name] += value
             totals["illegal_peak"] = max(totals["illegal_peak"], illegal_peak)
             print(json.dumps(entry), flush=True)
+
+        pipeline_wall = None
+        if overlap is not None:
+            # Join the last update and bring the collection model up to date, then
+            # attach each worker update to its segment.  The pipeline wall is the
+            # loop's wall, not the sum of the segment clocks: the updates overlap
+            # the collection, so collection + update deliberately exceeds it.
+            # This join must happen before anything reads trainer.pending: the
+            # worker is the only writer while an update is in flight.
+            overlap.finish()
+            pipeline_wall = time.perf_counter() - pipeline_started
+            for update in trainer.update_entries:
+                segments[int(update["segment"])]["updates"].append(update)
+            for item in segments:
+                item["update_wall_s"] = sum(float(update["wall_s"]) for update in item["updates"])
 
         if trainer is not None and trainer.pending:
             # A run whose segment count is not a whole number of waves still
@@ -936,7 +1023,7 @@ def main(argv: list[str] | None = None) -> int:
             for key in set(faults_after) | set(faults_before)
         }
         fault_delta = {key: value for key, value in fault_delta.items() if value}
-        wall_total = sum(item["wall_s"] for item in segments)
+        wall_total = pipeline_wall if pipeline_wall is not None else sum(item["wall_s"] for item in segments)
         collection_wall_total = sum(item["collection_wall_s"] for item in segments)
         eligible_total = totals["eligible_lane_decisions"]
         act_rate = totals["act_lane_decisions"] / eligible_total if eligible_total else 0.0
@@ -980,10 +1067,45 @@ def main(argv: list[str] | None = None) -> int:
                 bool(update_entries) and all(bool(item["pass"]) for item in update_entries) and update_totals["finite"]
             ),
         }
+        pipeline_block = None
+        if overlap is not None:
+            update_wall_total = sum(float(item["wall_s"]) for item in update_entries)
+            serial_equivalent = collection_wall_total + update_wall_total
+            pipeline_block = {
+                **overlap.summary(),
+                "wall_s": wall_total,
+                "collection_wall_s": collection_wall_total,
+                "update_wall_s": update_wall_total,
+                "boundary_wall_s": sum(float(item["boundary_wall_s"]) for item in segments),
+                "serial_equivalent_wall_s": serial_equivalent,
+                "wall_saved_s": serial_equivalent - wall_total,
+                "speedup": (serial_equivalent / wall_total) if wall_total else 0.0,
+                "collection_lane_decisions_per_s": (
+                    totals["lane_decisions"] / collection_wall_total if collection_wall_total else 0.0
+                ),
+                "pipeline_lane_decisions_per_s": totals["lane_decisions"] / wall_total if wall_total else 0.0,
+                "stale_updates": trainer.stale_updates,
+                "sampling_policy_state_ids": [
+                    str((item.get("rollout") or {}).get("policy_state_id", "")) for item in segments
+                ],
+                "update_start_policy_state_ids": [
+                    str(item.get("policy_state_id_at_update_start", "")) for item in update_entries
+                ],
+                "semantics": (
+                    "segment k is collected with the weights left by update k-1 while update k runs; "
+                    "the update therefore starts one update behind the data it reads (stale), and "
+                    "the collection model is only changed at a joined boundary"
+                ),
+            }
         checkpoint_info = None
         if args.save_checkpoint is not None:
             checkpoint_info = _save_checkpoint(
-                args.save_checkpoint, model, trainer, policy=policy, args=args, reward_config=reward_config
+                args.save_checkpoint,
+                trainer.model if trainer is not None else model,
+                trainer,
+                policy=policy,
+                args=args,
+                reward_config=reward_config,
             )
             print(json.dumps({"event": "checkpoint_saved", **checkpoint_info}), flush=True)
         if trainer is None:
@@ -1019,6 +1141,20 @@ def main(argv: list[str] | None = None) -> int:
                 "partial_wave_segments_flushed": flushed_partial_wave,
                 "checkpoint": checkpoint_info,
                 "resume": resume_block,
+                "pipeline": None if pipeline_block is None else {
+                    key: pipeline_block[key]
+                    for key in (
+                        "collection_identity_checks",
+                        "collection_identity_unchanged",
+                        "weights_verified",
+                        "boundary_wall_s",
+                        "join_wall_s",
+                        "sync_wall_s",
+                        "update_in_flight_wall_s",
+                        "stale_updates",
+                        "speedup",
+                    )
+                },
                 "pass": training_pass["pass"]
                 and (checkpoint_info is None or bool(checkpoint_info["reload_match"]))
                 and (resume_block is None or resume_block["update_step_continued"] is not False),
@@ -1043,6 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
                 "forced_second_micro": args.force_second_micro,
                 "training": bool(args.ppo_update),
                 "resume": bool(args.resume),
+                "overlap_update": bool(args.overlap_update),
                 "update_state_policy": args.update_state_policy,
                 "wave_segments": (args.wave_segments if args.update_state_policy == "wave" else 1),
                 "save_checkpoint": None if args.save_checkpoint is None else str(args.save_checkpoint),
@@ -1095,9 +1232,17 @@ def main(argv: list[str] | None = None) -> int:
                         "the behaviour weights stay frozen for the wave's segments, their updates "
                         "run at the wave end, and the recurrence resets there"
                     ),
+                    "overlap_update": (
+                        "none"
+                        if overlap is None
+                        else "each segment's update runs on a second model in a worker thread while "
+                        "the next segment collects; every update after the first is stale by one "
+                        "update and the trace records it"
+                    ),
                 },
             },
             "training": training,
+            "pipeline": pipeline_block,
             "fidelity": {
                 "frame": "facts are game-framed; the batched decode applies game -> seat",
                 "action_space": "one engine action per seat per tick; every V4 micro-action is scheduled",
@@ -1130,6 +1275,13 @@ def main(argv: list[str] | None = None) -> int:
                 "rollout_finite": rollout_finite,
                 "update_pass": update_gate["pass"],
                 "training_pass": training["pass"],
+                "pipeline_pass": (
+                    True
+                    if pipeline_block is None
+                    else bool(
+                        pipeline_block["collection_identity_unchanged"] and pipeline_block["weights_verified"]
+                    )
+                ),
                 "pass": (
                     rejected == 0
                     and eligible_total > 0
@@ -1138,6 +1290,13 @@ def main(argv: list[str] | None = None) -> int:
                     and rollout_finite
                     and update_gate["pass"]
                     and training["pass"]
+                    and (
+                        pipeline_block is None
+                        or bool(
+                            pipeline_block["collection_identity_unchanged"]
+                            and pipeline_block["weights_verified"]
+                        )
+                    )
                 ),
             },
             "totals": {
@@ -1145,6 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
                 "wall_s": wall_total,
                 "update_wall_s": sum(item["update_wall_s"] for item in segments),
                 "collection_wall_s": sum(item["collection_wall_s"] for item in segments),
+                "boundary_wall_s": sum(item["boundary_wall_s"] for item in segments),
                 "lane_decisions_per_s": totals["lane_decisions"] / wall_total if wall_total else 0.0,
                 "collection_lane_decisions_per_s": (
                     totals["lane_decisions"] / collection_wall_total if collection_wall_total else 0.0

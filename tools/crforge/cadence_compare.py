@@ -61,13 +61,17 @@ def _mean(values: list[float]) -> float:
 def classify_updates(update_entries: list[dict[str, Any]]) -> list[bool]:
     """True when an update's rollout was sampled by weights already replaced.
 
-    The trainer records the behaviour id each update starts from and the id it
-    leaves behind.  In a wave the second update starts from the same id as the
-    first but the first already moved the weights, so its stored ratios are off
-    the sampling policy.  In ``reset``/``carry`` the ids chain, so no update is
-    stale.
+    The trainer records three things now: the id the rollout was sampled with
+    (``sampling_policy_state_id``), the id of the weights the update actually
+    started from (``policy_state_id_at_update_start``), and the verdict
+    (``stale``).  Prefer the measured verdict: in a pipelined run the update
+    starts from newer weights than the ones that sampled the rollout, which the
+    old id-chain comparison cannot see because ``policy_state_id_before`` is the
+    *sampling* id.  Older artifacts only carry the chain, so keep that fallback.
     """
 
+    if update_entries and all("stale" in entry for entry in update_entries):
+        return [bool(entry["stale"]) for entry in update_entries]
     stale: list[bool] = []
     previous_after: str | None = None
     for entry in update_entries:
@@ -99,6 +103,7 @@ def summarize_run(artifact: dict[str, Any]) -> dict[str, Any]:
     on_policy_clip = [float(row["clip_fraction"]) for row, flag in zip(trace, stale, strict=True) if not flag]
     stale_clip = [float(row["clip_fraction"]) for row, flag in zip(trace, stale, strict=True) if flag]
     totals = artifact.get("totals") or {}
+    pipeline = artifact.get("pipeline") or {}
     return {
         "state_policy": training.get("state_policy"),
         "segments_per_wave": training.get("segments_per_wave"),
@@ -133,6 +138,14 @@ def summarize_run(artifact: dict[str, Any]) -> dict[str, Any]:
         "update_wall_s": float(totals.get("update_wall_s", 0.0)),
         "wall_s": float(totals.get("wall_s", 0.0)),
         "collection_lane_decisions_per_s": float(totals.get("collection_lane_decisions_per_s", 0.0)),
+        "boundary_wall_s": float(totals.get("boundary_wall_s", 0.0)),
+        "pipeline_enabled": bool(pipeline),
+        "pipeline_wall_s": float(pipeline.get("wall_s", 0.0)),
+        "pipeline_speedup": float(pipeline.get("speedup", 0.0)),
+        "pipeline_serial_equivalent_wall_s": float(pipeline.get("serial_equivalent_wall_s", 0.0)),
+        "pipeline_wall_saved_s": float(pipeline.get("wall_saved_s", 0.0)),
+        "pipeline_update_in_flight_wall_s": float(pipeline.get("update_in_flight_wall_s", 0.0)),
+        "collection_identity_unchanged": pipeline.get("collection_identity_unchanged"),
         "training_pass": bool(training.get("pass")),
     }
 
