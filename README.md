@@ -55,36 +55,9 @@ below. Project-specific additions:
 - **Remotes:** `origin` = this repo, `upstream` = `Jaasssoooonnnnn/FirstLight_CR`,
   `fork` = `rajerthat1/FirstLight_CR` (pristine mirror for upstream PRs).
 
----
-
-<p align="center">
-  <img src="docs/assets/firstlight-cr.png" width="240" alt="FirstLight CR logo">
-</p>
-<h1 align="center">FirstLight CR</h1>
-<p align="center"><strong>From replays to agents. From self-play to the arena.</strong></p>
-<p align="center">Train Clash Royale agents and play offline, with imitation learning and PPO self-play.</p>
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0"></a>
-  <img src="https://img.shields.io/badge/Python-3.12-3776AB.svg" alt="Python 3.12">
-  <img src="https://img.shields.io/badge/Learning-PPO_self--play-EE4C2C.svg" alt="PPO self-play">
-</p>
-<p align="center">
-  <a href="docs/getting_started.md">Installation</a> ·
-  <a href="docs/training.md">Training</a> ·
-  <a href="docs/training_history.md">Training history</a> ·
-  <a href="checkpoints/README.md">Models</a> ·
-  <a href="docs/architecture.md">Architecture</a> ·
-  <a href="docs/policy_service.md">Policy API</a>
-</p>
-
-<p align="center">
-  <img src="docs/assets/battle-montage.gif" width="960" alt="18 battle clips in a six-column, three-row montage at 12 times speed">
-</p>
 
 > **Video: the model's Hall of Fame push and a walkthrough of the AI architecture**
 >
-> [Watch in English (YouTube)](https://www.youtube.com/watch?v=TpfhzVlXWqw&lc=UgyyW1z5iYdLX8BZ0xl4AaABAg) · [观看中文版（哔哩哔哩）](https://www.bilibili.com/video/BV17Zb46JE9h)
-
 ## Pretrained models
 
 A newer model, Everlight, is on the [`yes-delay`](https://github.com/Jaasssoooonnnnn/FirstLight_CR/tree/yes-delay) branch. It has a larger network and plays with the real game's timing: a card takes effect 20 ticks (1 second) after it is played.
@@ -185,6 +158,3 @@ Use `--games` for the match count, `--match-config` for decks and levels, and `-
 | [Compatibility data](native_runner/data/competitive/README.md) | Card support, model catalogs, and version maintenance |
 | [Checks](docs/validation.md) | Environment checks, tests, and runtime result checks |
 
-## License
-
-FirstLight CR is an independent offline project under [Apache-2.0](LICENSE), unaffiliated with Supercell. The repository does not distribute the game APK or its resources; users supply the supported APK locally. See [NOTICE](NOTICE).
