@@ -32,6 +32,10 @@ Output:
     .venv/bin/python tools/crforge/profile_tensorizer.py \
         --port 26789 --decisions 200 --profile-decisions 120 \
         --output runs/crforge-c3/tensorizer-profile.json
+
+``--resident`` replaces the socket with the in-process adapter, and ``--deck
+learner`` measures the locked X-Bow list (the C1/C3 gate the evaluator deck
+alone cannot certify).
 """
 
 from __future__ import annotations
@@ -58,7 +62,15 @@ if str(_TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOL_DIR))
 
 import torch
-from bridge_session import DECK, TOWER_TROOP, build_episode, initial_elixir
+from bridge_session import (
+    DECK,
+    FORM_AVAILABILITY,
+    LEARNER_DECK,
+    LEARNER_FORM_AVAILABILITY,
+    TOWER_TROOP,
+    build_episode,
+    initial_elixir,
+)
 
 # Methods on the tensorizer are the sections C3 can attack.
 _TENSORIZER_SECTIONS = (
@@ -283,6 +295,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--port", type=int, default=26789)
     parser.add_argument(
+        "--resident",
+        action="store_true",
+        help="use the in-process resident adapter instead of the socket bridge",
+    )
+    parser.add_argument(
+        "--deck",
+        choices=("evaluator", "learner"),
+        default="evaluator",
+        help="evaluator deck (the C0 soak shape) or the locked X-Bow learner deck",
+    )
+    parser.add_argument(
         "--checkpoint", default=".resource/RoyaleFish/models/B-general-v275.pt"
     )
     parser.add_argument("--decisions", type=int, default=200)
@@ -300,8 +323,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     torch.set_num_threads(1)
+    if args.deck == "learner":
+        deck = LEARNER_DECK
+        forms = LEARNER_FORM_AVAILABILITY
+    else:
+        deck = DECK
+        forms = FORM_AVAILABILITY
+    native = None
+    if args.resident:
+        from native_runner.crforge_resident import CrforgeResidentEnv
+
+        native = CrforgeResidentEnv()
     environment, observations, sessions, close = build_episode(
-        port=args.port, checkpoint=args.checkpoint, seed=args.seed
+        port=None if args.resident else args.port,
+        native=native,
+        checkpoint=args.checkpoint,
+        seed=args.seed,
+        deck=deck,
+        forms=forms,
     )
     try:
         captured, starting_elixir, entity_counts = _capture(
@@ -327,9 +366,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     report = {
         "tool": "crforge-tensorizer-profile.v1",
-        "port": args.port,
+        "port": None if args.resident else args.port,
+        "transport": "resident" if args.resident else "bridge",
         "checkpoint": args.checkpoint,
-        "deck": list(DECK),
+        "deck": list(deck),
+        "deck_name": args.deck,
+        "form_availability": list(forms),
         "tower_troop": TOWER_TROOP,
         "seed": args.seed,
         "session_decisions": len(captured),

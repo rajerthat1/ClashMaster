@@ -201,9 +201,23 @@ def evaluate(
                         for event in observation.events:
                             if event.event_type == "action_rejected":
                                 rejected_total += 1
-                                reason = str(event.to_dict().get("data", {}).get("reason", "unknown"))
+                                # Two rejection shapes exist: a command refused before
+                                # it was queued (`data.reason`) and a queued play the
+                                # engine refused at its run tick (`data.rejection_diagnostic`).
+                                # Name both; "unknown" hid a real learner-deck refusal.
+                                payload = event.to_dict()
+                                data = payload.get("data", {})
+                                reason = data.get("reason")
+                                if not reason:
+                                    diagnostic = data.get("rejection_diagnostic") or {}
+                                    run_name = diagnostic.get("native_run_refusal_name")
+                                    if run_name:
+                                        reason = f"native_run_{str(run_name).lower()}"
+                                    elif diagnostic.get("same_card_still_in_slot"):
+                                        reason = "card_still_in_slot"
+                                reason = str(reason or "unknown")
                                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
-                                rejected.add(json.dumps(event.to_dict(), sort_keys=True))
+                                rejected.add(json.dumps(payload, sort_keys=True))
                 terminal = observations[0].terminal
                 winner = None if terminal.winner is None else ("a" if terminal.winner == a_owner else "b")
                 illegal_by_owner: dict[int, int] = {}
@@ -249,7 +263,11 @@ def evaluate(
             "illegal_total": sum(r["illegal_total"] for r in rows),
             # Rejected commands are their own gate: they are not "illegal"
             # moves and must never be folded into a win/loss statistic.
+            # ``rejected_total`` counts each event in every observation window
+            # it is visible in; ``rejected_unique_total`` counts the distinct
+            # refusals, which is the number a rollout gate should read.
             "rejected_total": sum(r["rejected_total"] for r in rows),
+            "rejected_unique_total": sum(r["rejected_actions"] for r in rows),
             "games_with_rejections": sum(bool(r["rejected_total"]) for r in rows),
             "rejected_reasons": {
                 reason: sum(r["rejected_reasons"].get(reason, 0) for r in rows)

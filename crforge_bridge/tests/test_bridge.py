@@ -59,6 +59,38 @@ def test_catalog_packs_and_unpacks_the_client_word() -> None:
         slot_flags_for_availability(4)
 
 
+def test_form_unit_rows_map_to_their_base_cards() -> None:
+    """Hero and evolution unit rows are cards, not anonymous effect rows."""
+
+    from crforge_bridge.observe import _nearest_card_id
+
+    catalog = Catalog.load()
+    assert _nearest_card_id(catalog, "KnightHero") == 26_000_000
+    assert _nearest_card_id(catalog, "MusketeerHero") == 26_000_014
+    assert _nearest_card_id(catalog, "ValkyrieHero") == 26_000_011
+    assert _nearest_card_id(catalog, "Archer_EV1") == 26_000_001
+    # A spawned unit has no card of its own and must stay unclassified.
+    assert _nearest_card_id(catalog, "Skeleton") is None
+    assert _nearest_card_id(catalog, "KingTower") is None
+
+
+def test_run_refusal_names_use_the_match_gate_namespace(engine: Engine) -> None:
+    """``lastRunRefusal`` is a LadderMatch code, not a PlayerCommands.Refusal.
+
+    The two namespaces overlap at 4, where the schema list says START_COOLDOWN
+    and the match says OVER.  Naming run refusals from the schema list once
+    reported a decided match as a start cooldown.
+    """
+
+    names = engine._match_refusal_names
+    assert names[4] == "OVER"
+    assert names[8] == "KING_DEAD"
+    assert names[9] == "NOT_IN_HAND"
+    assert names[0xD] == "NOT_ENOUGH_ELIXIR"
+    assert names[0x16] == "START_COOLDOWN"
+    assert names[1000] == "RUN_NOT_PLACED"
+
+
 def test_attestation_matches_the_checked_in_release(engine: Engine) -> None:
     raw = engine.attest()
     attestation = CrforgeAttestationV1.from_mapping(raw["crforge"])
@@ -120,6 +152,42 @@ def test_configure_observe_and_short_episode(engine: Engine) -> None:
     stepped = engine.step(5)
     assert stepped["ok"] and stepped["stopped"] is False
     assert engine.observe()["tick"] == 5
+
+
+def test_hero_unit_row_maps_to_its_base_card_and_unsigned_global_id(engine: Engine) -> None:
+    """A hero form is a public unit row, not an unknown effect row.
+
+    crforge names hero units ``KnightHero`` and reports the LogicData global id
+    as a signed 32-bit int.  The bridge used to emit ``cardId`` 0 and the
+    placeholder ``dataGlobalId`` 1, which left the archetype unresolved and made
+    the V4 tensorizer fail closed on the X-Bow learner deck (Knight hero).
+    """
+
+    for seed in range(1, 40):
+        payload = _configure_payload(seed)
+        for owner in (0, 1):
+            payload["battle"][f"deck{owner}"]["sp"][0] = {"d": 26000000, "el": 2, "l": 11}
+        engine.configure(payload)
+        hand = engine.observe()["players"][0]["hand"]
+        if any(int(card["cardId"]) == 26_000_000 for card in hand):
+            break
+    else:  # pragma: no cover - defensive
+        pytest.fail("no seed put the Knight hero in the opening hand")
+    engine.step(90)
+    reply = engine.deploy(0, 26_000_000, 0, 9000, 17000)
+    assert reply["injected"] is True
+    engine.step(40)
+
+    rich = engine.observe_rich()
+    hero_rows = [
+        item
+        for item in rich["objects"]
+        if int(item.get("cardId", 0)) == 26_000_000 and int(item.get("dataGlobalId", 1)) > 1
+    ]
+    assert hero_rows, "the deployed Knight hero did not appear in the rich observation"
+    # Unsigned bit pattern of the Java int -437504191; the compiled archetype
+    # catalog and the native probe both use this form.
+    assert {int(item["dataGlobalId"]) for item in hero_rows} == {3_857_463_105}
 
 
 def test_spawned_character_carries_the_native_logic_global_id(engine: Engine) -> None:

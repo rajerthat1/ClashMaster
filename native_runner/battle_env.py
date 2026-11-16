@@ -4427,6 +4427,13 @@ class BattleEnvV1:
                 except (TypeError, ValueError):
                     continue
             item.status = "rejected" if (same_card or native_run_refusal != 0) else "executed"
+            # A play that lost a race with the end of the match is not an illegal
+            # action: the match gate refuses everything once it is decided.  The
+            # give-stage path already resolves MATCH_OVER as a terminal cancel, so
+            # the run-stage path must agree instead of counting a normal end as a
+            # rejected command (which invalidates a training rollout).
+            if item.status == "rejected" and run_refusal_name == "OVER":
+                item.status = "canceled_terminal"
             item.server_apply_ms = observed_ms
             resolved.append(item)
             spec = self.card_specs.get(item.card_id)

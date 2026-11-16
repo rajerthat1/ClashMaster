@@ -175,7 +175,10 @@ def _nearest_card_id(catalog: Catalog, row_name: str) -> int | None:
     direct = catalog.card_id(row_name)
     if direct is not None:
         return direct
-    for suffix in ("_EV1", "_hero"):
+    # Hero unit rows are named ``<Card>Hero`` (``KnightHero``); ``_hero`` is the
+    # spell/action spelling and ``_EV1`` the evolution unit row.  Stripping is
+    # only safe because the remainder must resolve in the same catalog.
+    for suffix in ("_EV1", "Hero", "_hero"):
         if row_name.endswith(suffix):
             return catalog.card_id(row_name[: -len(suffix)])
     return None

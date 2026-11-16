@@ -2910,13 +2910,13 @@ seed-7 game whose board carries a median of 8 entities (0.992). A packet's real
 cost is the replay mean, so quote 0.99–1.07 ms/decision when sizing a run and
 0.71 ms/lane only as the gate measurement.
 
-**Open item found on the learner deck.** Measuring the same path with the X-Bow
-learner deck (with its Tesla/Archer/Knight forms) fails closed in the tensorizer:
-`public entity resolved to UNKNOWN archetype: entity_kind='effect',
-native_data_global_id=1`. The evaluator deck did not produce that row in 20
-clean games, so this is a **C2/C5 item**: the resident adapter must classify or
-filter bridge-only effect rows before a learner-deck rollout can be trusted.
-The C1 measurement therefore stays on the evaluator deck.
+**Open item found on the learner deck — resolved in §3.45.** Measuring the same
+path with the X-Bow learner deck (with its Tesla/Archer/Knight forms) failed
+closed in the tensorizer: `public entity resolved to UNKNOWN archetype:
+entity_kind='effect', native_data_global_id=1`. The offending row was the Knight
+hero with a signed Java global id, not an effect; §3.45 records the two bridge
+fixes, the run-refusal namespace bug they exposed, and the clean 2-game
+learner-deck mirror. The C1 measurement still stays on the evaluator deck.
 
 #### Verdict
 
@@ -2943,9 +2943,88 @@ Evidence: `runs/crforge-c1/encoder-spike.json` (the C1 default shape, above),
 `ab-optimized.json` (NumPy variant, reverted), `ab-pair{1,2}-{stock,python}.json`
 (A/B pairs). All C3 runs: same capture digest, `batch_digest 0a59a11d…`. Tests:
 `native_runner/tests/test_training_v4_tensorizer.py` (72, including the new
-`_finite` guard table), `crforge_bridge/tests` (8).
+`_finite` guard table), `crforge_bridge/tests` (17 after §3.45).
 
 Tooling notes for the next session: `tools/crforge/bridge_session.py` builds the
 shared live episode (deck, tower troop, release scope, one session per seat) for
 both tools, and `tools/crforge/profile_tensorizer.py --profile-decisions 0` is the
 timing-only mode for A/B runs (cProfile costs several times the work it measures).
+
+### 3.45 The learner deck's "effect" row was the Knight hero, and a run refusal is a match code (2026-11-17)
+
+The C3 open item — the X-Bow learner deck failing closed with
+`public entity resolved to UNKNOWN archetype: entity_kind='effect',
+native_data_global_id=1` — was two encoding bugs in the bridge, not a missing
+archetype. The evaluator deck never showed it because it carries no hero.
+
+#### The row was `KnightHero`
+
+`_nearest_card_id` stripped `_EV1` and `_hero`, but hero *unit* rows are
+`<Card>Hero` (`KnightHero`), so the row kept `cardId=0`. `BattleEnvV1` maps a
+non-positive card with no spec to `entity_kind='effect'`, which is why the row
+looked like a spell. Fix: strip `Hero` too; the remainder must resolve in the
+same catalog, so this cannot invent a card.
+
+Identity was the second half. `Engine._bind_holder_identity` read
+`entity.getData().globalId()` as a Java `int`; KnightHero is `-437504191` there,
+the `0 < global_id` guard rejected it, and the placeholder `dataGlobalId=1` set
+by `entity_rows` survived. The compiled archetype catalog and the native probe
+key the unsigned bit pattern: `3857463105 → form:Knight_hero` (vocab 215). The
+fix masks to `0xFFFFFFFF` before the range check.
+
+Repro before the fix, 80 learner-deck decisions, both seats: fail-closed at
+`entity_id=1005000007, entity_kind='effect', card_id=None,
+native_data_global_id=1`. After: 90 decisions and a complete 2-game mirror with
+`placeholder dataGlobalId rows: {}`.
+
+#### A run refusal is a `LadderMatch` code, not a `PlayerCommands.Refusal`
+
+The first clean rollout still counted one distinct reject in game 2 (seen 15
+times across the 45 s event window). The event was a queued Electro Spirit
+refused at its run tick; its payload had no `reason`, so `evaluate` reported
+"unknown". The run refusal was `code 4`, which the bridge named from
+`Schema.refusalNames()` — the *giving*-refusal enum, where 4 is `START_COOLDOWN`.
+`H_LAST_RUN_REFUSAL` carries the *match gate's* code, where 4 is
+`LadderMatch.OVER`. The play had lost a race with a decided match (crown
+advantage; the end-screen delay puts the terminal tick 71 ticks later).
+
+Two fixes:
+
+- `crforge_bridge/engine.py` names run refusals from the `LadderMatch` constants
+  (`OVER`, `KING_DEAD`, `NOT_IN_HAND`, `START_COOLDOWN`, `NOT_ENOUGH_ELIXIR`,
+  `RUN_NOT_PLACED`), read from the pinned class rather than copied.
+- `native_runner/battle_env.py` resolves a queued play refused with `OVER` as
+  `action_canceled_terminal`, exactly as the give-stage `MATCH_OVER` path does.
+  A play that loses the race with the end of a match is not an illegal action and
+  must not invalidate a rollout.
+
+`evaluate` now also names both rejection shapes (`data.reason` vs
+`data.rejection_diagnostic.native_run_refusal_name`) and reports
+`rejected_unique_total` next to the window total (one event stays visible for a
+450-tick window, so the raw total over-counts).
+
+#### Validation
+
+`runs/crforge-c3/learner-deck/` — locked X-Bow deck, mirror, `B-general-v275`,
+sampled, seeds 7–8, bridge transport:
+
+| game | seed | terminal | tick | illegal | rejected |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 1 | 7 | crown_advantage | 3,681 | 0 | 0 |
+| 2 | 8 | crown_advantage | 4,032 | 0 | 0 |
+
+Both games are decision-identical to the pre-fix run (same tick, same action
+counts), so the fix removed the spurious rejection without changing play. The
+learner deck is no longer a barrier to a C4 rollout. It also passes the C2 parity
+gate on the same deck: `resident_parity.py --deck learner --decisions 60` is
+**60/60 decisions identical** (resident 5.91 ms, bridge 7.33 ms, paired 1.29× —
+parity pass; the 2× throughput gate remains C3).
+
+Tooling: `tools/crforge/profile_tensorizer.py --resident --deck learner` and
+`tools/crforge/resident_parity.py --deck learner`; the locked deck lives once in
+`tools/crforge/bridge_session.py` (`LEARNER_DECK`, `LEARNER_FORM_AVAILABILITY`).
+C1's recorded 0.71 ms/lane stays the evaluator-deck gate measurement; the
+learner-deck tensorizer is not cheaper: **1.171 CPU ms/decision** (median 1.202,
+90 decisions, entities median 5 / max 11) in
+`runs/crforge-c3/learner-deck/tensorizer-profile.json`, against 0.992 on the
+evaluator deck. More spells, evolutions and a hero row, not a regression.

@@ -105,13 +105,13 @@ def _decision_record(
 # ---- episodes --------------------------------------------------------------
 
 
-def _resident_episode(*, checkpoint: str, seed: int):
+def _resident_episode(*, checkpoint: str, seed: int, deck=None, forms=None):
     from bridge_session import build_episode, initial_elixir
 
     from native_runner.crforge_resident import CrforgeResidentEnv
 
     environment, observations, sessions, close = build_episode(
-        native=CrforgeResidentEnv(), checkpoint=checkpoint, seed=seed
+        native=CrforgeResidentEnv(), checkpoint=checkpoint, seed=seed, deck=deck, forms=forms
     )
     starting = initial_elixir(observations)
     for owner, session in sessions.items():
@@ -119,7 +119,7 @@ def _resident_episode(*, checkpoint: str, seed: int):
     return environment, observations, sessions, close
 
 
-def _bridge_episode(*, checkpoint: str, seed: int):
+def _bridge_episode(*, checkpoint: str, seed: int, deck=None, forms=None):
     from bridge_session import build_episode, initial_elixir
 
     from crforge_bridge.engine import Engine
@@ -138,7 +138,7 @@ def _bridge_episode(*, checkpoint: str, seed: int):
     # control session is the shape a bulk run uses.
     native._persistent_transport_requested = True
     environment, observations, sessions, close = build_episode(
-        native=native, checkpoint=checkpoint, seed=seed
+        native=native, checkpoint=checkpoint, seed=seed, deck=deck, forms=forms
     )
     starting = initial_elixir(observations)
     for owner, session in sessions.items():
@@ -292,15 +292,24 @@ def run(
     seed: int = 1,
     decisions: int = 60,
     lean: bool = True,
+    deck_name: str = "evaluator",
     output: str | Path | None = None,
 ) -> dict[str, Any]:
     import torch
+    from bridge_session import DECK, FORM_AVAILABILITY, LEARNER_DECK, LEARNER_FORM_AVAILABILITY
+
+    if deck_name == "learner":
+        deck = LEARNER_DECK
+        forms = LEARNER_FORM_AVAILABILITY
+    else:
+        deck = DECK
+        forms = FORM_AVAILABILITY
 
     torch.set_num_threads(1)
 
     # 1. The resident leg decides; its actions become the shared script.
     resident_env, resident_obs, resident_sessions, resident_close = _resident_episode(
-        checkpoint=checkpoint, seed=seed
+        checkpoint=checkpoint, seed=seed, deck=deck, forms=forms
     )
     try:
         resident_records, replay = _play(
@@ -311,7 +320,7 @@ def run(
 
     # 2. The bridge leg replays those actions over the wire.
     bridge_env, bridge_obs, bridge_sessions, bridge_close = _bridge_episode(
-        checkpoint=checkpoint, seed=seed
+        checkpoint=checkpoint, seed=seed, deck=deck, forms=forms
     )
     try:
         bridge_records, _ = _play(
@@ -324,10 +333,10 @@ def run(
 
     # 3. Paired timing on fresh episodes, same script, alternating legs.
     resident_env, resident_obs, resident_sessions, resident_close = _resident_episode(
-        checkpoint=checkpoint, seed=seed
+        checkpoint=checkpoint, seed=seed, deck=deck, forms=forms
     )
     bridge_env, bridge_obs, bridge_sessions, bridge_close = _bridge_episode(
-        checkpoint=checkpoint, seed=seed
+        checkpoint=checkpoint, seed=seed, deck=deck, forms=forms
     )
     resident_ms: list[float] = []
     bridge_ms: list[float] = []
@@ -365,6 +374,9 @@ def run(
         "schema": "crforge-resident-parity.v1",
         "checkpoint": checkpoint,
         "seed": seed,
+        "deck_name": deck_name,
+        "deck": list(deck),
+        "form_availability": list(forms),
         "decisions_requested": decisions,
         "observation_mode": "lean" if lean else "validated",
         "parity": parity,
@@ -392,6 +404,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--decisions", type=int, default=60)
     parser.add_argument("--validated", action="store_true", help="use the validating observation path")
+    parser.add_argument(
+        "--deck",
+        choices=("evaluator", "learner"),
+        default="evaluator",
+        help="evaluator deck (the C0 soak shape) or the locked X-Bow learner deck",
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args(argv)
 
@@ -400,6 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         decisions=args.decisions,
         lean=not args.validated,
+        deck_name=args.deck,
         output=args.output,
     )
     parity = report["parity"]

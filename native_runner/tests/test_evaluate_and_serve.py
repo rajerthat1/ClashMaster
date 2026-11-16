@@ -64,6 +64,7 @@ def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, t
         # Rejects are a first-class gate, not a flavour of "illegal".
         "illegal_total": 0,
         "rejected_total": 0,
+        "rejected_unique_total": 0,
         "games_with_rejections": 0,
         "rejected_reasons": {},
     }

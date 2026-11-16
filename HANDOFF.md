@@ -243,6 +243,78 @@ do not start another R0 run.
 
 ---
 
+## Session 16 results (2026-11-17) — the learner-deck blocker is closed; a run refusal is a match code
+
+**Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4,
+`FINDINGS.md` §3.45.
+
+### The X-Bow tensorizer failure was the Knight hero
+
+The C3 open item (`entity_kind='effect'`, `native_data_global_id=1`) was not a
+missing archetype. Two bridge encoding bugs:
+
+- hero **unit** rows are `<Card>Hero` (`KnightHero`), not `_hero`, so
+  `_nearest_card_id` left `cardId=0` and `BattleEnvV1` classified the row as
+  `effect`;
+- `_bind_holder_identity` read the LogicData global id as a signed Java `int`
+  (`-437504191`), rejected it as non-positive, and left the placeholder
+  `dataGlobalId=1`. The catalog keys the unsigned bit pattern
+  (`3857463105 → form:Knight_hero`).
+
+Fixes: strip `Hero` in `crforge_bridge/observe.py`; mask the global id to
+`0xFFFFFFFF` in `crforge_bridge/engine.py`. Tests: a live hero-deploy test, a
+pure form-row classification test, and the match-code test below.
+
+### The one remaining reject was a decided match, mislabelled
+
+The first post-hero-fix 2-game mirror still had one distinct reject in game 2 (15
+window counts): a queued Electro Spirit refused at its run tick. `H_LAST_RUN_REFUSAL` is
+a **`LadderMatch`** code, but the bridge named it from the *giving*-refusal enum:
+code 4 is `LadderMatch.OVER` (`START_COOLDOWN` in the wrong namespace). The play
+lost a race with a crown-advantage end.
+
+Fixes: name run refusals from the `LadderMatch` constants (read from the pinned
+class), and resolve a queued play refused with `OVER` as
+`action_canceled_terminal` — the give-stage `MATCH_OVER` path already does this.
+`evaluate` now names both rejection shapes and adds `rejected_unique_total`.
+
+### Result: learner deck is rollout-clean
+
+`runs/crforge-c3/learner-deck/` — locked X-Bow deck, mirror, `B-general-v275`,
+sampled, bridge transport:
+
+| game | seed | terminal | tick | illegal | rejected |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 1 | 7 | crown_advantage | 3,681 | 0 | 0 |
+| 2 | 8 | crown_advantage | 4,032 | 0 | 0 |
+
+Both games are decision-identical to the pre-fix run, so the fix changed no play.
+Tests: `crforge_bridge` 17, `test_battle_env_rich_telemetry` 86 (+55 other
+battle-env), tensorizer 72, evaluate 2 — all pass.
+
+The learner deck also passes the C2 parity check: `resident_parity.py --deck
+learner --decisions 60` is **60/60 identical** (resident 5.91 ms, bridge 7.33 ms,
+paired 1.29×; parity pass, C2's 2× gate still belongs to C3) in
+`runs/crforge-c2/learner-parity.json`.
+
+The learner-deck tensorizer is **1.171 CPU ms/decision** (median 1.202, 90
+decisions, entities median 5 / max 11, resident transport) in
+`runs/crforge-c3/learner-deck/tensorizer-profile.json` — slightly above the
+evaluator deck's 0.992 because the X-Bow list carries more spells, evolutions and
+a hero, not because of the fix.
+
+### Next session (session 17) — C3-B is still the throughput gate
+
+1. **C3-B, unchanged:** a batched row build across lanes from a vectorized
+   `ObservationV1` (which does not exist yet — that is the real precondition),
+   `batch_digest`-identical to the per-lane path. Target ≤0.5 ms/lane.
+2. **C3-A:** only if a compiled helper is cheap in this tree; there is no
+   Cython/build extension today, so treat it as a design task, not a quick win.
+3. **C4** can now use the learner deck: `profile_tensorizer.py --resident
+   --deck learner` and `resident_parity.py --deck learner` are the entry points.
+4. **Parity cadence:** 50–150 native matches every N updates and after every
+   adapter change; never promote on crforge.
+
 ## Session 15 results (2026-11-16) — C2 landed: parity holds, the 2× gate was never the socket
 
 **Read first:** this section, [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) §0–§4.
@@ -323,9 +395,12 @@ Do not add lanes, processes or GPUs to close it.
    resident adapter drops under ~2.5 ms/decision.
 2. **C3-A (only if it is the cheap win):** port `_groups` to a Cython/C helper
    over plain arrays; gate ≥4× on that section before porting more.
-3. **Learner-deck blocker (unchanged):** the X-Bow deck fails closed in the
-   tensorizer on `entity_kind='effect'`, `native_data_global_id=1`. Classify or
-   filter bridge-only effect rows before any learner-deck rollout.
+3. ~~**Learner-deck blocker:** the X-Bow deck fails closed in the tensorizer on
+   `entity_kind='effect'`, `native_data_global_id=1`. Classify or filter
+   bridge-only effect rows before any learner-deck rollout.~~ **Done
+   2026-11-17:** the row was the Knight hero with a signed Java global id; see
+   the session-16 section above and `FINDINGS.md` §3.45. The learner deck
+   finishes 2/2 games with `illegal 0`, `rejected 0`.
 4. **Parity cadence:** 50–150 native matches every N updates and after every
    adapter change; never promote on crforge.
 
@@ -915,7 +990,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | Cloud GPU | **1× A6000 @ $0.35/h ran and was deleted** (~$0.23). Re-rent only for C4/C5 and promotion runs, after C1; the 2026-11-14 smoke sat at **4 %** utilisation |
 | Decision-rate reality | native: A51 4×8 @ 5 ticks = **0.26 matches/s** (raw channel); one x86_64 process = **0.61** raw, **0.082** measured *training* floor; learner loop = **0.04–0.05**. crforge: **2.6 / 6.0 / 13.0** matches/s at 1/4/8 threads, 256 lanes, this laptop (2026-11-15 bench); 18.5 / 52.5 on an M4 Pro. Raw ceilings exclude observe + tensorize |
 | **crforge bulk path** | **activated 2026-11-15** — `VectorBattle` is the bulk trainer after C0–C3; the native engine is the gate, the parity oracle and the deploy rig. **C0 closed 2026-11-16 (20/20 clean)**. The 10–30× is conditional on the C3 row build (≤0.5 ms/lane); a per-lane port is ~1.4× |
-| **Learner deck** | **X-Bow 3.0, locked 2026-11-15** — `x-bow · tesla-ev1 · archers-ev1 · knight-hero · skeletons · electro-spirit · fireball · the-log`, Princess tower. All cards/forms pass the 16.635 + crforge catalog check; tower troop is the open C2 item |
+| **Learner deck** | **X-Bow 3.0, locked 2026-11-15** — `x-bow · tesla-ev1 · archers-ev1 · knight-hero · skeletons · electro-spirit · fireball · the-log`, Princess tower `159000000`. All cards/forms pass the 16.635 + crforge catalog check; **rollout-clean 2026-11-17** (2/2 games, `illegal 0`, `rejected 0`) after the Knight-hero global-id fix. Deck constants live in `tools/crforge/bridge_session.py` |
 | **Substrate pins** | Clashback `002aa8c` / libg `c4721bd9…` (build `160635001`, local use only) = **the gate**; RoyaleFish `da9c8cf` = catalogs + `B-general-v275`/`A-hog26-v738` + `ever_*` (C4 recipe); crforge tables 16.635.8 + data lock. Record all four in every checkpoint artifact |
 | Training observation | **lean — done (§3.43)** — non-validating `construct_contract` + `lean_contracts()` scope under `policy_features_only`, no provenance/freeze/validation, cached hand contract and form aliases, `(identity, lean)`-keyed observation caches. Paired A/B: **11.75 → 7.81 CPU ms/packet**, **78 → 113 lane-packets/s** on one x86 engine; 8 lanes 10.6/12.5 → 8.2/9.4 ms. Validated path and parity unchanged |
 | Loop pipelining | **done, CPU-verified** — one `ppo-inference` thread, one batch in flight, receives staged during the forward (§3.41). Non-model wall −14 % with a cheap forward, neutral with the 17.5M model (forward = 98 % of wall). 10/10 segments clean. CUDA path unverified until a GPU run |
@@ -924,11 +999,13 @@ Yes — but as a **parity oracle**, not the training engine.
 | crforge simulator | `.resource/crforge/` — 16.635.3/8 tables, `VectorBattle` 1–256 lanes, zero-copy NumPy; core 127k ticks/s/thread. Bench: `PYTHONPATH=.resource/crforge/python .venv/bin/python -m crforge_env.bench …` |
 | crforge bridge | `crforge_bridge/` — 152/152 cards, 118 forms, `unmapped: []`; evaluation only (20–30 decisions/s with full `BattleEnvV1` assembly) |
 | crforge resident adapter | **`native_runner/crforge_resident.py`** — `CrforgeResidentEnv` presents the whole `NativeClashEnv` surface over an in-process `Engine` (bridge `dispatch()`, no socket); `status()` reports `resident: true` / `lanes: 1` |
-| C2 parity + throughput | **parity pass, throughput missed** — `tools/crforge/resident_parity.py`: **60/60 decisions identical** (native/rich/atomic envelopes, masks, rewards, terminals); paired `env.step` **1.21–1.53×** the bridge (resident 3.9–4.8 ms, bridge 4.2–7.3 ms). The wire is 1.2–1.7 ms of a 4–6 ms decision; the 2× gate is C3 |
+| C2 parity + throughput | **parity pass, throughput missed** — `tools/crforge/resident_parity.py`: **60/60 decisions identical** (native/rich/atomic envelopes, masks, rewards, terminals); paired `env.step` **1.21–1.53×** the bridge (resident 3.9–4.8 ms, bridge 4.2–7.3 ms). The wire is 1.2–1.7 ms of a 4–6 ms decision; the 2× gate is C3. **Learner deck 2026-11-17: 60/60 identical, paired 1.29×** (`runs/crforge-c2/learner-parity.json`) |
 | crforge engine cost | **two shared fixes (2026-11-16)** — run-refusal header reads windowed to `{runTick, runTick+1}` instead of both seats every tick, and one row decode per capture (memoized by generation/tick/command sequence). Both bit-identical to the bridge |
 | C0 legality soak | **20/20 clean, 2026-11-16** — `runs/crforge-c0-20261116/soak20-rerun/`: illegal 0, truncated 0, rejected 0, all `king_tower_destroyed` (seeds 7–26) |
 | C1 encoder spike | **measured at the default shape** — `runs/crforge-c1/encoder-spike.json`, 256 lanes × 200 × 3: vectorized facts **0.0165–0.0177 ms/lane** (56–61k decisions/s) vs per-lane 0.32–0.35 (**19–20×**), equivalence pass; projected end-to-end **0.713 ms/lane = 1.16 matches/s per process** (**C3 gate met**) |
 | C3 tensorizer profile | **measured, 2026-11-16** — `runs/crforge-c3/tensorizer-profile.json`; `tensorize`+`record_action` **0.992 CPU ms/decision** (stock 1.069), entities median 8, **3,754 Python calls/decision**, ~35 % of profiled time in builtin calls plus the frozen-mapping layer (`FINDINGS.md` §3.44) |
+| Learner-deck rollout | **clean 2026-11-17** — `runs/crforge-c3/learner-deck/`: 2/2 games, `illegal 0`, `rejected 0`, terminals at ticks 3,681 / 4,032. The tensorizer failure was the Knight hero's signed LogicData global id, not an effect row (`FINDINGS.md` §3.45) |
+| Run-refusal naming | **fixed 2026-11-17** — `H_LAST_RUN_REFUSAL` is a `LadderMatch` code (4 = `OVER`), not a `PlayerCommands.Refusal` ordinal; queued plays refused with `OVER` now resolve as `action_canceled_terminal` (`FINDINGS.md` §3.45) |
 | `tools/crforge/profile_tensorizer.py` | **new** — replays a live policy episode's tensorizer half under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical |
 
 ### State at handoff (processes are ephemeral)
@@ -1755,8 +1832,8 @@ Scale options, in order of leverage:
 | `crforge_bridge/tests/test_encoder_spike.py` | Pins the C1 encoders to the bridge's own facts and card-parameter packing |
 | `runs/crforge-c0-20261116/` | C0 legality soak: 20 games, `illegal`, `truncated`, `rejected_total` counters |
 | `runs/crforge-c1/` | C1 encoder-spike JSON (`encoder-spike.json`), default shape 256 × 200 × 3 |
-| `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json` |
-| `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator deck, tower troop, release scope, one session per seat — used by all crforge tools; takes `port=` (socket bridge) or `native=` (resident adapter) |
+| `runs/crforge-c3/` | C3 tensorizer profiles: `tensorizer-profile.json` (shipped), `ab-stock.json`, `ab-optimized.json` (reverted NumPy variant), `ab-pair{1,2}-{stock,python}.json`; `learner-deck/` holds the locked-deck match config, the clean 2-game rollout and its tensorizer profile |
+| `tools/crforge/bridge_session.py` | Shared live bridge episode: evaluator and **locked X-Bow learner deck** constants (`DECK`, `LEARNER_DECK`, form availability), tower troop, release scope, one session per seat — used by all crforge tools; takes `port=` (socket bridge) or `native=` (resident adapter) |
 | `tools/crforge/resident_parity.py` | **C2 deliverable** — resident vs bridge, decision for decision: parity digests (native/rich/atomic, masks, rewards, terminals) + paired `env.step` timing; writes `runs/crforge-c2/resident-parity.json` |
 | `tools/crforge/profile_tensorizer.py` | **C3 deliverable** — replays a live policy episode's `tensorize`+`record_action` under cProfile; capture digest + per-decision `batch_digest` prove an A/B is bit-identical; `--profile-decisions 0` is the timing-only A/B mode |
 | `tools/crforge/encoder_spike.py` | **C1 deliverable** — 256-lane `VectorBattle`, per-lane bridge facts vs vectorized NumPy frame, equivalence check, encode/tensorize split; writes `runs/crforge-c1/encoder-spike.json` |
@@ -1870,6 +1947,12 @@ Scale options, in order of leverage:
   `env N ... resident batch step or atomic capture failed` appears again, set
   `CR_PPO_FAILURE_DUMP` and watch `adb logcat -s CRNativeProbe`; the current
   probe error string still conflates injection, step-bound and capture.
+- Do not name `H_LAST_RUN_REFUSAL` from `Schema.refusalNames()`: that list is the
+  *giving* refusal namespace (`PlayerCommands.Refusal`), while the header is a
+  `LadderMatch` code. They overlap at 4 — `OVER` in the match, `START_COOLDOWN`
+  in the wrong list — so a decided match was reported as a cooldown. A queued
+  play refused with `OVER` is a terminal cancel, not a rejected command
+  (`FINDINGS.md` §3.45).
 - Do not rent a GPU until a local segment completes in <10 min and C1 has a
   measured number; at 0.04 matches/s the A6000 idles at 4 %.
 - Do not assume one A51 matches the upstream 1,528-match training scale.

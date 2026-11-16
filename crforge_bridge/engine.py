@@ -100,8 +100,21 @@ class Engine:
             self._tables = vector_env.tables(path_class.of(str(Path(self.tables_dir).expanduser().resolve())))
             self._vocabulary = vector_env.vocabulary(self._tables)
             self._schema = J("org.crforge.env.Schema")
-            refusal_names = self._schema.refusalNames()
-            self._refusal_names = [str(name) if name is not None else "" for name in refusal_names]
+            # ``H_LAST_RUN_REFUSAL`` carries the *match gate's* code
+            # (``LadderMatch``), not a ``PlayerCommands.Refusal`` ordinal.  The
+            # two namespaces overlap at 4, where the schema list says
+            # START_COOLDOWN but the match means OVER; naming a run refusal from
+            # ``refusalNames()`` therefore mislabels a decided match.  Read the
+            # constants from the pinned class instead of duplicating them.
+            ladder_match = J("org.crforge.core.battle.match.LadderMatch")
+            self._match_refusal_names = {
+                int(ladder_match.OVER): "OVER",
+                int(ladder_match.KING_DEAD): "KING_DEAD",
+                int(ladder_match.NOT_IN_HAND): "NOT_IN_HAND",
+                int(ladder_match.START_COOLDOWN): "START_COOLDOWN",
+                int(ladder_match.NOT_ENOUGH_ELIXIR): "NOT_ENOUGH_ELIXIR",
+                int(self._schema.RUN_NOT_PLACED): "RUN_NOT_PLACED",
+            }
             self._live_battle_class = J("org.crforge.env.LiveBattle")
             self._env_config_class = J("org.crforge.env.EnvConfig")
             self._side_setup_class = J("org.crforge.env.SideSetup")
@@ -423,11 +436,9 @@ class Engine:
                             {
                                 "owner": owner,
                                 "code": code,
-                                "name": (
-                                    self._refusal_names[code]
-                                    if 0 <= code < len(self._refusal_names)
-                                    else ""
-                                ),
+                                # Match-gate namespace, not the giving-refusal
+                                # schema list (see ``start``).
+                                "name": self._match_refusal_names.get(code, ""),
                                 "tick": refusal_tick,
                             }
                         )
@@ -766,7 +777,14 @@ class Engine:
                     # The policy's archetype catalog is keyed by the game's
                     # LogicData global id (e.g. Musketeer=34000014), not by the
                     # FirstLight card id. They are different namespaces.
-                    global_id = int(entity.getData().globalId())
+                    #
+                    # Java exposes the id as a signed 32-bit int, but the
+                    # compiled catalog (and the native probe) use the unsigned
+                    # bit pattern: KnightHero is -437504191 here and 3857463105
+                    # in the release.  Storing the signed value leaves a real
+                    # archetype unresolved, so the tensorizer fails closed on a
+                    # public entity.
+                    global_id = int(entity.getData().globalId()) & 0xFFFFFFFF
                     if 0 < global_id <= 0xFFFFFFFF:
                         item["dataGlobalId"] = global_id
                 except Exception:
