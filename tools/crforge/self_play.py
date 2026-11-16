@@ -90,7 +90,14 @@ from crforge_bridge.catalog import Catalog
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
 from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, PotentialShapingReward, rollout_statistics
-from crforge_bridge.training import CrforgeTrainer, CrforgeTrainingConfig, policy_state_id, weights_digest
+from crforge_bridge.training import (
+    CrforgeTrainer,
+    CrforgeTrainingConfig,
+    load_resume_state,
+    optimizer_signature,
+    policy_state_id,
+    weights_digest,
+)
 from crforge_bridge.vector_actions import CANDIDATE_DEPLOY, VectorActionDecoder, VectorActionPlan, plan_window_ticks
 from crforge_bridge.vector_observation import VectorObservationEncoder
 from crforge_bridge.vector_tensorize import VectorTensorizer
@@ -297,7 +304,12 @@ def _save_checkpoint(
     """
 
     digest = weights_digest(model)
-    update_step = int(policy.update_step) + (0 if trainer is None else trainer.updates)
+    # ``base_update_step`` is the step the cumulative ``updates`` count starts
+    # from.  A fresh run starts at the source policy's step; a resumed run
+    # rebases it (see ``CrforgeTrainer.resume``), so this stays exact instead of
+    # counting the previous run's updates twice.
+    update_step = int(trainer.base_update_step) + trainer.updates if trainer is not None else int(policy.update_step)
+
     checkpoint_id = save_actor_critic_checkpoint(
         path,
         model,
@@ -401,6 +413,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "continue the run stored in --checkpoint: load its persistent optimizer and loop "
+            "counters instead of starting a fresh Adam (needs --ppo-update)"
+        ),
+    )
+    parser.add_argument(
         "--wave-segments",
         type=int,
         default=2,
@@ -448,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--ppo-update needs at least two segments: one update is not a training loop")
     if args.ppo_update and args.wave_segments > args.segments:
         raise SystemExit("--wave-segments cannot exceed --segments")
+    if args.resume and not args.ppo_update:
+        raise SystemExit("--resume continues a training loop; pass --ppo-update as well")
     if args.ppo_update and (
         args.ppo_epochs < 1
         or args.ppo_sequence_chunk < 1
@@ -536,6 +558,37 @@ def main(argv: list[str] | None = None) -> int:
             base_update_step=int(policy.update_step),
         )
     )
+    resume_state = None
+    if args.resume:
+        if trainer is None:  # defensive: the flag check above already pairs it with --ppo-update
+            raise SystemExit("--resume needs a trainer")
+        # The policy above loaded the weights; this brings the Adam moments and
+        # the loop counters from the same file, and refuses a checkpoint that
+        # lacks them (a restart of Adam is a different run, not a resume).
+        try:
+            resume_state = load_resume_state(args.checkpoint, model, trainer.optimizer, device=device)
+        except (TypeError, ValueError) as error:
+            raise SystemExit(f"--resume refused: {error}") from error
+        # The cadence is a CLI setting, so a resume must state the one the
+        # checkpoint was actually trained under: silently switching it would
+        # change when the optimizer steps mid-run.
+        recorded_policy = resume_state.state_policy
+        if recorded_policy is not None and recorded_policy != training_config.state_policy:
+            raise SystemExit(
+                f"--resume: the checkpoint was trained with --update-state-policy {recorded_policy}, "
+                f"not {training_config.state_policy}"
+            )
+        if (
+            recorded_policy == "wave"
+            and resume_state.segments_per_wave is not None
+            and int(resume_state.segments_per_wave) != training_config.segments_per_wave
+        ):
+            raise SystemExit(
+                f"--resume: the checkpoint collected {resume_state.segments_per_wave} segments per wave, "
+                f"not {training_config.segments_per_wave}"
+            )
+        trainer.resume(resume_state)
+        print(json.dumps({"event": "resumed", **resume_state.as_dict()}), flush=True)
     torch.manual_seed(int(args.seed))
     np.random.seed(int(args.seed))
     info = vector.schema.info
@@ -919,6 +972,23 @@ def main(argv: list[str] | None = None) -> int:
             training = {"enabled": False, "pass": True, "note": "no update ran: pass --ppo-update with rollout storage"}
         else:
             training_pass = trainer.gate()
+            resume_block = None
+            if resume_state is not None:
+                # A resume must continue the step count, not restart it: the
+                # saved step has to be the resumed step plus the updates this
+                # process ran.
+                continued = (
+                    None
+                    if checkpoint_info is None
+                    else int(checkpoint_info["update_step"])
+                    == int(resume_state.update_step) + trainer.updates_this_run
+                )
+                resume_block = {
+                    **resume_state.as_dict(),
+                    "updates_this_run": trainer.updates_this_run,
+                    "optimizer_digest_after": optimizer_signature(trainer.optimizer)[0],
+                    "update_step_continued": continued,
+                }
             training = {
                 "enabled": True,
                 **trainer.config.as_dict(),
@@ -930,7 +1000,10 @@ def main(argv: list[str] | None = None) -> int:
                 "trace": trainer.trace,
                 "partial_wave_segments_flushed": flushed_partial_wave,
                 "checkpoint": checkpoint_info,
-                "pass": training_pass["pass"] and (checkpoint_info is None or bool(checkpoint_info["reload_match"])),
+                "resume": resume_block,
+                "pass": training_pass["pass"]
+                and (checkpoint_info is None or bool(checkpoint_info["reload_match"]))
+                and (resume_block is None or resume_block["update_step_continued"] is not False),
             }
         artifact = {
             "schema": "crforge-self-play.v3",
@@ -951,6 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
                 "rollout_storage": rollout_enabled,
                 "forced_second_micro": args.force_second_micro,
                 "training": bool(args.ppo_update),
+                "resume": bool(args.resume),
                 "update_state_policy": args.update_state_policy,
                 "wave_segments": (args.wave_segments if args.update_state_policy == "wave" else 1),
                 "save_checkpoint": None if args.save_checkpoint is None else str(args.save_checkpoint),

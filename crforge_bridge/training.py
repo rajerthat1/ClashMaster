@@ -32,6 +32,13 @@ index, and the behaviour-weight hash before and after.  A training run passes
 only if at least two consecutive updates happened and every trace row is finite,
 because one update cannot show that a loop works.
 
+**A run resumes from the checkpoint it saved.**  ``load_resume_state`` reads a
+crforge checkpoint and hands back the optimizer moments and the loop counters;
+``CrforgeTrainer.resume`` seeds a fresh trainer with them.  The optimizer state
+is not optional on a resume: a checkpoint without it restarts Adam, which is a
+different run, so it is refused.  The gate still counts only the updates *this
+process* ran — a resumed run that does one update is not a training loop.
+
 The update still runs per stored segment even in ``wave`` mode.  Each segment
 ends in a truncation with its own boundary bootstrap, so GAE must not be
 computed across two segments; the wave changes *when* the optimizer steps, not
@@ -41,14 +48,18 @@ what one update sees.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
 from torch import nn
 
+from native_runner.training.v4.checkpoint import CHECKPOINT_SCHEMA_V4, load_actor_critic_checkpoint
 from native_runner.training.v4.distributed_ppo import distributed_ppo_update_v4
 from native_runner.training.v4.ppo import PPOConfigV4, StoredRolloutV4
 from native_runner.training.v4.tensors import RecurrentPolicyStateV4
@@ -92,6 +103,134 @@ def weights_finite(model: nn.Module) -> bool:
         if tensor.is_floating_point() and not bool(torch.isfinite(tensor).all()):
             return False
     return True
+
+
+def optimizer_signature(optimizer: torch.optim.Optimizer) -> tuple[str, int]:
+    """Hash the optimizer's moments and settings, and count their bytes.
+
+    Adam's state *is* training state: two runs with the same weights but
+    different moments diverge on the next update.  The signature is what proves a
+    resume restored the momentum instead of silently restarting it.
+    """
+
+    payload = optimizer.state_dict()
+    digest = hashlib.sha256()
+    groups = [
+        {key: (list(value) if isinstance(value, list) else value) for key, value in group.items()}
+        for group in payload.get("param_groups", [])
+    ]
+    digest.update(json.dumps(groups, sort_keys=True, default=str).encode("utf-8"))
+    total_bytes = 0
+    for index in sorted(payload.get("state", {})):
+        for key, value in sorted(payload["state"][index].items()):
+            digest.update(f"|{index}:{key}".encode())
+            if torch.is_tensor(value):
+                tensor = value.detach().to(device="cpu").contiguous()
+                if tensor.is_floating_point():
+                    tensor = tensor.to(torch.float32)
+                digest.update(tensor.numpy().tobytes())
+                total_bytes += int(tensor.numel() * tensor.element_size())
+            else:
+                digest.update(repr(value).encode("utf-8"))
+    return digest.hexdigest()[:32], total_bytes
+
+
+@dataclass(frozen=True)
+class CrforgeResumeState:
+    """The training state a crforge checkpoint carries beyond its weights."""
+
+    path: str
+    checkpoint_id: str
+    update_step: int
+    updates: int
+    optimizer_steps: int
+    weights_digest: str
+    optimizer_digest: str
+    optimizer_tensor_bytes: int
+    state_policy: str | None = None
+    segments_per_wave: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "checkpoint_id": self.checkpoint_id,
+            "source_update_step": self.update_step,
+            "source_updates": self.updates,
+            "source_optimizer_steps": self.optimizer_steps,
+            "source_state_policy": self.state_policy,
+            "source_segments_per_wave": self.segments_per_wave,
+            "weights_digest": self.weights_digest,
+            "optimizer_digest": self.optimizer_digest,
+            "optimizer_tensor_bytes": self.optimizer_tensor_bytes,
+        }
+
+
+def _as_mapping(value: object) -> Mapping[str, Any] | None:
+    """The value as a mapping, or ``None`` when it is not one."""
+
+    return value if isinstance(value, Mapping) else None
+
+
+def load_resume_state(
+    path: str | Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    *,
+    device: str | torch.device = "cpu",
+) -> CrforgeResumeState:
+    """Load a crforge checkpoint's weights, optimizer and counters for a resume.
+
+    Refused, not guessed: a checkpoint with no optimizer state, no crforge loop
+    block, or weights that disagree with the digest it recorded is not a
+    continuation of this run.
+    """
+
+    checkpoint_path = Path(path).expanduser().resolve()
+    payload = torch.load(checkpoint_path, map_location=torch.device(device), weights_only=False)
+    if not isinstance(payload, dict) or payload.get("schema") != CHECKPOINT_SCHEMA_V4:
+        raise ValueError(f"{checkpoint_path} is not a V4 actor-critic checkpoint")
+    extra = payload.get("extra") or {}
+    if not isinstance(extra, Mapping):
+        raise TypeError(f"{checkpoint_path} carries an 'extra' block that is not a mapping")
+    crforge = _as_mapping(extra.get("crforge"))
+    loop = _as_mapping(None if crforge is None else crforge.get("loop"))
+    if loop is None:
+        raise ValueError(
+            f"{checkpoint_path} carries no crforge loop counters; "
+            "--save-checkpoint must be written by tools/crforge/self_play.py --ppo-update"
+        )
+    if payload.get("optimizer_state_dict") is None:
+        raise ValueError(
+            f"{checkpoint_path} carries no optimizer state, so a resume would restart Adam "
+            "with stale momentum"
+        )
+    # Strict contract check plus the weight/buffer load; the optimizer is filled in
+    # the same call, so the moments come from the same file as the weights.
+    load_actor_critic_checkpoint(
+        checkpoint_path, model, optimizer=optimizer, map_location=torch.device(device), payload=payload
+    )
+    weight_digest = weights_digest(model)
+    recorded_digest = extra.get("weights_digest")
+    if recorded_digest is not None and str(recorded_digest) != weight_digest:
+        raise ValueError(
+            f"{checkpoint_path} weights hash to {weight_digest}, its record says {recorded_digest}"
+        )
+    optimizer_hash, tensor_bytes = optimizer_signature(optimizer)
+    updates = int(loop.get("updates", 0))
+    if updates < 1:
+        raise ValueError(f"{checkpoint_path} records {updates} updates; there is no loop to resume")
+    return CrforgeResumeState(
+        path=str(checkpoint_path),
+        checkpoint_id=str(payload.get("checkpoint_id", "")),
+        update_step=int(payload.get("update_step", 0)),
+        updates=updates,
+        optimizer_steps=int(loop.get("optimizer_steps", 0)),
+        weights_digest=weight_digest,
+        optimizer_digest=optimizer_hash,
+        optimizer_tensor_bytes=tensor_bytes,
+        state_policy=None if loop.get("state_policy") is None else str(loop.get("state_policy")),
+        segments_per_wave=None if loop.get("segments_per_wave") is None else int(loop.get("segments_per_wave")),
+    )
 
 
 @dataclass(frozen=True)
@@ -223,6 +362,36 @@ class CrforgeTrainer:
         self.pending: list[tuple[int, StoredRolloutV4, str]] = []
         self.trace: list[dict[str, Any]] = []
         self.update_entries: list[dict[str, Any]] = []
+        self.resumed_updates = 0
+        self.resume_state: CrforgeResumeState | None = None
+
+    # -- resume ---------------------------------------------------------------
+
+    def resume(self, state: CrforgeResumeState) -> None:
+        """Seed a fresh trainer with a checkpoint's counters.
+
+        The weights and Adam moments are already loaded by
+        :func:`load_resume_state`; this only restores the loop's position, and it
+        rebases ``base_update_step`` so that ``base + updates`` still equals the
+        ``update_step`` the resumed checkpoint was saved with.
+        """
+
+        if self.updates or self.optimizer_steps or self.resume_state is not None:
+            raise ValueError("resume() must be called on a fresh trainer, before any update")
+        if state.updates < 1:
+            raise ValueError("a resumed run needs at least one previous update")
+        self.resumed_updates = int(state.updates)
+        self.updates = int(state.updates)
+        self.optimizer_steps = int(state.optimizer_steps)
+        self.base_update_step = int(state.update_step) - self.resumed_updates
+        self.resume_state = state
+
+    @property
+    def updates_this_run(self) -> int:
+        """Updates this process ran, which is what the training gate counts."""
+
+        return int(self.updates - self.resumed_updates)
+
 
     # -- the boundary policy --------------------------------------------------
 
@@ -352,7 +521,7 @@ class CrforgeTrainer:
         trace_finite = all(bool(row["finite"]) for row in self.trace) if self.trace else False
         returns = [float(row["return_mean"]) for row in self.trace]
         rewards = [float(row["reward_sum"]) for row in self.trace]
-        two_updates = self.updates >= 2
+        two_updates = self.updates_this_run >= 2
         passed = (
             bool(self.trace)
             and trace_finite
@@ -361,6 +530,7 @@ class CrforgeTrainer:
         )
         return {
             "updates": self.updates,
+            "updates_this_run": self.updates_this_run,
             "optimizer_steps": self.optimizer_steps,
             "segments_updated": len(self.update_entries),
             "distinct_behaviour_ids": self.distinct_behaviour_ids,
@@ -383,13 +553,18 @@ class CrforgeTrainer:
             "state_policy": self.config.state_policy,
             "segments_per_wave": self.config.segments_per_wave,
             "distinct_behaviour_ids": self.distinct_behaviour_ids,
+            "resumed_from": None if self.resume_state is None else self.resume_state.path,
+            "resumed_updates": self.resumed_updates,
         }
 
 
 __all__ = [
     "STATE_POLICIES",
+    "CrforgeResumeState",
     "CrforgeTrainer",
     "CrforgeTrainingConfig",
+    "load_resume_state",
+    "optimizer_signature",
     "policy_state_id",
     "weights_digest",
     "weights_finite",

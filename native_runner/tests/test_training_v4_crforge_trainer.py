@@ -8,11 +8,20 @@ gate), not about PPO's numerics, which ``test_training_v4_learning`` covers.
 
 from __future__ import annotations
 
+import pytest
 import torch
 
-from crforge_bridge.training import CrforgeTrainer, CrforgeTrainingConfig, policy_state_id, weights_digest
+from crforge_bridge.training import (
+    CrforgeTrainer,
+    CrforgeTrainingConfig,
+    load_resume_state,
+    optimizer_signature,
+    policy_state_id,
+    weights_digest,
+)
 from native_runner.tests.test_training_v4_learning import _wait_actions
 from native_runner.tests.test_training_v4_model import _batch, _model
+from native_runner.training.v4.checkpoint import save_actor_critic_checkpoint
 from native_runner.training.v4.learning import evaluate_recurrent_sequence
 from native_runner.training.v4.ppo import StoredRolloutV4
 from native_runner.training.v4.tensors import RecurrentPolicyStateV4
@@ -182,3 +191,122 @@ def test_weights_digest_is_stable_and_tracks_the_weights() -> None:
     with torch.no_grad():
         next(model.parameters()).add_(0.01)
     assert weights_digest(model) != digest
+
+
+def test_optimizer_signature_tracks_adam_moments_not_just_settings() -> None:
+    model = _model().eval()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5, eps=1e-5)
+    empty_digest, empty_bytes = optimizer_signature(optimizer)
+    assert empty_bytes == 0
+
+    loss = sum(parameter.float().pow(2).mean() for parameter in model.parameters())
+    loss.backward()
+    optimizer.step()
+    trained_digest, trained_bytes = optimizer_signature(optimizer)
+    assert trained_digest != empty_digest
+    assert trained_bytes > 0
+
+    # A second optimizer over the same weights starts with no momentum, which is
+    # exactly what a resume-without-an-optimizer-state would silently do.
+    fresh = torch.optim.AdamW(model.parameters(), lr=1e-5, eps=1e-5)
+    assert optimizer_signature(fresh)[0] == empty_digest
+
+
+def test_resume_continues_the_step_counter_and_gates_on_this_runs_updates(tmp_path) -> None:
+    torch.manual_seed(5)
+    model = _model().eval()
+    trainer = _trainer(model)
+    for segment in range(2):
+        rollout = _rollout(model)
+        trainer.enqueue(rollout, segment=segment, expected_policy_state_id=rollout.policy_state_id)
+    assert trainer.base_update_step == 0  # the fixture has no source update step
+    saved_step = trainer.base_update_step + trainer.updates
+    assert saved_step == 2
+
+    path = tmp_path / "resume.pt"
+    save_actor_critic_checkpoint(
+        path,
+        model,
+        optimizer=trainer.optimizer,
+        update_step=saved_step,
+        training_stage="crforge-c4-ppo",
+        gamma_per_decision=0.9997,
+        extra={"weights_digest": weights_digest(model), "crforge": {"loop": trainer.checkpoint_state()}},
+    )
+
+    resumed_model = _model().eval()
+    resumed = _trainer(resumed_model)
+    state = load_resume_state(path, resumed_model, resumed.optimizer)
+    resumed.resume(state)
+
+    assert state.updates == 2
+    assert state.update_step == 2
+    assert state.weights_digest == weights_digest(resumed_model)
+    assert state.optimizer_digest == optimizer_signature(trainer.optimizer)[0]
+    assert resumed.updates == 2 and resumed.updates_this_run == 0
+    assert resumed.base_update_step + resumed.updates == saved_step
+    # The gate counts what this process ran: a resume is not a pass on its own.
+    assert resumed.gate()["pass"] is False
+
+    rollout = _rollout(resumed_model)
+    resumed.enqueue(rollout, segment=0, expected_policy_state_id=rollout.policy_state_id)
+    assert resumed.updates_this_run == 1
+    assert resumed.gate()["two_consecutive_updates"] is False
+
+    rollout = _rollout(resumed_model)
+    resumed.enqueue(rollout, segment=1, expected_policy_state_id=rollout.policy_state_id)
+    gate = resumed.gate()
+    assert gate["updates"] == 4 and gate["updates_this_run"] == 2
+    assert gate["two_consecutive_updates"] is True
+    assert gate["pass"] is True
+    # The resumed run continues the saved step count instead of restarting it.
+    assert resumed.base_update_step + resumed.updates == saved_step + 2
+    assert resumed.checkpoint_state()["resumed_from"] == str(path.resolve())
+
+
+def test_resume_refuses_a_checkpoint_without_optimizer_state_or_loop_counters(tmp_path) -> None:
+    model = _model().eval()
+    trainer = _trainer(model)
+    rollout = _rollout(model)
+    trainer.enqueue(rollout, segment=0, expected_policy_state_id=rollout.policy_state_id)
+
+    no_optimizer = tmp_path / "no-optimizer.pt"
+    save_actor_critic_checkpoint(
+        no_optimizer,
+        model,
+        optimizer=None,
+        update_step=1,
+        training_stage="crforge-c4-ppo",
+        gamma_per_decision=0.9997,
+        extra={"weights_digest": weights_digest(model), "crforge": {"loop": trainer.checkpoint_state()}},
+    )
+    with pytest.raises(ValueError, match="no optimizer state"):
+        load_resume_state(no_optimizer, model, torch.optim.AdamW(model.parameters(), lr=1e-5))
+
+    no_loop = tmp_path / "no-loop.pt"
+    save_actor_critic_checkpoint(
+        no_loop,
+        model,
+        optimizer=trainer.optimizer,
+        update_step=1,
+        training_stage="crforge-c4-ppo",
+        gamma_per_decision=0.9997,
+        extra={"weights_digest": weights_digest(model)},
+    )
+    with pytest.raises(ValueError, match="no crforge loop counters"):
+        load_resume_state(no_loop, model, torch.optim.AdamW(model.parameters(), lr=1e-5))
+
+    # Weights that disagree with the digest the run recorded are refused too.
+    tampered = tmp_path / "tampered.pt"
+    save_actor_critic_checkpoint(
+        tampered,
+        model,
+        optimizer=trainer.optimizer,
+        update_step=1,
+        training_stage="crforge-c4-ppo",
+        gamma_per_decision=0.9997,
+        extra={"weights_digest": "not-the-weights", "crforge": {"loop": trainer.checkpoint_state()}},
+    )
+    with pytest.raises(ValueError, match="weights hash to"):
+        load_resume_state(tampered, model, torch.optim.AdamW(model.parameters(), lr=1e-5))
+
