@@ -4667,3 +4667,117 @@ Evidence: `crforge_bridge/training.py`, `tools/crforge/self_play.py`,
 `runs/crforge-c4/self-play-train-wave.json`,
 `runs/crforge-c4/self-play-train-autoreset-carry.json`,
 `runs/crforge-c4/self-play-two-micro-probe.json`.
+
+### 3.61 A C4 run resumes from its own checkpoint (2026-11-19)
+
+§3.60 wrote the persistent AdamW into `--save-checkpoint` and nothing read it
+back: the next run could only restart from the seed, which silently throws the
+momentum away and labels the result a continuation. A paid GPU run makes that
+unacceptable — the expensive part is the loop, not the seed — so the checkpoint
+became a starting point.
+
+#### The optimizer state is training state
+
+`optimizer_signature(optimizer)` hashes the AdamW `param_groups` (lr, eps, weight
+decay) **and every moment tensor**, and reports their bytes. For the 12.7M model
+that is **134,996,348 bytes** of moments — the number a resume either restores or
+does not. It is the training analogue of `weights_digest`: two runs with the same
+weights and different moments diverge on the next update.
+
+`load_resume_state(path, model, optimizer)` then:
+
+* loads the weights and the optimizer in one `load_actor_critic_checkpoint` call,
+  so the moments and the weights come from the same file and the same strict
+  contract check;
+* recomputes `weights_digest(model)` and compares it with the digest the run
+  recorded (`extra.weights_digest`);
+* **refuses** a checkpoint with `optimizer_state_dict: None`, no
+  `extra.crforge.loop` block, or a weight-digest mismatch. The seed
+  `B-general-v275` is refused by name:
+  `--resume refused: … carries no crforge loop counters`.
+
+#### The step counter had to be rebased
+
+The first wiring added the resumed counters on top of `policy.update_step`, which
+double-counts the previous run: resume a step-277 checkpoint that already has two
+updates and the next save would have claimed 282, not 279. The rule is now
+`update_step = base_update_step + updates`, where a fresh run takes
+`base_update_step = policy.update_step`, and `CrforgeTrainer.resume` sets
+`base_update_step = saved_step - prior_updates`. A resumed wave run keeps its
+cadence or is refused: `--update-state-policy` / `--wave-segments` are CLI
+settings, so a mismatch with the recorded `state_policy` is a `SystemExit`, not a
+silent change of when the optimizer steps.
+
+The gate also had to say *whose* updates it counts. `training.updates` is
+cumulative and `training.updates_this_run` is what `two_consecutive_updates`
+reads, so a resume that runs one update is still not a training loop.
+
+#### Measured — one loop across two processes
+
+4 lanes × 2 seats × 2 segments × 24 decisions, CPU,
+`runs/crforge-c4/self-play-resume-source.json` then
+`-resume.json` with `--resume --save-checkpoint`:
+
+| measurement | source run | resumed run |
+| --- | ---: | ---: |
+| lane-decisions | 384 | 384 |
+| ACT / eligible | 18 / 370 | 21 / 379 |
+| illegal / faults / rejected | 0 / 0 / 0 | 0 / 0 / 0 |
+| updates (cumulative) / this run | 2 / 2 | **4 / 2** |
+| saved `update_step` | 277 | **279** |
+| `base_update_step` after resume | 275 | 275 |
+| Adam moments restored | — | **134,996,348 B** |
+| `resume.update_step_continued` | — | **true** |
+| checkpoint reload digest | match (203,041,896 B) | match (203,042,024 B) |
+| `return_mean` trace | 0.330 → 0.240 | 0.341 → 0.208 |
+| `approx_kl` | 7.0e-5, −8.0e-5 | 3.8e-5, 2.7e-5 |
+| gradient norm | 4.199, 2.544 | 4.694, 3.294 |
+| gate | pass | **pass** |
+
+The trace's `update_index` continues at 3 and 4, `distinct_behaviour_ids` is 2
+for the resumed run, and the resumed run's behaviour ids are new even before its
+first update — `policy_state_id` mixes the checkpoint's file id with the weight
+digest, so `weights_digest` is the value that compares across runs.
+
+#### The forward is linear in rows — the GPU lever, measured
+
+4 lanes to 64 lanes, 8 decisions, `--no-rollout --no-validate`, this host
+(i5-1235U, `torch 2.5.1+cpu`), median ms per decision:
+
+| lanes | actor rows | forward | ms/row | tensorize | facts | decode | 5 engine steps | lane-dec/s |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 16 | 248.9 | 15.6 | 11.3 | 1.5 | 1.2 | 4.8 | 55.2 |
+| 16 | 32 | 420.9 | 13.2 | 13.7 | 1.9 | 1.3 | 6.6 | 69.8 |
+| 32 | 64 | 805.2 | 12.6 | 16.7 | 2.6 | 1.5 | 9.5 | 71.8 |
+| 64 | 128 | 1,945.7 | 15.2 | 20.3 | 3.6 | 2.4 | 15.8 | 63.6 |
+
+The forward costs ~12.6–15.6 ms per actor row at every batch size: dense compute
+with no batching discount, which is the shape a GPU collapses. The CPU half
+(facts + tensorize + decode + steps) grows only ~2× from 16 to 128 rows, so once
+the forward moves it becomes a cheap, batch-friendly floor — and on a rented box
+that floor runs on the box's **vCPU**, not on this host, because the crforge
+engine is an in-process single-threaded JVM and the tensorizer is NumPy in the
+same process. With the recorded §3.60 split (21.8 s collection vs 44.9 s update
+per 1,024 frames), the update is now the larger wall and the GPU's home turf.
+
+#### Pins
+
+* **`--resume` requires `--ppo-update`**, and the resumed model is the checkpoint
+  named by `--checkpoint`; `substrate.checkpoint` records that provenance while
+  `training.resume.path` records it again next to the counters.
+* **The RNG state is not restored** (`restore_rng=False`), so a resumed run is a
+  continuation of the *weights and momentum*, not a bit-identical replay of an
+  uninterrupted one. Quote `update_step` and the trace, not equality of samples.
+* **`policy_state_id` is per-file.** It hashes `checkpoint_id:weights_digest`, so
+  a resumed run's first rollout cannot share an id with the source run's last
+  one even at identical weights; `weights_digest` is the comparable value.
+* **A resume is refused when the cadence disagrees.** Recorded `state_policy` /
+  `segments_per_wave` are compared with the CLI; the wave cadence is not read
+  back into the config because it changes *when* the optimizer steps.
+
+Evidence: `crforge_bridge/training.py` (`optimizer_signature`,
+`CrforgeResumeState`, `load_resume_state`, `CrforgeTrainer.resume`),
+`tools/crforge/self_play.py` (`--resume`, `training.resume`),
+`native_runner/tests/test_training_v4_crforge_trainer.py` (3 resume tests),
+`runs/crforge-c4/self-play-resume-source.json`,
+`runs/crforge-c4/self-play-resume.json`.

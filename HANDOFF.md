@@ -6,6 +6,40 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — a C4 run resumes from its own checkpoint
+
+`--resume` makes a saved crforge checkpoint a starting point, not just an
+artifact: `crforge_bridge/training.py` gains `optimizer_signature` (hashes
+AdamW's settings *and* every moment tensor), `CrforgeResumeState` and
+`load_resume_state`; the producer gains `--resume` (with `--ppo-update`) and
+records a `training.resume` block.
+
+- **The optimizer state is not optional.** A checkpoint with no
+  `optimizer_state_dict`, no `crforge.loop` block, or weights that disagree with
+  the digest it recorded is **refused** — a restart of Adam with stale momentum
+  is a different run, not a continuation. The seed `B-general-v275` is refused
+  by name.
+- **The step counter had to be rebased.** Seeding the loop's `updates` count and
+  keeping `update_step = source + updates` double-counts the previous run; the
+  save now writes `base_update_step + updates`, and a resume rebases
+  `base_update_step` to `saved_step - prior_updates`. A resumed run that started
+  at 275 with 2 updates, resumed, and ran 2 more saves step **279** with
+  `resume.update_step_continued: true`.
+- **The gate counts only this process's updates.** `training.updates` is
+  cumulative; `training.updates_this_run` is what `two_consecutive_updates`
+  reads, so a resume that runs one update does not pass on the previous run's
+  work.
+- **The cadence must be stated again and must match.** `--update-state-policy`
+  and `--wave-segments` come from the CLI, so a resume whose recorded policy
+  differs is refused instead of silently changing when the optimizer steps.
+- **Measured:** 4 lanes × 2 seats × 2 segments × 24 decisions, source
+  **275 → 277** (gate pass, checkpoint reload-identical), resume
+  **277 → 279**, 135 MB of Adam moments restored, both updates finite, 0
+  rejected. Evidence: `runs/crforge-c4/self-play-resume-source.json`,
+  `-resume.json`; `FINDINGS.md` §3.61.
+- **Still open:** CUDA/MPS throughput, and the wave/update cadence decision,
+  which needs the GPU box's throughput numbers first.
+
 ### 2026-11-19 — the C4 producer is a training loop: one optimizer, a stated state policy
 
 `crforge_bridge/training.py` replaces the per-segment gate update with a real
@@ -601,7 +635,11 @@ false because it stores no rollout.
 
 1. **Resume a run.** The checkpoint carries the optimizer and loop counters;
    load it with `load_actor_critic_checkpoint`, continue `update_step`, and gate
-   a resumed run on the same two-update trace.
+   a resumed run on the same two-update trace. **Done 2026-11-19:** `--resume`
+   loads the Adam moments and the counters, rebases `base_update_step`, and the
+   gate reads `updates_this_run`; source 275 → 277, resume 277 → 279
+   (`runs/crforge-c4/self-play-resume.json`). See the decision entry at the top
+   and `FINDINGS.md` §3.61.
 2. **CUDA path + throughput.** Still CPU-only here (`torch 2.5.1+cpu`, no
    `nvidia-smi`). On the A6000, run the reset gate shape at 8 and 32 rows and log
    lane-decisions/s plus the update's forward/backward split (the update, not
