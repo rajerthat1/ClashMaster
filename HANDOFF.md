@@ -4,7 +4,82 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
+## Bottom line (2026-11-17, session 39)
+
+Do both tracks in parallel, and do **not** rent a large multi-box run until the
+pilot shows a native win-rate signal.
+
+1. **Now: one bounded crforge pilot + a native-parity baseline.** The pilot is
+   16 on-policy updates at 4 lanes × 24 decisions on CPU — it trains, saves a
+   reload-verified checkpoint and passes the training gate; it is a mechanics
+   run, not a learning claim. The native baseline is the only promotion source:
+   `B-general-v275` vs `A-hog26-v738` on the locked X-Bow deck, paired seeds —
+   2 games, 1–1, 0 illegal, 0 rejected. The pilot checkpoint's own native smoke
+   is 4–0 against the seed (0 rejects, both decks) — a direction to test, not a
+   win-rate signal at n = 4; widen it to a 50-game paired block before ranking
+   or renting anything.
+2. **Meanwhile: the CPU half.** Groups now assemble only the live slots and pad
+   once: **7.57 → 2.68 ms** in a one-process A/B (128 lanes, 6 live entities),
+   **13.18 → 6.01 ms/seat** in the producer's section mean, with
+   **3,008/3,008** digest-identical rows. The gather-by-dtype rewrite is
+   unnecessary; `_entity_rows` is the next term if the half has to move again.
+3. **Only then the provider/8-vCPU question.** At the recorded full-graph terms
+   ($43.8/M at 6 vCPU, 2.221 matches/s measured) an 8-vCPU box at $0.43/h needs
+   **2.73 matches/s** to break even: 1.23× the measured rate and above the
+   1.842 predicted ceiling, with the sweep already saturated at four producers.
+   It remains a measurement, not a purchase, and it waits for the pilot's
+   native signal.
+
 ## Decisions — what changed
+
+### 2026-11-17 (session 39) — both tracks run now; the box waits for a native signal
+
+The session split the work instead of renting: one bounded crforge pilot and a
+native-parity baseline start now, the CPU half is fixed while they run, and the
+provider/8-vCPU question is answered by arithmetic and deferred until the pilot
+shows a native win-rate signal.
+
+- **Groups were paying for reserved slots, not live rows.** A settled 128-lane
+  board carries **6 live entities** per lane, while the record reserves 48
+  groups and 160 children. `VectorGroupBuilder.build` now assembles
+  `live_g`/`live_c` slots and pads to the fixed capacity once. One-process A/B
+  on the same batch: **7.57 → 2.68 ms** (2.82×, records asserted equal); the
+  producer's section mean is **13.18 → 6.01 ms/seat**. The digest gate is
+  unchanged: **3,008/3,008** lane-decisions, both seats, 0 mismatches,
+  **0.0546 ms/lane-decision** (12.95× the oracle; the session-37 record was
+  0.0811, 7.46×). The "batch the 35 gathers by dtype" rewrite is withdrawn:
+  at live width the gathers are small, and `_entity_rows` (1.16 ms at 6 live
+  entities) is the next term.
+- **The bounded pilot trains and checkpoints.** `runs/crforge-c4/
+  self-play-pilot-s39.json`: 4 lanes × 2 seats × 16 segments × 24 decisions,
+  **16/16 on-policy updates**, |KL| ≤ 8.6e-5, clip 0, all finite, 102 ACT /
+  2,953 eligible (**3.45 %**), **0 illegal, 0 rejected**, gate **pass**.
+  Checkpoint `pilot-s39-checkpoint.pt` is step **291** (275 + 16), reloads to
+  the same weight digest and is 203 MB. The return is 0.330 → 0.308 over the 16
+  windows (last-5 0.293 vs first-5 0.226); every window is a truncation, so
+  this is a value-fit trace, **not** a learning or win-rate claim.
+- **The native baseline is the gate and it is separate.** The seed
+  `B-general-v275` played `A-hog26-v738` on the locked X-Bow deck (seat 0
+  X-Bow, seat 1 Hog 2.6; paired seeds, sampled actions) through the x86_64
+  native probe: **2 games, 1–1, 0 illegal, 0 rejected, 0 truncated, both
+  terminals**, 182 s.  The evaluator swaps decks with seats, so each policy won
+  its home-deck game; n = 2 is a mechanics baseline, not a ranking.  A 50-game
+  block is ~75 min and is session 40's first item.  crforge is never a
+  promotion source.
+- **The pilot passed its first native smoke, and it is not a promotion.** The
+  saved checkpoint beat the seed it started from **4–0** (seeds 11–14, both
+  decks, 0 illegal, 0 rejected; `runs/native-parity-s39/pilot-vs-seed-4games/`).
+  At n = 4 with sampled actions and 16 updates at 1e-5, that is a direction, not
+  a win-rate signal (1-in-8 two-sided tail under an even prior).  The 50-game
+  paired block is the gate; no rental follows from this.
+- **Provider/8-vCPU is still arithmetic.** At the recorded full-graph terms
+  ($43.8/M measured, 2.221 matches/s at 6 vCPU) an 8-vCPU box at $0.43/h needs
+  **2.73 matches/s** to break even — 1.23× the measured rate, above the 1.842
+  predicted ceiling, with the sweep already saturating at four producers. That
+  is a measurement to take **after** a native signal, not a rental now, and not
+  a multi-box spend.
+- **Gate:** bridge suite **145 passed** (14 fast-forward), **3,008/3,008**
+  digest-identical, ruff clean on the touched files.
 
 ### 2026-11-17 (session 38) — the box confirms the record, and the full-call graph is the fastest forward
 
@@ -1002,6 +1077,137 @@ do not start another R0 run.
 
 ---
 
+## Session 39 results (2026-11-17) — both tracks in parallel
+
+**Read first:** the decision entry above, `FINDINGS.md` §3.72 and
+`ROADMAP_CRFORGE.md` §4.
+
+The session did what the handoff's bottom line asks: the pilot and the native
+baseline are the work now, the CPU half moves while they run, and the box is not
+rented on an arithmetic hope.
+
+### What landed
+
+- **`VectorGroupBuilder.build(..., live_slots=True)`** assembles only the live
+  group/child slots and pads to the record's fixed capacity once.  The previous
+  full-capacity form stays callable (`live_slots=False`) as the micro tool's
+  oracle, so the A/B is one process on one batch.
+- **`cpu_half_micro.py` measures the group build** (`group_build`:
+  full-capacity vs live-slot ms, entity count, and a field-by-field equality
+  assertion), beside the existing interleave, gather, mask and record A/Bs.
+- **`test_live_width_padding_matches_full_capacity`** pins the padded tail,
+  ranks and indices against the full-capacity build and the per-lane oracle on
+  a partially filled board.
+
+### Measured — the CPU half
+
+| group build, 128 lanes × 2 seats (6 live entities/lane) | ms |
+| --- | ---: |
+| full capacity (48 groups / 160 children) | 7.57 |
+| live slots | **2.68** |
+| saved | **4.89** (2.82×) |
+| `_entity_rows` (unchanged) | 1.16 |
+
+The producer section mean across the before/after runs is **13.18 → 6.01
+ms/seat**; the non-group sections are flat-to-slower in the after run, so the
+change, not a quieter host, is the delta.  The digest gate is
+`runs/crforge-c4/batched-tensorize-s39.json`: **3,008/3,008** lane-decisions,
+both seats, **0 mismatches**, 5,196 recorded micro-actions, **0.0546
+ms/lane-decision** against the 0.706 oracle (**12.95×**; session 37 was 0.0811
+and 7.46×), C3's 0.5 ms/lane gate still passes.  Evidence:
+`runs/crforge-c4/cpu-half-micro-s39.json`.
+
+### Measured — the bounded pilot
+
+`runs/crforge-c4/self-play-pilot-s39.json`, 4 lanes × 2 seats × 16 segments ×
+24 decisions, CPU, `OMP_NUM_THREADS=4`, one AdamW, `reset`:
+
+- **16/16 updates on-policy**, |KL| ≤ 8.6e-5, clip 0, all finite,
+  `distinct_behaviour_ids 16`, training gate **pass**.
+- **102 ACT / 2,953 eligible (3.45 %)**, **0 illegal, 0 rejected**, 3,072
+  lane-decisions; collection **108.1 s** (28.4 lane-decisions/s), update
+  **232.2 s**, wall 340.3 s.
+- Checkpoint **step 291** (275 + 16), 203 MB, `reload_match: true`,
+  weights digest `ef6edc74…`.  A native load resolves the same 16.635.1
+  release and 16,874,349 parameters.
+- Return 0.330 → 0.308 over 16 windows (last-5 0.293 vs first-5 0.226).  Every
+  segment is a truncation and there is no terminal, so this is a value-fit
+  trace, **not** a learning or win-rate claim.  It is a pilot: the loop trains,
+  saves and reloads; the signal it can produce is still native.
+
+### Measured — the native-parity baseline
+
+`runs/native-parity-s39/baseline-smoke-2games/`: `B-general-v275` (policy A)
+against `A-hog26-v738` (policy B), paired seeds, sampled actions (`--sample`),
+x86_64 16.635.1 probe (`CR_NATIVE_BUILD_ABI=x86_64`,
+`CR_PROBE=native_runner/probe/out/x86_64/libcrprobe.so`), 2 games in **182 s**.
+Decks: seat 0 the locked X-Bow
+(`26000001, 26000084, 28000000, 26000000, 26000010, 27000006, 28000011,
+27000008`, forms `1,0,0,2,0,1,0,0`), seat 1 Hog 2.6 (`27000000, 28000000,
+26000021, 26000038, 26000030, 26000014, 26000010, 28000011`, base forms).
+
+| game | a_owner | A's deck | winner | tick | actions | illegal | rejected |
+| ---: | ---: | --- | --- | ---: | --- | ---: | ---: |
+| 1 | 0 | X-Bow | **A** | 3,601 | 33 / 41 | 0 | 0 |
+| 2 | 1 | Hog 2.6 | **B** | 6,124 | 85 / 80 | 0 | 0 |
+
+**1–1, 0 illegal, 0 rejected, 0 truncated, both terminals.**  The mechanics
+question is answered: the locked deck plays natively through the extracted
+engine, with no refuses and a real terminal.  It does **not** rank the policies:
+the evaluator swaps decks with seats, so each game is a different policy-deck
+pairing and each policy won the game where it played its home deck.  A 1–1 at
+n = 2 is the expected shape of that pairing, not a measurement of skill.  The
+first 8-game attempt had the probe's transport die mid-match after game 1; that
+was under concurrent CPU work, and this clean run is the recorded baseline.  At
+182 s for two games, a 50-game paired block is ~75 min — the next session's
+first item, not a multi-box spend.
+
+### Measured — pilot vs seed on native (exploratory)
+
+`runs/native-parity-s39/pilot-vs-seed-4games/`: the pilot checkpoint (policy A)
+against the seed it started from (policy B), same rig, same match config,
+`--sample`, seeds 11–14, 4 games.
+
+| game | a_owner | A's deck | winner | tick | actions | illegal | rejected |
+| ---: | ---: | --- | --- | ---: | --- | ---: | ---: |
+| 1 | 0 | X-Bow | **A** | 3,601 | 32 / 37 | 0 | 0 |
+| 2 | 1 | Hog 2.6 | **A** | 3,601 | 39 / 33 | 0 | 0 |
+| 3 | 0 | X-Bow | **A** | 3,601 | 31 / 40 | 0 | 0 |
+| 4 | 1 | Hog 2.6 | **A** | 6,109 | 81 / 74 | 0 | 0 |
+
+**4–0 for the pilot, 0 illegal, 0 rejected, 0 truncated.**  It won on both
+decks, so this is not the seat/deck pairing that produced the baseline's 1–1.
+It is still **not a win-rate signal**: n = 4, sampled actions, and a 16-update
+run at the native 1e-5 learning rate should not move a policy this far.  Under
+an even prior, 4–0 has a 1-in-8 two-sided tail; the honest reading is "the
+checkpoint is not degraded and the direction is worth testing", and the 50-game
+paired block is what decides it.  Nothing is rented on this.
+
+### Still open
+
+- **`_entity_rows` is the remaining CPU term** (1.16 ms at six live entities,
+  before the feature assembly); the gathers are no longer worth a rewrite.
+- **The overlapped loop** still needs a separate card or a batched decision
+  server; it is not a default on one A6000.
+- **The 8-vCPU question** is a measurement gated on a native signal: 2.73
+  matches/s at $0.43/h is the break-even, above the measured 2.221 and the
+  1.842 predicted ceiling.
+- **Native parity cadence**, unchanged: 50–150 matches per N updates and after
+  every adapter change.
+
+### Next session (session 40)
+
+1. **Widen the native comparison to a paired 50-game block** before ranking
+   anything: seed vs A-hog26 (the baseline) and seed vs the pilot checkpoint
+   (the 4–0 smoke above).  Keep the 2-game and 4-game runs as the mechanics
+   controls.  At ~90 s/game this is ~75 min per 50, not a rental.
+2. **If the pilot is promoted to a training run**, use ≥3 seeds and the
+   `reset` cadence, and record the native eval every N updates.
+3. **Only then rent** for the 8-vCPU measurement — one box, one shape, the
+   `cloud_capacity.py` sweep; no multi-box run before a native win-rate signal.
+4. Keep the group live-width change; do not add a second gather form.  The next
+   CPU term is `_entity_rows`.
+
 ## Session 38 results (2026-11-17) — the box re-measure and the full-call graph
 
 **Read first:** the decision entry above, `FINDINGS.md` §3.71 and
@@ -1107,7 +1313,10 @@ the rest is contention. Stale |KL| 0.076, clip 8.4 % (the 0.404 on-policy KL is
 
 - **Groups' 44 ms.** The feature transpose is slower; the cost is
   `_entity_rows` / the 35 gathers. Batch the gathers by dtype, or share the
-  seat-invariant fields between the two builders.
+  seat-invariant fields between the two builders. **(Closed in session 39: the
+  padded capacity, not the gather form, was the cost — live-width slots measure
+  7.57 → 2.68 ms in one process.  `_entity_rows` is the remaining term; the
+  gather-by-dtype rewrite is withdrawn.  See the session-39 entry.)**
 - **The overlapped loop needs a separate card or a batched decision server.**
   It is not a default on one A6000.
 - **The 8-vCPU question is re-opened by the full-graph rate.** The 6-vCPU box is
@@ -1116,7 +1325,7 @@ the rest is contention. Stale |KL| 0.076, clip 8.4 % (the 0.404 on-policy KL is
   above the card's ceiling, so it is a measurement, not arithmetic.
 - **Native parity cadence, unchanged.**
 
-### Next session (session 39)
+### Next session (session 39) — executed; see the session-39 section above
 
 1. Reduce the group gathers (batch by dtype) and gate on `batched_tensorize.py`;
    do not transpose the feature block.

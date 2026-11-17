@@ -451,6 +451,27 @@ without that cooperation fails loudly instead of sampling one frozen stream. The
 wall is a box measurement, as is the re-run of the process sweep, and
 `--verify-fast-forward` still gates the result on action equality.
 
+**Status (2026-11-17, session 39).** The group section was building the record's
+**reserved** width, not the board's live width: at 128 lanes a settled board has
+~6 live entities while the record reserves 48 groups and 160 children, so
+gathers, feature assembly and masked zeroing all ran 8–26× wider than needed.
+`VectorGroupBuilder.build` now assembles `live_g`/`live_c` slots and pads to the
+fixed capacity once. One-process A/B on the same batch: `build` **7.57 → 2.68
+ms** at 128 lanes with 6 live entities (2.82×, records asserted identical); the
+producer's section mean is **13.18 → 6.01 ms/seat** across runs. The digest gate
+still passes **3,008/3,008** lane-decisions for both seats with **0
+mismatches**, at **0.0546 ms/lane-decision** (12.95× the per-lane oracle; the
+session-37 record was 0.0811, 7.46×). The gather-by-dtype rewrite is withdrawn
+as unnecessary: after the width fix the gathers are small and `_entity_rows` is
+the remaining term. See `FINDINGS.md` §3.72.
+
+The 8-vCPU question is still arithmetic rather than a rental: at the full-graph
+terms an 8-vCPU box at $0.43/h must beat the 6-vCPU **$43.8/M**, i.e. reach
+**2.73 matches/s**, which is 1.23× the measured 2.221 and above the 1.842
+predicted ceiling — while the sweep saturates at four producers. Measure it only
+after a bounded pilot shows a native win-rate signal; a bigger box does not
+change the policy.
+
 ---
 
 ## 5. CI and parity role (always on)

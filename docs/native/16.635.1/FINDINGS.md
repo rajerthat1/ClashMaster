@@ -5916,3 +5916,118 @@ Evidence: `runs/crforge-c4/cloud-thunder-a6000-s38.json` (raw under
 `runs/crforge-c4/cpu-half-micro-s38.json`, `tools/crforge/cpu_half_micro.py`,
 `crforge_bridge/fast_forward.py`, `crforge_bridge/tests/test_fast_forward.py`,
 `native_runner/training/v4/distributed_ppo.py`.
+
+---
+
+### 3.72 Groups at live width: the padded slots were most of the section (2026-11-17)
+
+Session 38 left groups as the largest CPU term and named two candidates:
+`_entity_rows` / the 35 gathers, and the feature block.  The premise was that a
+settled board fills most of the record.  On the producer's own board it does
+not: at 128 lanes the entity axis is 200 rows but the mean live entity count is
+**6.0** (max 6 on the profiled decision), while the record reserves
+`max_battle_groups = 48` and `max_children_total = 160`.  So the section was
+gathering and writing **48 group slots and 160 child slots per lane to carry
+six live rows**, then masking 88 % / 96 % of them off.  The padded width, not
+the gather's index form, was the multiplier.
+
+`VectorGroupBuilder.build` now assembles only the live width
+(`live_g = min(max_battle_groups, max entity_count)`,
+`live_c = min(max_children_total, max candidate_count)`) and grows each array to
+the record's fixed capacity once at the end (`pad_slots`: zeros for the
+feature/position/extent tensors and ids, `OWNER_NEUTRAL` for a group row,
+`False` for a mask).  Every gather, the feature assembly and the masked zeroing
+run at live width; the tail is one `np.full` + slice copy per field.
+
+#### Measured
+
+The clean A/B is in one process on one batch (`cpu_half_micro.py`), with
+`build(..., live_slots=False)` as the previous full-capacity form:
+
+| group build, 128 lanes (6 live entities/lane) | ms |
+| --- | ---: |
+| full capacity (48 groups / 160 children) | **7.57** |
+| live slots | **2.68** |
+| saved | **4.89** (2.82×) |
+| `_entity_rows` (unchanged, the next term) | 1.16 |
+
+The records are asserted equal field by field in the tool, including the padded
+tail, group ranks and both indices.  The producer's section mean on a live
+board (`cpu_half_micro.py --count 128 --repeats 20`, both seats) moves **13.18 →
+6.01 ms/seat** across the before/after runs; the non-group sections are
+flat-to-slower in the after run, so the drop is not a quieter host.  A direct
+`build` profile (median of 20, separate process) is **6.36 → 3.16 ms**; the win
+grows with the ratio of reserved to live slots and shrinks toward zero on a
+board that actually fills the group capacity.
+
+#### Gate
+
+`tools/crforge/batched_tensorize.py --count 256 --steps 40 --seats 0 1`
+(`runs/crforge-c4/batched-tensorize-s39.json`): **3,008/3,008 lane-decisions
+digest-identical**, both seats, **0 mismatches**, 5,196 recorded micro-actions;
+**0.0546 ms/lane-decision** batched (facts 0.0364, shared by both seats; record
+0.0004), **0.0732 ms end to end**, against the per-lane oracle at 0.706 —
+**12.95×** (the session-37 record was 0.0811, 7.46×), and C3's 0.5 ms/lane
+packet gate still **passes**.  The digest, not the wall, is the gate: a
+partial-capacity run and the empty-board case are covered by the existing oracle
+tests plus the live-width equality test.  Bridge suite **145 passed**, ruff
+clean.
+
+The gather-by-dtype rewrite is **not needed**: once the gather runs at six slots
+the whole group build is ~3 ms, and the remaining cost is `_entity_rows`'s
+per-entity masking over the 200-row axis.  That is the next lever if the half
+has to move again, not a second gather form.
+
+---
+
+### 3.73 A bounded crforge pilot, and its first native smoke (2026-11-17)
+
+Session 39 ran the two tracks in parallel instead of renting: one bounded
+crforge pilot, one native baseline, and the group section fixed while they ran.
+Nothing here promotes crforge; the native probe is the gate.
+
+**The pilot trains, saves and reloads.** `tools/crforge/self_play.py --count 4
+--segments 16 --decisions-per-segment 24 --ppo-update --ppo-sequence-chunk 24
+--save-checkpoint runs/crforge-c4/pilot-s39-checkpoint.pt`
+(`runs/crforge-c4/self-play-pilot-s39.json`, CPU, `OMP_NUM_THREADS=4`):
+
+| term | value |
+| --- | ---: |
+| updates | 16, all on-policy, `reset` cadence |
+| abs KL | ≤ 8.6e-5, clip 0, all finite |
+| ACT | 102 / 2,953 eligible (3.45 %) |
+| illegal / rejected | 0 / 0 |
+| collection / update wall | 108.1 s (28.4 lane-decisions/s) / 232.2 s |
+| checkpoint | step 291 (275 + 16), 203 MB, `reload_match: true` |
+| return | 0.330 → 0.308 over 16 windows |
+
+Every window is a truncation and there is no terminal, so the return is a
+value-fit trace.  The run proves the loop; it does not claim learning, and a
+native load of the checkpoint resolves the same 16.635.1 release and
+16,874,349 parameters.
+
+**The native rig is the gate, and it is cheap enough to run.** The x86_64
+16.635.1 engine (`tools/native_analysis/crx_engine_host.py`) with
+`CR_NATIVE_BUILD_ABI=x86_64` and
+`CR_PROBE=native_runner/probe/out/x86_64/libcrprobe.so`, the locked X-Bow deck
+at seat 0 (forms `1,0,0,2,0,1,0,0`) and Hog 2.6 at seat 1.  `--sample` is
+required for sparse-action checkpoints.
+
+| run | games | result | illegal | rejected | truncated |
+| --- | ---: | --- | ---: | ---: | ---: |
+| seed vs A-hog26 (baseline) | 2 | **1–1** | 0 | 0 | 0 |
+| pilot vs seed (exploratory) | 4 | **4–0 pilot** | 0 | 0 | 0 |
+
+The baseline's 1–1 is the expected shape of the evaluator: it swaps decks with
+seats, so each policy won the game where it played its home deck.  The pilot
+smoke won on both decks, which is why it is worth widening — but n = 4,
+sampled actions and a 16-update 1e-5 run cannot separate a policy from its
+seed (a 4–0 has a 1-in-8 two-sided tail under an even prior).  **The 50-game
+paired block is the gate, not this table.**  At roughly 90 s/game a 50-game
+block is ~75 minutes on this host; the first 8-game attempt lost the probe's
+transport under concurrent CPU work, so native runs get the host to themselves.
+
+Evidence: `runs/crforge-c4/self-play-pilot-s39.json`,
+`runs/crforge-c4/pilot-s39-checkpoint.pt`,
+`runs/native-parity-s39/baseline-smoke-2games/`,
+`runs/native-parity-s39/pilot-vs-seed-4games/`.
