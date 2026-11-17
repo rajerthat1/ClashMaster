@@ -260,15 +260,17 @@ Per instance at the current packet (list prices; verify at checkout):
 | 1 process (today's measured row) | 0.33 | 0.35 | **295** |
 | **6 vCPU, live A6000 (2026-11-16)** | **1.215 measured** (1.331 ceiling) | 0.35 | **80** |
 | **6 vCPU, live A6000, new record (2026-11-17)** | **1.512 measured** (1.293 ceiling) | 0.35 | **64** |
+| **6 vCPU, live A6000, full-call graph (2026-11-17)** | **2.221 measured** (1.842 ceiling) | 0.35 | **44** |
 | 6–8 processes, no batching | 1.3–1.6 | 0.43 | **75–92** |
 | 8 processes + MPS + batched server | 2.0–2.6 | 0.43 | **46–60** |
 | packet ~200 ms, ~4 processes/GPU | ~4.2 | 0.43 | **~28** |
 
-So multiproc is the largest immediate $/match win, and it is still the
-"identical boxes" axis: **~1 A6000 per 8–16 vCPU** with a vectorized encoder.
-The order is **multiproc → wire C3-B → de-Python the 228 ms → graphs/state →
-more boxes**. Buying a second GPU before the first is fed buys idle time, and
-buying a bigger GPU buys the 24 % that is already launch-bound.
+So the order at the current packet is **the full-call graph (measured) →
+multiproc → de-Python the CPU half → more boxes**.  The card serves 3.24
+producer processes at the full-graph terms, so a box is still one card plus a
+handful of vCPUs, not a bigger GPU.  Buying a second GPU before the first is
+fed buys idle time, and buying a bigger GPU buys the forward that is already
+the smaller half at 128 lanes.
 
 ### Capacity equation (the provider decision, 2026-11-16)
 
@@ -309,13 +311,14 @@ crossovers (4.11 vs 2.71), but the same forward (157–158 ms) and the same
 **~1.33 matches/s ceiling**. **The ceiling belongs to the card; `G × E / g`
 belongs to the CPU half.**
 
-That resolves the SKU question: **6 vCPU is the A6000 configuration at this
-packet.** The 8-vCPU best case is the same 1.331 ceiling, so at $0.43/h it is
-**$89.7/M**, above the 6-vCPU measured $80.0/M; break-even needs 1.493
-matches/s, which the card cannot deliver at `g = 0.37`. Do not buy the 8-vCPU
-A6000 until `g` falls (batched forward/MPS) or the 228 ms CPU packet leaves. The
-current word is **~1 A6000 per 4–6 vCPU**, not the 8–16 above; the 8–16
-crossover needs the same `g` reduction.
+That resolves the SKU question at the pre-graph packet: **6 vCPU is the A6000
+configuration.** The 8-vCPU best case was the same 1.331 ceiling, so at $0.43/h
+it was **$89.7/M**, above the 6-vCPU measured $80.0/M; break-even needed 1.493
+matches/s, which the card could not deliver at `g = 0.37`. The full-call graph
+moves both sides (see the update below), so the 8-vCPU case is a measurement
+again, not a closed question.  At the full-graph terms the card serves 3.24
+processes, so the provider word remains **~1 A6000 per 4–6 vCPU**; the 8–16
+crossover still needs a lower `g`.
 
 **The new record moves the measured rate, not the ceiling (2026-11-17).**
 `runs/crforge-c4/cloud-thunder-a6000-s38.json`: `T = 0.4176 s`, forward
@@ -326,9 +329,17 @@ ceiling** and **+20.6 % over the 2026-11-16 1.215**, at **$64.3 / 1M**.  The
 ceiling did not move (this box's forward is slower, 161 vs 158); the *measured*
 aggregate did, because removing ~1,300 device syncs per decision removed a
 contention amplifier.  The full-call graph on the same box is the next ceiling
-move: forward 102–106 ms and `T = 0.338–0.347 s` predict `g ≈ 0.30` (~3.2
-processes), one process **0.624 matches/s** and a **~2.0 matches/s** ceiling;
-the six-producer sweep is the confirmation, not this arithmetic.
+move: one process **0.592 matches/s**, `g = 0.309`, 3.24 processes and a **1.842**
+predicted ceiling; six producers measure **2.221 matches/s** (**1.21×** that
+ceiling) at **$43.8 / 1M**.  At six the forward is 163 ms and the CPU half 408 ms
+against the no-graph sweep's 290 / 547, so the graph removes work *and*
+contention.  This is the provider row to beat; the binding is still shared, not
+clean GPU serialization.
+
+The 8-vCPU box is back to a measurement rather than a dominance proof: at
+$0.43/h it needs **2.73 matches/s** to beat the 6-vCPU **$43.8 / 1M**.  That is
+above the measured 2.221 but not obviously above the measured card ceiling, so
+measure it before buying it.
 
 ### The 157 ms field and the `ever_server` inference port (2026-11-16)
 

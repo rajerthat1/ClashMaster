@@ -5817,6 +5817,26 @@ run after an idle period was the slowest).  The eight alternating A/B runs below
 are the controlled comparison; the sweep's absolute `T` is a measurement of one
 box at one time.
 
+#### The full-graph sweep: 2.221 matches/s and $43.8 / 1M
+
+`cloud_capacity.py --run --fast-forward --full-cuda-graph --sweep-procs 1 2 4 6`
+(`runs/crforge-c4/cloud-thunder-a6000-s38-fullgraph.json`):
+
+| producers | `T` s | per-proc | aggregate | retention | forward ms | CPU ms | $/1M |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.3562 | 0.592 | 0.592 | 1.04 | 105.8 | 250.4 | 164 |
+| 2 | 0.4410 | 0.478 | 0.957 | 0.84 | 114.4 | 326.6 | 102 |
+| 4 | 0.4967 | 0.425 | 1.700 | 0.75 | 135.6 | 361.2 | 57.2 |
+| 6 | 0.5702 | 0.370 | **2.221** | 0.65 | 162.7 | 407.5 | **43.8** |
+
+The primary run is `T = 0.3709 s`, forward 114.5 ms, `g = 0.309`, **3.24
+processes** and a **1.842** predicted ceiling.  Six producers measure **2.221**,
+**1.21× the ceiling**, and the case saturates at four.  At six the forward is
+163 ms (1.54×) and the CPU half **408 ms** (1.63×), against the no-graph
+sweep's 290 / 547: the graph removes work *and* contention.  **+47 % over the
+no-graph 1.512** and **$64.3 → $43.8 / 1M** (2,428: $87.6).  The binding is
+still **shared**, not clean GPU serialization.
+
 #### The full-call graph passes, and it is the fastest shape
 
 Three configurations at the same shape, one after another on the same box
@@ -5891,7 +5911,8 @@ paid for in contention, the GPU form of session 32's CPU result.  The update is
 needs a separate card or a batched decision server before it is reachable.
 
 Evidence: `runs/crforge-c4/cloud-thunder-a6000-s38.json` (raw under
-`runs/crforge-c4/cloud/`), `runs/crforge-c4/self-play-s38-*.json`,
+`runs/crforge-c4/cloud/`), `runs/crforge-c4/cloud-thunder-a6000-s38-fullgraph.json`,
+`runs/crforge-c4/self-play-s38-*.json`,
 `runs/crforge-c4/cpu-half-micro-s38.json`, `tools/crforge/cpu_half_micro.py`,
 `crforge_bridge/fast_forward.py`, `crforge_bridge/tests/test_fast_forward.py`,
 `native_runner/training/v4/distributed_ppo.py`.

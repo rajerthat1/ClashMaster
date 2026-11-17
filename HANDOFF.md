@@ -32,6 +32,13 @@ with session 37's record, then settle `--full-cuda-graph`.  The box is a Thunder
   0/256 mismatches on all six fields (fp16 log-prob Δ 3.6e-7, entropy 4.1e-6,
   value 4.0e-4).  It captures encode + core + the sampled decode, so the eager
   decode and its staging leave the packet.
+- **The full-graph sweep is 2.221 matches/s at six producers, $43.8/1M.**  The
+  same 1/2/4/6 sweep with `--full-cuda-graph` is 0.592 / 0.957 / 1.700 / **2.221**
+  (retention 0.65), **1.21× the 1.842 predicted ceiling**, saturated at four;
+  at six the forward is 163 ms and the CPU half 408 ms against the no-graph
+  sweep's 290 / 547.  The graph removes work *and* contention: **+47 % over the
+  no-graph 1.512**, **$64.3 → $43.8/1M** (2,428: $87.6).  This is the provider
+  number; the card is still shared-bound, not cleanly serialized.
 - **The full-call gate needed a policy-independent probe.**  It compared the
   sampled log-probabilities of two replays of the warmup batch; an initial board
   samples almost every row as WAIT, so identical actions cannot separate a frozen
@@ -1012,7 +1019,9 @@ do not start another R0 run.
   `sampled_graph_generator_registration`.
 - **`overlap_compare.py` drives the forwarded loop.**  It gains `--fast-forward`,
   `--no-cuda-graphs`, `--full-cuda-graph` and `--ppo-lane-minibatch`, and records
-  them in the artifact's shape block.
+  them in the artifact's shape block.  `cloud_capacity.py` gains
+  `--full-cuda-graph` (recorded in `settings`) so the provider sweep can use the
+  fastest forward.
 - **A GPU device bug in the PPO minibatch.**  `distributed_ppo_update_v4` moved
   `active_lanes` to `lane_indices.device`; lane minibatching previously crashed
   on a CPU/CUDA index mix.
@@ -1063,6 +1072,25 @@ partial graph, and session 36's "+34 ms" is not reproduced. Verification:
 probe Δ 0.1616, log-prob Δ 13.86. The forward ranged 102–183 ms across runs, so
 a cross-session single run cannot rank the shapes; the alternated pairs can.
 
+### Measured — the full-graph process sweep
+
+`cloud_capacity.py --run --fast-forward --full-cuda-graph --sweep-procs 1 2 4 6`
+(`runs/crforge-c4/cloud-thunder-a6000-s38-fullgraph.json`):
+
+| producers | `T` s | per-proc | aggregate | retention | forward ms | CPU ms | $/1M |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.3562 | 0.592 | 0.592 | 1.04 | 105.8 | 250.4 | 164 |
+| 2 | 0.4410 | 0.478 | 0.957 | 0.84 | 114.4 | 326.6 | 102 |
+| 4 | 0.4967 | 0.425 | 1.700 | 0.75 | 135.6 | 361.2 | 57.2 |
+| 6 | 0.5702 | 0.370 | **2.221** | 0.65 | 162.7 | 407.5 | **43.8** |
+
+The primary terms are `T = 0.3709 s`, forward 114.5 ms, `g = 0.309`, **3.24
+processes**, a **1.842** predicted ceiling; six producers measure **2.221**,
+**1.21× the ceiling**, and the case saturates at four. At six the forward is
+163 ms (1.54×) and the CPU half 408 ms (1.63×), against the no-graph sweep's
+290 / 547 — the graph removes work *and* contention. **+47 % over the no-graph
+1.512 and $64.3 → $43.8/1M** (2,428: $87.6). The binding is still **shared**.
+
 ### Measured — the overlapped loop (full graph, lane-minibatch 16)
 
 | mode | wall s | collection s | update s | collection ld/s | stale |
@@ -1077,27 +1105,25 @@ the rest is contention. Stale |KL| 0.076, clip 8.4 % (the 0.404 on-policy KL is
 
 ### Still open
 
-- **The six-producer sweep with `--full-cuda-graph`.** One process is 0.624
-  matches/s and the terms predict ~2.0; the aggregate is unmeasured. This is the
-  provider number.
 - **Groups' 44 ms.** The feature transpose is slower; the cost is
   `_entity_rows` / the 35 gathers. Batch the gathers by dtype, or share the
   seat-invariant fields between the two builders.
 - **The overlapped loop needs a separate card or a batched decision server.**
   It is not a default on one A6000.
+- **The 8-vCPU question is re-opened by the full-graph rate.** The 6-vCPU box is
+  $43.8/M measured; an 8-vCPU box at $0.43/h needs more than 2.221 × 0.43/0.35
+  = 2.73 matches/s to beat it. That is above the measured 2.221 but not obviously
+  above the card's ceiling, so it is a measurement, not arithmetic.
 - **Native parity cadence, unchanged.**
 
 ### Next session (session 39)
 
-1. Run `cloud_capacity.py --run --fast-forward --full-cuda-graph --sweep-procs
-   1 2 4 6` at 128 lanes; save the report and the sweep. This is the first
-   measurement of the ~2.0 ceiling, and it updates §4's provider row.
-2. Reduce the group gathers (batch by dtype) and gate on `batched_tensorize.py`;
+1. Reduce the group gathers (batch by dtype) and gate on `batched_tensorize.py`;
    do not transpose the feature block.
-3. Re-run the provider comparison at the new ceiling; 6 vCPU remains the SKU
-   unless the full-graph ceiling changes the crossover.
-4. Keep the pipeline a gated option; do not default it on one card.
-5. Native parity cadence, unchanged.
+2. Re-run the provider comparison at the full-graph 2.221 / $43.8 terms; 6 vCPU
+   remains the SKU unless an 8-vCPU measurement clears 2.73 matches/s.
+3. Keep the pipeline a gated option; do not default it on one card.
+4. Native parity cadence, unchanged.
 
 ## Session 37 results (2026-11-17) — the CPU half, profiled
 
