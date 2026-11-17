@@ -947,6 +947,9 @@ Three results:
    143.8 ms CPU half; the probe-shaped run reports 0.0 unaccounted. The field is
    a diagnostic, not a gate.
 
+Evidence: `runs/crforge-c4/fast-forward-cpu-baseline.json`,
+`-fp32.json`, `-bf16.json`, `-train.json`.
+
 ### The training smoke
 
 4 lanes × 2 seats × 2 segments × 4 decisions, `--ppo-update --fast-forward

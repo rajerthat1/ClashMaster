@@ -5580,4 +5580,5 @@ the 157 → 21.5 ms target has no measurement.  The gate on a rented box is
 with `--no-cuda-graphs` and `--inference-precision fp32` to separate the
 precision gain from the graph gain.  Evidence:
 `crforge_bridge/fast_forward.py`,
-`crforge_bridge/tests/test_fast_forward.py`.
+`crforge_bridge/tests/test_fast_forward.py`,
+`runs/crforge-c4/fast-forward-cpu-{baseline,fp32,bf16,train}.json`.
