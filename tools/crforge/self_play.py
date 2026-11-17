@@ -99,6 +99,7 @@ import numpy as np
 import torch
 
 from crforge_bridge.catalog import Catalog
+from crforge_bridge.fast_forward import FastForwardV4
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
 from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, PotentialShapingReward, rollout_statistics
@@ -169,6 +170,39 @@ def _timing_residual(
         "collection_ms_per_decision": per_decision,
         "accounted_ms_mean": accounted,
         "unaccounted_ms_mean": per_decision - accounted,
+    }
+
+
+def _inference_steady_state(segments: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """The forward's share of a decision and the CPU half beside it.
+
+    The last segment is the steady state (the warmup is on by default and the
+    first decisions are cold, FINDINGS.md §3.67).  ``inference_ms`` is the model
+    forward *plus its per-call overhead*; the CPU half is what has to fall for a
+    faster forward to pay, so the artifact reports both rather than the forward
+    alone (ROADMAP_CRFORGE.md §4).
+    """
+
+    if not segments:
+        return {
+            "segment": None,
+            "decision_ms_mean": 0.0,
+            "inference_ms_mean": 0.0,
+            "inference_share": 0.0,
+            "cpu_half_ms_mean": 0.0,
+            "unaccounted_ms_mean": 0.0,
+        }
+    last = segments[-1]
+    means = last.get("ms_mean") or {}
+    decision = float(last.get("collection_ms_per_decision") or 0.0)
+    forward = float(means.get("inference_ms") or 0.0)
+    return {
+        "segment": int(last.get("segment", 0)),
+        "decision_ms_mean": decision,
+        "inference_ms_mean": forward,
+        "inference_share": (forward / decision) if decision else 0.0,
+        "cpu_half_ms_mean": max(decision - forward, 0.0),
+        "unaccounted_ms_mean": float(last.get("unaccounted_ms_mean") or 0.0),
     }
 
 
@@ -420,6 +454,37 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="episode cut at this tick (0 = the engine's full match); a short value exercises autoreset",
     )
+    parser.add_argument(
+        "--fast-forward",
+        action="store_true",
+        help=(
+            "run the in-process port of ever_server's inference tricks: padded staging reused "
+            "per row count, one fp32 recurrent-state table, fp16 autocast on CUDA and a CUDA "
+            "Graph per row count. Sampling stays eager (a captured sampler would freeze its RNG)"
+        ),
+    )
+    parser.add_argument(
+        "--inference-precision",
+        choices=("auto", "fp32", "fp16", "bf16"),
+        default="auto",
+        help=(
+            "autocast precision for --fast-forward: 'auto' is fp16 on CUDA and fp32 on CPU; "
+            "'bf16' is the opt-in CPU check of the half path; fp16 needs CUDA"
+        ),
+    )
+    parser.add_argument(
+        "--no-cuda-graphs",
+        action="store_true",
+        help="use the fast forward without CUDA Graph capture (the correctness path on a GPU box)",
+    )
+    parser.add_argument(
+        "--verify-fast-forward",
+        action="store_true",
+        help=(
+            "before the run, replay the warmup batch through eager fp32 and the fast forward on "
+            "the same RNG and record action/log-prob equality; abort if the actions differ"
+        ),
+    )
     parser.add_argument("--checkpoint", type=Path, default=Path(".resource/RoyaleFish/models/B-general-v275.pt"))
     parser.add_argument("--no-validate", action="store_true", help="skip the per-decision record validation")
     parser.add_argument("--greedy", action="store_true", help="argmax instead of sampling (debug only)")
@@ -549,6 +614,14 @@ def main(argv: list[str] | None = None) -> int:
         or args.ppo_clip_range <= 0.0
     ):
         raise SystemExit("--ppo-update settings must be positive (and the lane minibatch non-negative)")
+    if args.verify_fast_forward and not args.fast_forward:
+        raise SystemExit("--verify-fast-forward compares the fast forward; pass --fast-forward")
+    if args.verify_fast_forward and args.no_warmup_forward:
+        raise SystemExit("--verify-fast-forward needs the warmup batch; drop --no-warmup-forward")
+    if args.inference_precision != "auto" and not args.fast_forward:
+        raise SystemExit("--inference-precision is a --fast-forward setting")
+    if args.no_cuda_graphs and not args.fast_forward:
+        raise SystemExit("--no-cuda-graphs is a --fast-forward setting")
     reward_config = CrforgeRewardConfig(shaping_beta=float(args.shaping_beta))
     training_config = None
     if args.ppo_update:
@@ -618,6 +691,17 @@ def main(argv: list[str] | None = None) -> int:
     if window < window_span:
         raise SystemExit(f"policy window is {window} ticks but its delay bins need {window_span}")
     state = model.initial_state(args.count * len(seats), device=device)
+    fast = None
+    fast_verification = None
+    if args.fast_forward:
+        fast = FastForwardV4(
+            model,
+            device=device,
+            rows=args.count * len(seats),
+            precision=args.inference_precision,
+            cuda_graphs=not args.no_cuda_graphs,
+        )
+        state = fast.state
     # The overlapped loop needs a second, independent model: the collector keeps
     # sampling with stable weights while the worker updates this copy.  Loading
     # the checkpoint twice (rather than deepcopy) makes the two models visibly
@@ -708,18 +792,37 @@ def main(argv: list[str] | None = None) -> int:
         cuda_rng_states = torch.cuda.get_rng_state_all() if device.type == "cuda" else None
         try:
             with torch.inference_mode():
-                output = model.sample_for_ppo_rollout(
-                    warm_batch.to_model_input(device),
-                    state,
-                    episode_start=torch.zeros(args.count * len(seats), dtype=torch.bool, device=device),
-                    validate=not args.no_validate,
-                )
+                warm_starts = torch.zeros(args.count * len(seats), dtype=torch.bool, device=device)
+                if fast is not None:
+                    output = fast.sample(warm_batch, state, episode_start=warm_starts)
+                else:
+                    output = model.sample_for_ppo_rollout(
+                        warm_batch.to_model_input(device),
+                        state,
+                        episode_start=warm_starts,
+                        validate=not args.no_validate,
+                    )
                 # Prime the decode path too; it is inside the measured wall and
                 # has its own first-call cost.
                 for index, seat in enumerate(seats):
                     sequence = _seat_rows(output.actions, index, len(seats))
                     plan = decoders[seat].decode(batch, sequence, warm_stacks[seat].candidates, seat=seat)
                     plan_window_ticks(plan.offsets, window)
+                if fast is not None and args.verify_fast_forward:
+                    # The gate is numerical, not the wall: the half-precision or
+                    # graph-replayed path must sample the same actions as eager
+                    # fp32 on this batch, and stay inside the log-prob tolerance.
+                    fast_verification = fast.verify(warm_batch, fast.state, episode_start=warm_starts)
+                    if not fast_verification["passed"]:
+                        raise SystemExit(
+                            "fast-forward verification failed: "
+                            f"{fast_verification['action_mismatches']} "
+                            f"{fast_verification['max_abs_delta']} tol {fast_verification['tolerance']}"
+                        )
+            if fast is not None:
+                # A sampled decision advances the table; the warmup must not, or
+                # the first real decision would start from a fictitious turn.
+                fast.rebind(model.initial_state(args.count * len(seats), device=device))
             if device.type == "cuda":
                 torch.cuda.synchronize()
         finally:
@@ -812,7 +915,13 @@ def main(argv: list[str] | None = None) -> int:
                 # so leaving it on makes a fast forward look slower than the CPU's.
                 validate_rows = not args.no_validate
                 with torch.inference_mode():
-                    if args.greedy:
+                    if fast is not None:
+                        output = (
+                            fast.act(stacked, state, episode_start=episode_start)
+                            if args.greedy
+                            else fast.sample(stacked, state, episode_start=episode_start)
+                        )
+                    elif args.greedy:
                         output = model.act(
                             stacked.to_model_input(device),
                             state,
@@ -974,12 +1083,16 @@ def main(argv: list[str] | None = None) -> int:
                 boundary_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
                 boundary_batch = _interleave([boundary_stacks[seat] for seat in seats])
                 with torch.inference_mode():
-                    context = model.forward(
-                        boundary_batch.to_model_input(device),
-                        state,
-                        episode_start=torch.zeros(args.count * len(seats), dtype=torch.bool, device=device),
-                        validate=not args.no_validate,
-                    )
+                    boundary_starts = torch.zeros(args.count * len(seats), dtype=torch.bool, device=device)
+                    if fast is not None:
+                        context = fast.forward(boundary_batch, state, episode_start=boundary_starts)
+                    else:
+                        context = model.forward(
+                            boundary_batch.to_model_input(device),
+                            state,
+                            episode_start=boundary_starts,
+                            validate=not args.no_validate,
+                        )
                 rollout = rollout_store.finalize(boundary_value=context.value.detach().float())
                 segment_rollout = rollout_statistics(
                     rollout, gamma=reward_config.shaping_gamma, gae_lambda=float(args.gae_lambda)
@@ -1000,6 +1113,9 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         boundary_wall = float(boundary["boundary_wall_s"])
                         state = trainer.boundary_state(state, rows=args.count * len(seats))
+                        if fast is not None:
+                            fast.rebind(state)
+                            state = fast.state
                     else:
                         # The optimizer steps at the wave boundary; the recurrence
                         # policy decides whether the next segment keeps this state.
@@ -1009,6 +1125,9 @@ def main(argv: list[str] | None = None) -> int:
                         if updates is not None:
                             segment_updates = updates
                             state = trainer.boundary_state(state, rows=args.count * len(seats))
+                            if fast is not None:
+                                fast.rebind(state)
+                                state = fast.state
 
             wall = time.perf_counter() - segment_started
             update_wall = sum(float(update["wall_s"]) for update in segment_updates)
@@ -1098,6 +1217,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             if trainer.config.resets_recurrence:
                 state = trainer.boundary_state(state, rows=args.count * len(seats))
+                if fast is not None:
+                    fast.rebind(state)
+                    state = fast.state
             print(
                 json.dumps({"event": "partial_wave_flush", "segments": partial_wave, "updates": len(flushed)}),
                 flush=True,
@@ -1283,6 +1405,14 @@ def main(argv: list[str] | None = None) -> int:
                 "game_mode": STANDARD_GAME_MODE,
                 "tower_troop": TOWER_TROOP,
                 "contract_keys": sorted(str(key) for key in contract)[:12] if isinstance(contract, dict) else [],
+            },
+            "inference": {
+                "fast_forward": fast.describe() if fast is not None else {"enabled": False},
+                "verification": fast_verification,
+                "sampling": (
+                    "eager outside the captured graph" if fast is not None and fast.cuda_graphs else "eager"
+                ),
+                "steady_state": _inference_steady_state(segments),
             },
             "rollout": {
                 "stored": rollout_enabled,

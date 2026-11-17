@@ -14,8 +14,8 @@ from .components import (
     BattleGroupEncoder,
     CandidateEncoder,
     CardTokenEncoder,
-    EventSetEncoder,
     EffectSemanticEncoder,
+    EventSetEncoder,
     GenericScalarEncoder,
     GlobalCardEncoder,
     LocalChildSetEncoder,
@@ -29,8 +29,7 @@ from .components import (
     masked_logits,
     mlp,
 )
-from .mechanics import EffectSemanticCatalogV1, MechanicProfileCatalogV1
-from .config import ModelConfigV4, UNIVERSAL_ACTION_VERSION, UNIVERSAL_OBSERVATION_VERSION, UNIVERSAL_POLICY_VERSION
+from .config import UNIVERSAL_ACTION_VERSION, UNIVERSAL_OBSERVATION_VERSION, UNIVERSAL_POLICY_VERSION, ModelConfigV4
 from .decoding import (
     DELAY_POLICY_EARLIEST,
     DELAY_POLICY_SAMPLE,
@@ -39,18 +38,18 @@ from .decoding import (
     elixir_multiplier_from_match_scalars,
     validate_delay_policy,
 )
+from .mechanics import EffectSemanticCatalogV1, MechanicProfileCatalogV1
 from .tensors import (
+    GATE_ACT,
+    TARGET_GRID,
     ActionEvaluationComponentsV4,
     ActionSequenceV4,
     EncodedObservationV4,
-    GATE_ACT,
     PolicyContextV4,
     PolicyOutputV4,
     RecurrentPolicyStateV4,
-    TARGET_GRID,
     UniversalSemanticBatchV4,
 )
-
 
 POLICY_VERSION_V4 = UNIVERSAL_POLICY_VERSION
 OBSERVATION_VERSION_V4 = UNIVERSAL_OBSERVATION_VERSION
@@ -854,6 +853,22 @@ class UniversalCardPolicyV4(nn.Module):
     ) -> PolicyOutputV4:
         context = self.forward(batch, state, episode_start=episode_start, validate=validate)
         return self._select_action(batch, context, sample=self.ppo_rollout_sampling, validate=validate)
+
+    def select_action_from_context(
+        self, batch: UniversalSemanticBatchV4, context: PolicyContextV4, *, sample: bool, validate: bool = True
+    ) -> PolicyOutputV4:
+        """Decode heads from an already-encoded context.
+
+        This is the seam the fast in-process forward needs: a CUDA Graph can
+        capture the deterministic encode+core forward, while the sampler stays
+        eager so it draws fresh random numbers on every replay. ``sample=True``
+        follows ``sample_for_ppo_rollout`` (rollout temperatures and sampling),
+        ``sample=False`` follows ``act`` (unit temperatures and argmax).
+        """
+
+        if sample:
+            return self._select_action(batch, context, sample=True, validate=validate)
+        return self._select_action(batch, context, sample=False, validate=validate)
 
     def sample_after_preselected_act(
         self, batch: UniversalSemanticBatchV4, context: PolicyContextV4, *, validate: bool = True
