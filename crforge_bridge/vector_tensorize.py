@@ -37,6 +37,7 @@ when a caller asks for it.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
@@ -51,8 +52,10 @@ from native_runner.training.v4.tensors import (
     PreviousActionV4,
     RelationEdgesV4,
     UniversalSemanticBatchV4,
+    tensor_padding_value,
 )
 
+from .vector_actions import CandidateTables, candidate_tables
 from .vector_observation import VectorObservationBatch
 from .vector_rows import (
     VectorCandidateBuilder,
@@ -129,17 +132,37 @@ class VectorTensorizer:
 
     # ---- sections ----------------------------------------------------------
 
-    def build_sections(self, batch: VectorObservationBatch) -> VectorTensorSections:
-        """Every section for one decision, in the order the stock path builds them."""
+    def build_sections(
+        self, batch: VectorObservationBatch, *, timings: dict[str, float] | None = None
+    ) -> VectorTensorSections:
+        """Every section for one decision, in the order the stock path builds them.
 
-        cards = self.card_builder.build(batch)
-        towers = self.tower_builder.build(batch)
-        groups = self.group_builder.build(batch)
-        empty = self.empty_builder.build(batch)
-        candidates = self.candidate_builder.build(batch)
-        relations = self.relation_builder.build(batch, cards, groups, towers)
-        planes = self.plane_builder.build(batch)
-        scalars = self.scalar_builder.build(batch, groups=groups, candidates=candidates)
+        ``timings`` is an optional millisecond accumulator: when given, each
+        builder's share of the decision is added to it under its own name.  The
+        producer's CPU-half probe uses it to name the section that has to fall
+        (``ROADMAP_CRFORGE.md`` §4); the returned record is identical either way.
+        """
+
+        def measure(name: str, build: Any) -> Any:
+            if timings is None:
+                return build()
+            started = time.perf_counter()
+            value = build()
+            timings[name] = timings.get(name, 0.0) + (time.perf_counter() - started) * 1000.0
+            return value
+
+        cards = measure("cards_ms", lambda: self.card_builder.build(batch))
+        towers = measure("towers_ms", lambda: self.tower_builder.build(batch))
+        groups = measure("groups_ms", lambda: self.group_builder.build(batch))
+        empty = measure("empty_ms", lambda: self.empty_builder.build(batch))
+        candidates = measure("candidates_ms", lambda: self.candidate_builder.build(batch))
+        relations = measure(
+            "relations_ms", lambda: self.relation_builder.build(batch, cards, groups, towers)
+        )
+        planes = measure("planes_ms", lambda: self.plane_builder.build(batch))
+        scalars = measure(
+            "scalars_ms", lambda: self.scalar_builder.build(batch, groups=groups, candidates=candidates)
+        )
         return VectorTensorSections(
             cards=cards,
             groups=groups,
@@ -216,12 +239,18 @@ class VectorTensorizer:
 
     # ---- tensorize ---------------------------------------------------------
 
-    def tensorize(self, batch: VectorObservationBatch, *, validate: bool = False) -> UniversalSemanticBatchV4:
+    def tensorize(
+        self,
+        batch: VectorObservationBatch,
+        *,
+        validate: bool = False,
+        timings: dict[str, float] | None = None,
+    ) -> UniversalSemanticBatchV4:
         """Build the stacked semantic batch for every lane of ``batch``."""
 
         self._ensure_state(batch)
         assert self._previous_action is not None  # narrowed by ``_ensure_state``
-        sections = self.build_sections(batch)
+        sections = self.build_sections(batch, timings=timings)
         result = UniversalSemanticBatchV4(
             match_scalars=sections.scalars.scalars,
             own_cards=sections.cards.own,
@@ -258,13 +287,24 @@ class VectorTensorizer:
     # ---- record_action -----------------------------------------------------
 
     def record_action(
-        self, sequence: ActionSequenceV4, batch: UniversalSemanticBatchV4, *, validate: bool = True
+        self,
+        sequence: ActionSequenceV4,
+        batch: UniversalSemanticBatchV4,
+        *,
+        validate: bool = True,
+        tables: CandidateTables | None = None,
     ) -> None:
         """Record one sampled action per lane for the next decision.
 
         ``sequence`` carries lanes as its batch dimension, so row ``n`` is
         lane ``n``'s sampled micro-actions.  Each UID is resolved against that
         lane's candidate rows, exactly as the stock method resolves row 0.
+
+        The write is one NumPy pass.  The first version indexed the tensors per
+        lane and per micro-action; on a GPU that is one device sync per field per
+        row (~1,300 per decision at 128 lanes), which made the record the largest
+        part of the ``decode`` bucket.  ``tables`` lets a caller that also decoded
+        this decision share one :func:`candidate_tables` conversion.
         """
 
         self._ensure_state_from_batch(batch)
@@ -272,45 +312,79 @@ class VectorTensorizer:
         lanes = int(batch.batch_size)
         if validate:
             sequence.validate(self.config, candidate_count=int(candidates.mask.shape[1]))
+        table = candidate_tables(candidates) if tables is None else tables
+        if table.lanes != lanes:
+            raise ValueError("candidate and observation batch sizes differ")
+        steps = int(sequence.candidate_uid.shape[1])
         previous = self._empty_previous_action(lanes)
         # The record outlives the collection step: a producer samples inside
         # ``inference_mode`` and later resets rows or hands these tensors to a
         # PPO update, and an inference tensor cannot be updated in place
-        # outside that mode.  Copy the sampled rows as ordinary tensors.
+        # outside that mode.  Copy the sampled rows as ordinary tensors — once
+        # per field, not once per lane.
         with torch.inference_mode(False):
-            previous.gate = sequence.gate.detach().cpu().clone()
-            previous.micro_action_count = sequence.micro_action_count.detach().cpu().clone()
-        mask = candidates.mask.numpy()
-        uid = candidates.uid.numpy()
-        for lane in range(lanes):
-            count = int(sequence.micro_action_count[lane].item())
-            for step in range(count):
-                candidate_uid = int(sequence.candidate_uid[lane, step].item())
-                matches = np.flatnonzero(mask[lane] & (uid[lane] == candidate_uid))
-                if matches.size != 1:
-                    raise ValueError("previous action candidate UID is missing or duplicated")
-                candidate_row = int(matches[0])
-                for name in (
-                    "variant",
-                    "visible_card_vocab_id",
-                    "effective_card_vocab_id",
-                    "effective_form",
-                    "ability_vocab_id",
-                ):
-                    getattr(previous, name)[lane, step] = getattr(candidates, name)[lane, candidate_row].cpu()
-                if int(candidates.variant[lane, candidate_row]) == CANDIDATE_ABILITY:
-                    child_row = int(candidates.source_child_index[lane, candidate_row].item())
-                    group_row = int(candidates.source_group_index[lane, candidate_row].item())
-                    if child_row >= 0:
-                        previous.source_position[lane, step] = batch.groups.child_position[lane, child_row].detach().cpu()
-                    elif group_row >= 0:
-                        previous.source_position[lane, step] = batch.groups.position[lane, group_row].detach().cpu()
-                    else:
-                        raise ValueError("Ability candidate lacks a retained source")
-                    previous.source_mask[lane, step] = True
-                previous.target_cell[lane, step] = sequence.target_cell[lane, step].cpu()
-                previous.delay_offset_bin[lane, step] = sequence.delay_offset_bin[lane, step].cpu()
-                previous.action_mask[lane, step] = True
+            gate = sequence.gate.detach().cpu().numpy().astype(np.int64, copy=False)
+            counts = sequence.micro_action_count.detach().cpu().numpy().astype(np.int64, copy=False)
+            uids = sequence.candidate_uid.detach().cpu().numpy()
+            target_cell = sequence.target_cell.detach().cpu().numpy()
+            delay_bin = sequence.delay_offset_bin.detach().cpu().numpy()
+            previous.gate.copy_(torch.from_numpy(gate))
+            previous.micro_action_count.copy_(torch.from_numpy(counts))
+        field_views = {
+            name: getattr(previous, name).numpy()
+            for name in (
+                "variant",
+                "visible_card_vocab_id",
+                "effective_card_vocab_id",
+                "effective_form",
+                "ability_vocab_id",
+                "target_cell",
+                "delay_offset_bin",
+                "source_mask",
+                "action_mask",
+            )
+        }
+        source_position = previous.source_position.numpy()
+
+        for step in range(steps):
+            active = counts > step
+            if not active.any():
+                continue
+            lane_index = np.flatnonzero(active)
+            step_uid = uids[active, step].astype(np.int64, copy=False)
+            matches = table.mask[active] & (table.uid[active] == step_uid[:, None])
+            per_row = matches.sum(axis=1)
+            if np.any(per_row != 1):
+                raise ValueError("previous action candidate UID is missing or duplicated")
+            rows = matches.argmax(axis=1)
+            for name in (
+                "variant",
+                "visible_card_vocab_id",
+                "effective_card_vocab_id",
+                "effective_form",
+                "ability_vocab_id",
+            ):
+                field_views[name][lane_index, step] = getattr(table, name)[lane_index, rows]
+            field_views["target_cell"][lane_index, step] = target_cell[lane_index, step]
+            field_views["delay_offset_bin"][lane_index, step] = delay_bin[lane_index, step]
+            field_views["action_mask"][lane_index, step] = True
+            # Ability rows need the retained source's position.  The bridge
+            # envelope emits deploy candidates only, so this is a correctness
+            # path for a caller with ability sources, not the producer's.
+            ability = table.variant[lane_index, rows] == CANDIDATE_ABILITY
+            for lane, row in zip(lane_index[ability], rows[ability]):
+                lane = int(lane)
+                row = int(row)
+                child_row = int(table.source_child_index[lane, row])
+                group_row = int(table.source_group_index[lane, row])
+                if child_row >= 0:
+                    position = batch.groups.child_position[lane, child_row].detach().cpu().numpy()
+                elif group_row >= 0:
+                    position = batch.groups.position[lane, group_row].detach().cpu().numpy()
+                else:
+                    raise ValueError("Ability candidate lacks a retained source")
+                source_position[lane, step] = position
+                field_views["source_mask"][lane, step] = True
         self._previous_action = previous
 
     def _ensure_state_from_batch(self, batch: UniversalSemanticBatchV4) -> None:
@@ -319,6 +393,45 @@ class VectorTensorizer:
 
 
 # ---- lane slicing and digests ----------------------------------------------
+
+
+def interleave_rows(records: Sequence[Any], *, fill: int = 0) -> Any:
+    """Stack one record per actor seat into ``lane * seats + seat`` row order.
+
+    The seats' variable-length sections (relation edges, active effects) need a
+    common width before they can be stacked; the mask is what makes the padding
+    inert for the model, exactly as it is inside one seat's batch.  This is
+    ``stack(dim=1)`` then a reshape: the reshape is free because the stacked
+    record is contiguous, so it is one copy — writing into ``dst[seat::seats]``
+    directly is a *strided* write and measured 2.3 ms slower at 128 lanes
+    (``cpu_half_micro.py``), which is why the obvious "one copy instead of two"
+    rewrite was reverted.
+    """
+
+    first = records[0]
+    if isinstance(first, torch.Tensor):
+        target = tuple(max(int(record.shape[axis]) for record in records) for axis in range(1, first.ndim))
+        padded = []
+        for record in records:
+            if tuple(record.shape[1:]) == target:
+                padded.append(record)
+                continue
+            output = record.new_full((int(record.shape[0]), *target), fill)
+            slices = (slice(None),) + tuple(slice(0, int(size)) for size in record.shape[1:])
+            output[slices] = record
+            padded.append(output)
+        stacked = torch.stack(padded, dim=1)
+        return stacked.reshape(int(first.shape[0]) * len(records), *target)
+    if is_dataclass(first):
+        return type(first)(
+            **{
+                item.name: interleave_rows(
+                    [getattr(record, item.name) for record in records], fill=tensor_padding_value(first, item.name)
+                )
+                for item in fields(first)
+            }
+        )
+    raise TypeError(f"cannot interleave {type(first).__name__}")
 
 
 def _slice_record(record: Any, lane: int) -> Any:
@@ -433,6 +546,7 @@ __all__ = [
     "VectorTensorizer",
     "batch_digest",
     "compare_semantic_batches",
+    "interleave_rows",
     "lane_batch",
     "lane_sequence",
 ]

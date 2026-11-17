@@ -589,10 +589,14 @@ class VectorGroupBuilder:
 
         g = self.max_groups
         c = self.max_children
+        # Advanced indexing is the gather: ``take_along_axis`` rebuilds an index
+        # tuple on every call (35 times per build), which was a third of this
+        # section's own time.  ``order`` holds row indices into a lane's entity
+        # axis, so the pair of index arrays is the same operation without it.
+        lane_index = np.arange(lanes, dtype=np.int64)[:, None]
 
         def gather(values: np.ndarray, order: np.ndarray, width: int) -> np.ndarray:
-            slots = order[:, :width]
-            return np.take_along_axis(values, slots, axis=1)
+            return values[lane_index, order[:, :width]]
 
         # Group rows keep the first ``retained_groups`` entries of the group
         # order; everything after is padded with zeros and masked off.
@@ -648,8 +652,8 @@ class VectorGroupBuilder:
 
         # ---- group tensors -------------------------------------------------
         group_features = np.zeros((lanes, g, len(GROUP_FEATURE_NAMES)), dtype=np.float32)
-        group_position = np.zeros((lanes, g, 2), dtype=np.float32)
-        group_extent = np.zeros((lanes, g, 4), dtype=np.float32)
+        group_position = np.empty((lanes, g, 2), dtype=np.float32)
+        group_extent = np.empty((lanes, g, 4), dtype=np.float32)
         group_mask_f = group_mask.astype(bool)
 
         # ``_finite(hitpoints, max_hitpoints or 1)``: a present hitpoint value
@@ -697,12 +701,12 @@ class VectorGroupBuilder:
 
         # ---- child tensors -------------------------------------------------
         child_features = np.zeros((lanes, c, len(CHILD_FEATURE_NAMES)), dtype=np.float32)
-        child_position = np.zeros((lanes, c, 2), dtype=np.float32)
-        child_extent = np.zeros((lanes, c, 4), dtype=np.float32)
-        child_radius = np.zeros((lanes, c), dtype=np.float32)
-        child_archetype = np.zeros((lanes, c), dtype=np.int64)
-        child_group = np.full((lanes, c), -1, dtype=np.int64)
-        child_type = np.zeros((lanes, c), dtype=np.int64)
+        child_position = np.empty((lanes, c, 2), dtype=np.float32)
+        child_extent = np.empty((lanes, c, 4), dtype=np.float32)
+        child_radius = np.empty((lanes, c), dtype=np.float32)
+        child_archetype = np.empty((lanes, c), dtype=np.int64)
+        child_group = np.empty((lanes, c), dtype=np.int64)
+        child_type = np.empty((lanes, c), dtype=np.int64)
 
         c_hp = gather(rows["hp"], child_order, c)
         c_max_hp = gather(rows["max_hp"], child_order, c)
@@ -743,7 +747,7 @@ class VectorGroupBuilder:
         child_radius[...] = gather(rows["radius"], child_order, c)
         child_archetype[...] = gather(rows["archetype_id"], child_order, c)
         child_type[...] = gather(rows["child_type"], child_order, c)
-        child_group[...] = np.take_along_axis(group_rank, child_entity, axis=1)
+        child_group[...] = group_rank[lane_index, child_entity]
 
         # The arena leaves a masked row at zero; the gathers above can carry a
         # padded slot's row-0 values into a masked one, so zero it explicitly.

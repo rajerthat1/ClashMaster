@@ -81,12 +81,14 @@ the stored sampled action would no longer be the action the engine ran.
 from __future__ import annotations
 
 import argparse
+import cProfile
 import json
+import pstats
 import statistics
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import fields, is_dataclass
+from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
@@ -113,9 +115,16 @@ from crforge_bridge.training import (
     policy_state_id,
     weights_digest,
 )
-from crforge_bridge.vector_actions import CANDIDATE_DEPLOY, VectorActionDecoder, VectorActionPlan, plan_window_ticks
+from crforge_bridge.vector_actions import (
+    CANDIDATE_DEPLOY,
+    CandidateTables,
+    VectorActionDecoder,
+    VectorActionPlan,
+    candidate_tables,
+    plan_window_ticks,
+)
 from crforge_bridge.vector_observation import VectorObservationEncoder
-from crforge_bridge.vector_tensorize import VectorTensorizer
+from crforge_bridge.vector_tensorize import VectorTensorizer, interleave_rows
 from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
 from native_runner.cr_native_env import FIRST_PLAYABLE_TICK
 from native_runner.timeline import load_game_mode_timeline
@@ -128,7 +137,6 @@ from native_runner.training.v4.tensors import (
     TARGET_GRID,
     ActionSequenceV4,
     RecurrentPolicyStateV4,
-    tensor_padding_value,
 )
 
 LEARNER_DECK = (27000008, 27000006, 26000001, 26000000, 26000010, 26000084, 28000000, 28000011)
@@ -203,41 +211,42 @@ def _inference_steady_state(segments: Sequence[dict[str, Any]]) -> dict[str, Any
         "inference_share": (forward / decision) if decision else 0.0,
         "cpu_half_ms_mean": max(decision - forward, 0.0),
         "unaccounted_ms_mean": float(last.get("unaccounted_ms_mean") or 0.0),
+        "cpu_half": last.get("cpu_half"),
     }
 
 
-def _interleave(records: Sequence[Any], *, fill: int = 0) -> Any:
-    """Stack one record per actor seat into ``lane * seats + seat`` row order.
+def _profile_summary(profiler: cProfile.Profile, *, decisions: int) -> dict[str, Any]:
+    """Top functions of a profiled collection loop, in milliseconds per decision.
 
-    The seats' variable-length sections (relation edges, active effects) need a
-    common width before they can be stacked; the mask is what makes the padding
-    inert for the model, exactly as it is inside one seat's batch.
+    Two orders are recorded because they answer different questions: cumulative
+    time names the phase (a builder, the interleave, the decode), and own time
+    names the code inside it.  ``decisions`` normalises the totals so a profile
+    at any shape is comparable with the artifact's bucket means.
     """
 
-    first = records[0]
-    if isinstance(first, torch.Tensor):
-        target = tuple(max(int(record.shape[axis]) for record in records) for axis in range(1, first.ndim))
-        padded = []
-        for record in records:
-            if tuple(record.shape[1:]) == target:
-                padded.append(record)
-                continue
-            output = record.new_full((int(record.shape[0]), *target), fill)
-            slices = (slice(None),) + tuple(slice(0, int(size)) for size in record.shape[1:])
-            output[slices] = record
-            padded.append(output)
-        stacked = torch.stack(padded, dim=1)
-        return stacked.reshape(int(first.shape[0]) * len(records), *target)
-    if is_dataclass(first):
-        return type(first)(
-            **{
-                item.name: _interleave(
-                    [getattr(record, item.name) for record in records], fill=tensor_padding_value(first, item.name)
-                )
-                for item in fields(first)
-            }
-        )
-    raise TypeError(f"cannot interleave {type(first).__name__}")
+    stats = pstats.Stats(profiler)
+    scale = 1000.0 / max(int(decisions), 1)
+
+    def rows(field: str) -> list[dict[str, Any]]:
+        values = []
+        for (filename, line, name), (cc, calls, own, cumulative, _callers) in stats.stats.items():
+            values.append(
+                {
+                    "function": f"{name} ({Path(filename).name}:{line})",
+                    "calls": int(calls),
+                    "own_ms_per_decision": own * scale,
+                    "cumulative_ms_per_decision": cumulative * scale,
+                }
+            )
+        values.sort(key=lambda item: item[field], reverse=True)
+        return values[:30]
+
+    return {
+        "decisions": int(decisions),
+        "by_cumulative": rows("cumulative_ms_per_decision"),
+        "by_own_time": rows("own_ms_per_decision"),
+        "note": "a profiled run is slower than an unprofiled one; read the shares, not the wall",
+    }
 
 
 def _seat_rows(actions: ActionSequenceV4, index: int, seats: int) -> ActionSequenceV4:
@@ -251,7 +260,14 @@ def _candidate_record(section: Any) -> Any:
 
 
 def _force_second_micro_actions(
-    sequence: ActionSequenceV4, plan: VectorActionPlan, candidates: Any, *, mode: str, budget: int, window: int
+    sequence: ActionSequenceV4,
+    plan: VectorActionPlan,
+    candidates: Any,
+    *,
+    mode: str,
+    budget: int,
+    window: int,
+    tables: CandidateTables | None = None,
 ) -> tuple[ActionSequenceV4, int]:
     """Add a legal second micro-action at the first action's own tick.
 
@@ -279,13 +295,14 @@ def _force_second_micro_actions(
     if budget < 1 or window < 2:
         return sequence, 0
     record = _candidate_record(candidates)
-    mask = np.asarray(record.mask, dtype=bool)
-    slots = np.asarray(record.native_hand_slot, dtype=np.int64)
-    variant = np.asarray(record.variant, dtype=np.int64)
-    target_mode = np.asarray(record.target_mode, dtype=np.int64)
+    table = candidate_tables(record) if tables is None else tables
+    mask = np.asarray(table.mask, dtype=bool)
+    slots = np.asarray(table.native_hand_slot, dtype=np.int64)
+    variant = np.asarray(table.variant, dtype=np.int64)
+    target_mode = np.asarray(table.target_mode, dtype=np.int64)
     cost = np.asarray(record.cost, dtype=np.float64)
     elixir = np.asarray(record.elixir, dtype=np.float64)
-    uid = np.asarray(record.uid, dtype=np.int64)
+    uid = np.asarray(table.uid, dtype=np.int64)
     placement = np.asarray(record.placement, dtype=bool)
     lanes, width = mask.shape
     grid = placement.reshape(lanes, width, -1)
@@ -478,6 +495,14 @@ def main(argv: list[str] | None = None) -> int:
         help="use the fast forward without CUDA Graph capture (the correctness path on a GPU box)",
     )
     parser.add_argument(
+        "--full-cuda-graph",
+        action="store_true",
+        help=(
+            "capture the sampled decode with the forward in one CUDA Graph instead of leaving the "
+            "sampler eager; refused unless two replays draw different numbers (the frozen-RNG gate)"
+        ),
+    )
+    parser.add_argument(
         "--verify-fast-forward",
         action="store_true",
         help=(
@@ -487,6 +512,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--checkpoint", type=Path, default=Path(".resource/RoyaleFish/models/B-general-v275.pt"))
     parser.add_argument("--no-validate", action="store_true", help="skip the per-decision record validation")
+    parser.add_argument(
+        "--profile-collection",
+        action="store_true",
+        help=(
+            "profile the collection loop with cProfile and record the top functions by cumulative and own "
+            "time; attribution for the CPU-half work that has to fall (ROADMAP_CRFORGE.md §4)"
+        ),
+    )
     parser.add_argument("--greedy", action="store_true", help="argmax instead of sampling (debug only)")
     parser.add_argument(
         "--no-rollout",
@@ -622,6 +655,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--inference-precision is a --fast-forward setting")
     if args.no_cuda_graphs and not args.fast_forward:
         raise SystemExit("--no-cuda-graphs is a --fast-forward setting")
+    if args.full_cuda_graph and not args.fast_forward:
+        raise SystemExit("--full-cuda-graph is a --fast-forward setting")
+    if args.full_cuda_graph and args.no_cuda_graphs:
+        raise SystemExit("--full-cuda-graph is the captured path; drop --no-cuda-graphs")
     reward_config = CrforgeRewardConfig(shaping_beta=float(args.shaping_beta))
     training_config = None
     if args.ppo_update:
@@ -700,6 +737,7 @@ def main(argv: list[str] | None = None) -> int:
             rows=args.count * len(seats),
             precision=args.inference_precision,
             cuda_graphs=not args.no_cuda_graphs,
+            full_cuda_graph=bool(args.full_cuda_graph),
         )
         state = fast.state
     # The overlapped loop needs a second, independent model: the collector keeps
@@ -786,7 +824,7 @@ def main(argv: list[str] | None = None) -> int:
         # median stays blind to it.  Prime the exact sampled path here, then put
         # the RNG back so the action stream is byte-identical to a cold run.
         warm_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
-        warm_batch = _interleave([warm_stacks[seat] for seat in seats])
+        warm_batch = interleave_rows([warm_stacks[seat] for seat in seats])
         rng_state = torch.get_rng_state()
         numpy_state = np.random.get_state()
         cuda_rng_states = torch.cuda.get_rng_state_all() if device.type == "cuda" else None
@@ -853,6 +891,26 @@ def main(argv: list[str] | None = None) -> int:
         "facts_ms": [],
         "rollout_ms": [],
     }
+    # Sub-buckets of the CPU half.  They are recorded beside ``ms`` instead of in
+    # it: a section is a subset of ``tensorize_ms`` and a sum of every bucket is
+    # what ``timing_accounting.py`` reconciles against the wall.
+    section_names = (
+        "cards_ms",
+        "groups_ms",
+        "towers_ms",
+        "empty_ms",
+        "candidates_ms",
+        "relations_ms",
+        "planes_ms",
+        "scalars_ms",
+    )
+    cpu_half: dict[str, list[float]] = {
+        **{name: [] for name in section_names},
+        "interleave_ms": [],
+        "decode_only_ms": [],
+        "record_ms": [],
+        "plan_ms": [],
+    }
     # The reward tracker spans segments: the board does not reset at a segment
     # boundary, only the rollout does (as a truncation).
     shaping = PotentialShapingReward(args.count, config=reward_config)
@@ -865,6 +923,9 @@ def main(argv: list[str] | None = None) -> int:
     reset_mask = np.ones(args.count, dtype=bool)
     flushed_partial_wave = 0
     pipeline_started = time.perf_counter()
+    profiler = cProfile.Profile() if args.profile_collection else None
+    if profiler is not None:
+        profiler.enable()
     try:
         for segment in range(args.segments):
             segment_started = time.perf_counter()
@@ -880,6 +941,7 @@ def main(argv: list[str] | None = None) -> int:
                 "forced_second_micro_actions": 0,
             }
             samples: dict[str, list[float]] = {name: [] for name in timing}
+            cpu_samples: dict[str, list[float]] = {name: [] for name in cpu_half}
             illegal_peak = 0
             rollout_store = None
             segment_policy_state_id = None
@@ -905,8 +967,10 @@ def main(argv: list[str] | None = None) -> int:
                     for seat in seats:
                         rows[seat].reset_rows(batch, reset_mask)
 
-                stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
-                stacked = _interleave([stacks[seat] for seat in seats])
+                section_timings: dict[str, float] = {}
+                stacks = {seat: rows[seat].tensorize(batch, timings=section_timings) for seat in seats}
+                sections_done = time.perf_counter()
+                stacked = interleave_rows([stacks[seat] for seat in seats])
                 tensorize_done = time.perf_counter()
 
                 episode_start = torch.from_numpy(np.repeat(episode_start_lanes, len(seats))).to(device)
@@ -947,6 +1011,9 @@ def main(argv: list[str] | None = None) -> int:
                 eligible = np.zeros((args.count,), dtype=np.int64)
                 acted = np.zeros((args.count,), dtype=np.int64)
                 intra = {}
+                decode_only_ms = 0.0
+                record_ms = 0.0
+                plan_ms = 0.0
                 forced_mode = args.force_second_micro
                 if forced_mode == "alternate":
                     forced_mode = "shift" if decision % 2 == 0 else "drop"
@@ -954,10 +1021,14 @@ def main(argv: list[str] | None = None) -> int:
                     for index, seat in enumerate(seats):
                         sequence = _seat_rows(output.actions, index, len(seats))
                         candidates = stacks[seat].candidates
+                        # Convert the candidate columns once: the decode, the
+                        # duplicate probe and the previous-action record all read
+                        # the same rows, and on a GPU each conversion copies.
+                        tables = candidate_tables(candidates)
                         if forced_mode != "off":
                             # Decode the sample first: the duplicate is built from
                             # the action the policy actually chose.
-                            sampled = decoders[seat].decode(batch, sequence, candidates, seat=seat)
+                            sampled = decoders[seat].decode(batch, sequence, candidates, seat=seat, tables=tables)
                             sequence, forced = _force_second_micro_actions(
                                 sequence,
                                 sampled,
@@ -965,11 +1036,18 @@ def main(argv: list[str] | None = None) -> int:
                                 mode=forced_mode,
                                 budget=max(1, args.count // 4),
                                 window=window,
+                                tables=tables,
                             )
                             counts["forced_second_micro_actions"] += forced
                             totals["forced_second_micro_actions"] += forced
-                        plan = decoders[seat].decode(batch, sequence, candidates, seat=seat)
-                        rows[seat].record_action(sequence, stacks[seat], validate=not args.no_validate)
+                        decode_started = time.perf_counter()
+                        plan = decoders[seat].decode(batch, sequence, candidates, seat=seat, tables=tables)
+                        decode_only_ms += (time.perf_counter() - decode_started) * 1000.0
+                        record_started = time.perf_counter()
+                        rows[seat].record_action(
+                            sequence, stacks[seat], validate=not args.no_validate, tables=tables
+                        )
+                        record_ms += (time.perf_counter() - record_started) * 1000.0
                         played = plan.actions > 0
                         if played.any() and not bool(plan.masked[played].all()):
                             raise RuntimeError(f"decoded a closed engine mask for seat {seat}")
@@ -978,13 +1056,15 @@ def main(argv: list[str] | None = None) -> int:
                         # deploy candidate: that is exactly what the decoder can
                         # turn into an engine action.
                         open_deploy = (
-                            np.asarray(candidates.mask, dtype=bool)
-                            & (np.asarray(candidates.native_hand_slot) >= 0)
-                            & (np.asarray(candidates.variant) == CANDIDATE_DEPLOY)
+                            np.asarray(tables.mask, dtype=bool)
+                            & (np.asarray(tables.native_hand_slot) >= 0)
+                            & (np.asarray(tables.variant) == CANDIDATE_DEPLOY)
                         )
                         eligible += open_deploy.any(axis=1).astype(np.int64)
                         acted += ((np.asarray(plan.steps) > 0) & open_deploy.any(axis=1)).astype(np.int64)
+                        plan_started = time.perf_counter()
                         intra[seat], shifted, dropped = plan_window_ticks(plan.offsets, window)
+                        plan_ms += (time.perf_counter() - plan_started) * 1000.0
                         second = int((np.asarray(plan.steps) > 1).sum())
                         counts["second_micro_actions"] += second
                         counts["shifted_micro_actions"] += shifted
@@ -1072,6 +1152,12 @@ def main(argv: list[str] | None = None) -> int:
                 samples["step_ms"].append((step_done - decode_done) * 1000.0)
                 samples["facts_ms"].append((facts_done - step_done) * 1000.0)
                 samples["rollout_ms"].append((rollout_done - facts_done) * 1000.0)
+                for name in section_names:
+                    cpu_samples[name].append(section_timings.get(name, 0.0))
+                cpu_samples["interleave_ms"].append((tensorize_done - sections_done) * 1000.0)
+                cpu_samples["decode_only_ms"].append(decode_only_ms)
+                cpu_samples["record_ms"].append(record_ms)
+                cpu_samples["plan_ms"].append(plan_ms)
 
             segment_rollout = None
             segment_updates: list[dict[str, Any]] = []
@@ -1081,7 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
                 # The observation after the last decision is the time-limit
                 # bootstrap every still-running lane needs at the segment cut.
                 boundary_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
-                boundary_batch = _interleave([boundary_stacks[seat] for seat in seats])
+                boundary_batch = interleave_rows([boundary_stacks[seat] for seat in seats])
                 with torch.inference_mode():
                     boundary_starts = torch.zeros(args.count * len(seats), dtype=torch.bool, device=device)
                     if fast is not None:
@@ -1138,6 +1224,8 @@ def main(argv: list[str] | None = None) -> int:
                 collection_wall = max(wall - boundary_wall, 0.0)
             for name, values in samples.items():
                 timing[name].extend(values)
+            for name, values in cpu_samples.items():
+                cpu_half[name].extend(values)
             buckets = _timing_buckets(samples)
             entry = {
                 "segment": segment,
@@ -1168,6 +1256,24 @@ def main(argv: list[str] | None = None) -> int:
                 "rollout": segment_rollout,
                 "updates": segment_updates,
                 **buckets,
+                # The CPU half's own breakdown: the sections of ``tensorize_ms``,
+                # the interleave, and the three parts of ``decode_ms``.  Recorded
+                # per decision (means) and deliberately outside ``ms`` so the
+                # accounting tool's bucket sum still equals the wall.
+                "cpu_half": {
+                    "seats": len(seats),
+                    "lanes": args.count,
+                    "rows": args.count * len(seats),
+                    "breakdown_ms_mean": {
+                        name: statistics.fmean(values) if values else 0.0 for name, values in cpu_samples.items()
+                    },
+                    "whole_ms_mean": {
+                        "tensorize": statistics.fmean(samples["tensorize_ms"]) if samples["tensorize_ms"] else 0.0,
+                        "decode": statistics.fmean(samples["decode_ms"]) if samples["decode_ms"] else 0.0,
+                        "step": statistics.fmean(samples["step_ms"]) if samples["step_ms"] else 0.0,
+                        "facts": statistics.fmean(samples["facts_ms"]) if samples["facts_ms"] else 0.0,
+                    },
+                },
                 "segment_boundary_ms": segment_boundary_ms,
                 **_timing_residual(
                     buckets,
@@ -1367,10 +1473,17 @@ def main(argv: list[str] | None = None) -> int:
                 and (checkpoint_info is None or bool(checkpoint_info["reload_match"]))
                 and (resume_block is None or resume_block["update_step_continued"] is not False),
             }
+        if profiler is not None:
+            # Stop the profiler before the artifact is assembled: the loop is the
+            # measurement, not the JSON.
+            profiler.disable()
+        profile_summary = (
+            None if profiler is None else _profile_summary(profiler, decisions=totals["decisions"])
+        )
         artifact = {
             "schema": "crforge-self-play.v3",
             "measured": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "shape": {
+            "collection_profile": profile_summary,            "shape": {
                 "count": args.count,
                 "segments": args.segments,
                 "decisions_per_segment": args.decisions_per_segment,
@@ -1410,7 +1523,9 @@ def main(argv: list[str] | None = None) -> int:
                 "fast_forward": fast.describe() if fast is not None else {"enabled": False},
                 "verification": fast_verification,
                 "sampling": (
-                    "eager outside the captured graph" if fast is not None and fast.cuda_graphs else "eager"
+                    "graph-replayed full call (encode + core + decode)"
+                    if fast is not None and fast.full_cuda_graph
+                    else ("eager outside the captured graph" if fast is not None and fast.cuda_graphs else "eager")
                 ),
                 "steady_state": _inference_steady_state(segments),
             },

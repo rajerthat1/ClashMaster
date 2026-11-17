@@ -203,6 +203,53 @@ def _numpy(value: Any) -> np.ndarray:
     return np.asarray(value)
 
 
+# The candidate columns the decode and the previous-action record read.  A
+# producer converts them once per decision and shares the result, because the
+# candidate tensors are host tensors and a second conversion is pure overhead
+# (and, for a GPU-sourced action, a per-lane sync; see ``record_action``).
+_TABLE_FIELDS = (
+    "mask",
+    "uid",
+    "variant",
+    "target_mode",
+    "native_hand_slot",
+    "visible_card_vocab_id",
+    "effective_card_vocab_id",
+    "effective_form",
+    "ability_vocab_id",
+    "source_child_index",
+    "source_group_index",
+)
+
+
+@dataclass(frozen=True)
+class CandidateTables:
+    """Host NumPy view of one decision's candidate columns, converted once."""
+
+    mask: np.ndarray
+    uid: np.ndarray
+    variant: np.ndarray
+    target_mode: np.ndarray
+    native_hand_slot: np.ndarray
+    visible_card_vocab_id: np.ndarray
+    effective_card_vocab_id: np.ndarray
+    effective_form: np.ndarray
+    ability_vocab_id: np.ndarray
+    source_child_index: np.ndarray
+    source_group_index: np.ndarray
+
+    @property
+    def lanes(self) -> int:
+        return int(self.mask.shape[0])
+
+
+def candidate_tables(candidates: Any) -> CandidateTables:
+    """Convert one decision's candidate columns to host NumPy exactly once."""
+
+    record = _candidate_record(candidates)
+    return CandidateTables(**{name: _numpy(getattr(record, name)) for name in _TABLE_FIELDS})
+
+
 class VectorActionDecoder:
     """Decode a stacked ``ActionSequenceV4`` into engine action indices, per seat."""
 
@@ -236,6 +283,7 @@ class VectorActionDecoder:
         candidates: Any,
         *,
         seat: int | None = None,
+        tables: CandidateTables | None = None,
     ) -> VectorActionPlan:
         """Decode one stacked sequence for one actor seat.
 
@@ -243,6 +291,9 @@ class VectorActionDecoder:
         from: it supplies the lane count and the engine mask the indices are
         checked against.  ``candidates`` is that decision's
         ``VectorCandidateSection`` (or its ``ActionCandidatesV4`` record).
+        ``tables`` is an optional :func:`candidate_tables` conversion of the same
+        section, so a caller that also records the action does not pay for it
+        twice.
         """
 
         seat = self.seat if seat is None else int(seat)
@@ -259,12 +310,12 @@ class VectorActionDecoder:
         delay_source = _numpy(sequence.delay_offset_bin)
         uid_source = _numpy(sequence.candidate_uid)
 
-        record = _candidate_record(candidates)
-        mask = _numpy(record.mask)
-        uid_table = _numpy(record.uid)
-        variant_table = _numpy(record.variant)
-        target_table = _numpy(record.target_mode)
-        slot_table = _numpy(record.native_hand_slot)
+        record = candidate_tables(candidates) if tables is None else tables
+        mask = record.mask
+        uid_table = record.uid
+        variant_table = record.variant
+        target_table = record.target_mode
+        slot_table = record.native_hand_slot
         if mask.shape[0] != lanes:
             raise ValueError("candidate and observation batch sizes differ")
 
@@ -367,8 +418,10 @@ class VectorActionDecoder:
 
 __all__ = [
     "ENGINE_WAIT",
+    "CandidateTables",
     "VectorActionDecoder",
     "VectorActionPlan",
+    "candidate_tables",
     "engine_action_from_native",
     "engine_action_index",
 ]

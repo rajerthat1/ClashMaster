@@ -178,9 +178,19 @@ class _StagedBatch:
 
 
 class _GraphSlot:
-    """One captured encode+core forward for a padded row count."""
+    """One captured forward for a padded row count, and optionally the decode.
 
-    __slots__ = ("context", "graph", "stage", "state_in")
+    A **partial** slot captures only the deterministic encode + recurrent core;
+    the sampler runs eagerly outside it.  A **full** slot captures the sampled
+    decode as well, which is the only form that can pay: at 256 rows the eager
+    decode and the staging it forces are what made the partial graph 34 ms of
+    wall slower than the same fp16 path without graphs.  A sampled graph is only
+    accepted if replay keeps drawing fresh random numbers, which
+    :meth:`FastForwardV4._assert_graph_rng_advances` checks before the first
+    decision.
+    """
+
+    __slots__ = ("context", "graph", "output", "stage", "state_in")
 
     def __init__(
         self,
@@ -189,6 +199,9 @@ class _GraphSlot:
         stage: _StagedBatch,
         state: RecurrentPolicyStateV4,
         autocast: Any,
+        *,
+        full: bool = False,
+        sample: bool = True,
     ) -> None:
         reference = state.hidden
         self.stage = stage
@@ -201,12 +214,14 @@ class _GraphSlot:
         stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(stream), torch.inference_mode(), autocast():
             for _ in range(3):
-                model.forward(
+                context = model.forward(
                     stage.batch,
                     self.state_in,
                     episode_start=stage.episode_start,
                     validate=False,
                 )
+                if full:
+                    model.select_action_from_context(stage.batch, context, sample=sample, validate=False)
         torch.cuda.current_stream(device).wait_stream(stream)
         torch.cuda.synchronize(device)
         self.graph = torch.cuda.CUDAGraph()
@@ -217,14 +232,29 @@ class _GraphSlot:
                 episode_start=stage.episode_start,
                 validate=False,
             )
+            self.output: PolicyOutputV4 | None = None
+            if full:
+                output = model.select_action_from_context(stage.batch, self.context, sample=sample, validate=False)
+                # The caller's PPO bookkeeping is fp32 even when the graph ran
+                # in half; the cast is deterministic and belongs inside the
+                # capture, or it would be an eager op per decision.
+                output.log_prob = output.log_prob.float()
+                output.entropy = output.entropy.float()
+                output.value = output.value.float()
+                self.output = output
 
-    def run(self, host_batch: UniversalSemanticBatchV4, state: RecurrentPolicyStateV4, episode_start: torch.Tensor) -> PolicyContextV4:
+    def run(
+        self,
+        host_batch: UniversalSemanticBatchV4,
+        state: RecurrentPolicyStateV4,
+        episode_start: torch.Tensor,
+    ) -> tuple[PolicyContextV4, PolicyOutputV4 | None]:
         if tuple(state.hidden.shape) != tuple(self.state_in.hidden.shape):
             raise ValueError("fast-forward recurrent state does not match the captured row count")
         self.stage.fill(host_batch, episode_start)
         _copy_state_(self.state_in, state)
         self.graph.replay()
-        return self.context
+        return self.context, self.output
 
 
 class FastForwardV4:
@@ -238,6 +268,7 @@ class FastForwardV4:
         rows: int,
         precision: str = "auto",
         cuda_graphs: bool = True,
+        full_cuda_graph: bool = False,
         pin_memory: bool | None = None,
         effect_capacity: int = 512,
         relation_capacity: int = 2048,
@@ -248,14 +279,26 @@ class FastForwardV4:
         self.device = torch.device(device)
         self.rows = int(rows)
         self.precision = resolve_precision(precision, self.device)
-        self.cuda_graphs = bool(cuda_graphs) and self.device.type == "cuda"
+        requested_graphs = bool(cuda_graphs)
+        self.cuda_graphs = requested_graphs and self.device.type == "cuda"
+        self.full_cuda_graph = bool(full_cuda_graph)
+        if self.full_cuda_graph:
+            if not requested_graphs:
+                raise ValueError("--full-cuda-graph is the captured path; do not combine it with --no-cuda-graphs")
+            if self.device.type != "cuda":
+                raise ValueError(
+                    "a full-call CUDA Graph (forward + sampled decode) needs CUDA; "
+                    "this host's torch cannot capture one"
+                )
         self.pin_memory = self.device.type == "cuda" if pin_memory is None else bool(pin_memory)
         if self.pin_memory and self.device.type != "cuda":
             raise ValueError("pinned staging needs CUDA")
         self.effect_capacity = int(effect_capacity)
         self.relation_capacity = int(relation_capacity)
         self._graphs: dict[int, _GraphSlot] = {}
+        self._full_graphs: dict[tuple[int, bool], _GraphSlot] = {}
         self._staged: dict[int, _StagedBatch] = {}
+        self.rng_gate: dict[str, Any] | None = None
         state = model.initial_state(self.rows, device=self.device)
         # The table is fp32 even under autocast: it is the canonical carry between
         # decisions, and both graph input and output are cast into it.
@@ -300,6 +343,65 @@ class FastForwardV4:
             self.captures += 1
         return slot
 
+    def _full_slot(self, host_batch: UniversalSemanticBatchV4, *, sample: bool) -> _GraphSlot:
+        """The captured forward + decode for this row count and decode mode."""
+
+        rows = int(host_batch.batch_size)
+        key = (rows, bool(sample))
+        slot = self._full_graphs.get(key)
+        if slot is None:
+            stage = self._stage(host_batch)
+            stage.fill(host_batch, torch.zeros(rows, dtype=torch.bool, device=self.device))
+            slot = _GraphSlot(
+                self.model, self.device, stage, self._table, self._autocast, full=True, sample=sample
+            )
+            self._full_graphs[key] = slot
+            self.captures += 1
+            if sample:
+                self._assert_graph_rng_advances(slot, host_batch)
+        return slot
+
+    def _assert_graph_rng_advances(self, slot: _GraphSlot, host_batch: UniversalSemanticBatchV4) -> None:
+        """Refuse a sampled graph whose replay repeats its random draws.
+
+        A graph is only safe for a collector if the default generator's state is
+        part of the capture: PyTorch registers the default generator at
+        ``capture_begin``, but a build without that cooperation replays the same
+        draw forever, which would make every decision sample from one fixed RNG
+        position.  Two replays of the *same* batch must differ; exact equality of
+        the sampled log-probabilities is the signature of a frozen stream.
+        """
+
+        rows = int(host_batch.batch_size)
+        state_before = RecurrentPolicyStateV4(hidden=self._table.hidden.clone(), cell=self._table.cell.clone())
+        rng = _save_rng(self.device)
+        starts = torch.zeros(rows, dtype=torch.bool, device=self.device)
+        try:
+            _context, first = slot.run(host_batch, self._table, starts)
+            assert first is not None
+            first_log_prob = first.log_prob.detach().clone()
+            _context, second = slot.run(host_batch, self._table, starts)
+            assert second is not None
+            second_log_prob = second.log_prob.detach()
+            advance = float((second_log_prob - first_log_prob).abs().max())
+        finally:
+            _copy_state_(self._table, state_before)
+            _restore_rng(self.device, rng)
+        self.rng_gate = {
+            "rows": rows,
+            "max_log_prob_delta_between_replays": advance,
+            "passed": advance > 0.0,
+            "reasoning": (
+                "two replays of one captured sampled call must draw different numbers; "
+                "exact equality means the RNG stream is frozen in the graph"
+            ),
+        }
+        if advance <= 0.0:
+            raise RuntimeError(
+                "the sampled CUDA Graph replayed the same random draws twice; this torch build does not "
+                "make the sampler graph-safe, so --full-cuda-graph is refused (use --no-cuda-graphs)"
+            )
+
     # -- public surface ------------------------------------------------------
 
     @property
@@ -330,7 +432,8 @@ class FastForwardV4:
                 # A capture freezes the cache-hit branch: refresh the static
                 # tables in place before replay so the graph reads current ones.
                 self.model.ensure_static_memory()
-                return self._slot(batch).run(batch, state, starts)
+                context, _output = self._slot(batch).run(batch, state, starts)
+                return context
             model_batch = batch.to_model_input(self.device)
             with self._autocast():
                 return self.model.forward(model_batch, state, episode_start=starts, validate=False)
@@ -362,7 +465,17 @@ class FastForwardV4:
             "enabled": True,
             "precision": self.precision,
             "cuda_graphs": self.cuda_graphs,
+            "full_cuda_graph": self.full_cuda_graph,
+            "graph_covers": (
+                "encode + recurrent core + sampled decode"
+                if self.full_cuda_graph
+                else ("encode + recurrent core" if self.cuda_graphs else "nothing")
+            ),
+            "sampled_graph_rng_gate": self.rng_gate,
             "captured_shapes": sorted(self._graphs),
+            "captured_full_shapes": [
+                {"rows": rows, "sample": sample} for rows, sample in sorted(self._full_graphs)
+            ],
             "state_table": "fp32 device table",
             "staging": "padded layout reused per row count",
             "pinned_staging": self.pin_memory,
@@ -459,10 +572,15 @@ class FastForwardV4:
     ) -> PolicyOutputV4:
         starts = self._episode_start(episode_start, batch, state)
         with torch.inference_mode():
-            if self.cuda_graphs:
+            if self.full_cuda_graph:
+                self.model.ensure_static_memory()
+                _context, output = self._full_slot(batch, sample=sample).run(batch, state, starts)
+                if output is None:  # defensive: a full slot always captures the decode
+                    raise RuntimeError("a full-call graph slot did not capture the decode")
+            elif self.cuda_graphs:
                 self.model.ensure_static_memory()
                 slot = self._slot(batch)
-                context = slot.run(batch, state, starts)
+                context, _output = slot.run(batch, state, starts)
                 output = self._decode(slot.stage.batch, context, sample=sample)
             else:
                 model_batch = batch.to_model_input(self.device)

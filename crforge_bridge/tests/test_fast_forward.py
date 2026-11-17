@@ -150,4 +150,58 @@ def test_describe_names_the_disabled_graph_path() -> None:
     described = fast.describe()
     assert described["precision"] == "fp32"
     assert described["cuda_graphs"] is False
+    assert described["full_cuda_graph"] is False
+    assert described["graph_covers"] == "nothing"
     assert described["captured_shapes"] == []
+    assert described["captured_full_shapes"] == []
+    assert described["sampled_graph_rng_gate"] is None
+
+
+def test_full_cuda_graph_is_refused_without_cuda() -> None:
+    """A sampled graph needs capture: this host's CPU-only torch must say so."""
+
+    model = _model().eval()
+    with pytest.raises(ValueError, match="needs CUDA"):
+        FastForwardV4(model, device="cpu", rows=2, precision="fp32", full_cuda_graph=True)
+
+
+def test_full_cuda_graph_refuses_the_eager_path() -> None:
+    """The full-call graph is the captured path; --no-cuda-graphs would be a lie."""
+
+    model = _model().eval()
+    with pytest.raises(ValueError, match="do not combine"):
+        FastForwardV4(model, device="cpu", rows=2, precision="fp32", cuda_graphs=False, full_cuda_graph=True)
+
+
+def test_the_sampled_graph_rng_gate_catches_a_frozen_stream() -> None:
+    """Two replays that return the same log-probabilities are a frozen RNG."""
+
+    from types import SimpleNamespace
+
+    model, batch, _state, _starts = _setup()
+    fast = FastForwardV4(model, device="cpu", rows=2, precision="fp32", cuda_graphs=False)
+
+    class FrozenSlot:
+        def run(self, host_batch: object, state: object, episode_start: object) -> tuple[None, object]:
+            return None, SimpleNamespace(log_prob=torch.zeros(2))
+
+    with pytest.raises(RuntimeError, match="same random draws"):
+        fast._assert_graph_rng_advances(FrozenSlot(), batch)
+    assert fast.rng_gate is not None
+    assert fast.rng_gate["passed"] is False
+    assert fast.rng_gate["max_log_prob_delta_between_replays"] == 0.0
+
+    class AdvancingSlot:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, host_batch: object, state: object, episode_start: object) -> tuple[None, object]:
+            self.calls += 1
+            return None, SimpleNamespace(log_prob=torch.full((2,), float(self.calls)))
+
+    fast._assert_graph_rng_advances(AdvancingSlot(), batch)
+    assert fast.rng_gate is not None
+    assert fast.rng_gate["passed"] is True
+    assert fast.rng_gate["max_log_prob_delta_between_replays"] == 1.0
+    # The probe must not leave the table advanced.
+    assert not fast.state.hidden.any()

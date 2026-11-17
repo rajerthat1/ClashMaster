@@ -24,6 +24,7 @@ from crforge_bridge.rollout import (
     rollout_next_values,
     rollout_statistics,
 )
+from crforge_bridge.vector_tensorize import interleave_rows
 from native_runner.battle_env import BattleEnvV1
 from native_runner.contracts import TerminalV1, TowerStateV1
 from native_runner.training.v4.tensors import GATE_ACT, GATE_WAIT, ActionSequenceV4, RecurrentPolicyStateV4
@@ -433,8 +434,8 @@ def test_live_tensorized_record_is_stored_as_training_data(crforge_runtime: None
             item.reset(batch)
         with torch.inference_mode():
             stacks = {seat: rows[seat].tensorize(batch) for seat in (0, 1)}
-        stacked = self_play._interleave([stacks[0], stacks[1]])
-        sequence = self_play._interleave([_sequence(2), _sequence(2)])
+        stacked = interleave_rows([stacks[0], stacks[1]])
+        sequence = interleave_rows([_sequence(2), _sequence(2)])
         store = CrforgeRolloutStore(
             lanes=2,
             seats=2,
