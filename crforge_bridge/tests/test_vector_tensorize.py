@@ -180,7 +180,12 @@ def test_facts_tensorize_is_digest_identical_over_a_played_sequence(
             for lane in range(2):
                 stock = stock_by_lane[lane]
                 expected = stock.tensorize(_reference(stock, rows, batch, lane, seat), validate=False)
-                actual = lane_batch(stacked, lane)
+                actual = lane_batch(
+                    stacked,
+                    lane,
+                    group_capacity=int(config.max_battle_groups),
+                    child_capacity=int(config.max_children_total),
+                )
                 assert compare_semantic_batches(actual, expected) == []
                 assert batch_digest(actual) == batch_digest(expected)
             sequence = _action_sequence(stacked.candidates, config)
@@ -200,8 +205,8 @@ def test_facts_tensorize_is_digest_identical_over_a_played_sequence(
         assert recorded > 0
 
 
-def test_lane_batch_trims_only_the_variable_length_relation_set(crforge_runtime: None) -> None:
-    """Fixed sections keep V4 capacity; the relation record keeps its live rows."""
+def test_lane_batch_trims_only_the_variable_length_sections(crforge_runtime: None) -> None:
+    """Fixed sections keep V4 capacity; groups keep live width; relations are trimmed."""
 
     tensorizer = _tensorizer()
     config = tensorizer.config
@@ -211,12 +216,17 @@ def test_lane_batch_trims_only_the_variable_length_relation_set(crforge_runtime:
             _step(vector, 200 + step, 1.0)
             encoder.encode(batch)
         stacked = rows.tensorize(batch, validate=True)
+        group_width = int(stacked.groups.mask.shape[1])
+        child_width = int(stacked.groups.child_mask.shape[1])
+        assert group_width <= int(config.max_battle_groups)
+        assert child_width <= int(config.max_children_total)
         for lane in range(3):
             slotted = lane_batch(stacked, lane)
             assert slotted.batch_size == 1
             assert tuple(slotted.candidates.mask.shape) == (1, int(config.max_action_candidates))
             assert tuple(slotted.active_effects.mask.shape) == (1, 0)
             assert tuple(slotted.events.mask.shape) == (1, int(config.max_recent_events))
+            assert tuple(slotted.groups.mask.shape) == (1, group_width)
             count = max(1, int(stacked.relation_edges.mask[lane].sum()))
             assert tuple(slotted.relation_edges.mask.shape) == (1, count)
             assert torch.equal(
@@ -224,6 +234,15 @@ def test_lane_batch_trims_only_the_variable_length_relation_set(crforge_runtime:
                 stacked.relation_edges.source[lane : lane + 1, :count],
             )
             assert torch.equal(slotted.match_scalars, stacked.match_scalars[lane : lane + 1])
+            padded = lane_batch(
+                stacked,
+                lane,
+                group_capacity=int(config.max_battle_groups),
+                child_capacity=int(config.max_children_total),
+            )
+            assert tuple(padded.groups.mask.shape) == (1, int(config.max_battle_groups))
+            assert tuple(padded.groups.child_mask.shape) == (1, int(config.max_children_total))
+            assert torch.equal(padded.groups.mask[:, :group_width], stacked.groups.mask[lane : lane + 1])
 
 
 def test_record_action_resolves_each_lane_against_its_own_candidates(crforge_runtime: None) -> None:

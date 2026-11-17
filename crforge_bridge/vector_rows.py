@@ -429,6 +429,72 @@ class VectorGroupSection:
         )
 
 
+_GROUP_PAD_FILL = {"owner_type": OWNER_NEUTRAL, "mask": False}
+_CHILD_PAD_FILL = {"child_mask": False}
+_GROUP_SLOT_FIELDS = (
+    "source_card_vocab_id",
+    "group_type",
+    "owner_type",
+    "runtime_form",
+    "features",
+    "position",
+    "extent",
+    "mask",
+)
+_CHILD_SLOT_FIELDS = (
+    "child_archetype_id",
+    "child_group_index",
+    "child_type",
+    "child_features",
+    "child_position",
+    "child_extent",
+    "child_radius",
+    "child_mask",
+)
+
+
+def pad_group_record(record: BattleGroupSetV4, *, groups: int, children: int) -> BattleGroupSetV4:
+    """Widen a group/child record onto a fixed capacity (see the section form)."""
+
+    def widen(values: torch.Tensor, width: int, fill: Any) -> torch.Tensor:
+        current = int(values.shape[1])
+        if current >= int(width):
+            return values
+        output = values.new_full((int(values.shape[0]), int(width)) + tuple(values.shape[2:]), fill)
+        output[:, :current] = values
+        return output
+
+    values: dict[str, torch.Tensor] = {}
+    for name in _GROUP_SLOT_FIELDS:
+        values[name] = widen(getattr(record, name), int(groups), _GROUP_PAD_FILL.get(name, 0))
+    for name in _CHILD_SLOT_FIELDS:
+        values[name] = widen(getattr(record, name), int(children), _CHILD_PAD_FILL.get(name, 0))
+    return BattleGroupSetV4(**values)
+
+
+def pad_group_section(section: VectorGroupSection, *, groups: int, children: int) -> VectorGroupSection:
+    """Project a live-width section onto a wider fixed capacity.
+
+    The producer emits the batch's live width (see ``VectorGroupBuilder.build``).
+    The per-lane oracle and stacked storage still use the configured capacity,
+    so the digest gate and any cross-width concatenation pad here.  A section
+    that is already at least as wide as the target is returned unchanged.
+
+    The fill matches the oracle's padded tail: zeros for features/positions/
+    extents and ids, ``OWNER_NEUTRAL`` for a group's owner, ``False`` for the
+    masks.  These rows are unread (their masks are false), but the digest gate
+    compares the whole record, so the bytes are part of the contract.
+    """
+
+    return VectorGroupSection(
+        groups=pad_group_record(section.groups, groups=groups, children=children),
+        group_index=section.group_index,
+        child_index=section.child_index,
+        group_overflow=section.group_overflow,
+        child_overflow=section.child_overflow,
+    )
+
+
 class VectorGroupBuilder:
     """Fill the group/children section for a whole vector batch in one pass."""
 
@@ -652,10 +718,15 @@ class VectorGroupBuilder:
         """Build the section.
 
         ``live_slots`` is the producer path: only the lanes' live group/child
-        slots are gathered and assembled, and the record's fixed capacity is
-        zero-padded once.  ``live_slots=False`` restores the previous
+        slots are gathered, assembled and returned, so the record carries the
+        batch's live width.  ``live_slots=False`` restores the previous
         full-capacity assembly so ``cpu_half_micro.py`` can A/B the two forms in
-        one process; the returned record is identical either way.
+        one process; that form is also the oracle, and ``pad_group_section``
+        projects a live-width record onto it for the digest gate.
+
+        The returned record is bit-identical either way once the live form is
+        padded to the fixed capacity — the input to every consumer is the
+        record's own mask shape, not the configured maximum.
         """
 
         rows = self._entity_rows(batch)
@@ -671,11 +742,10 @@ class VectorGroupBuilder:
 
         g = self.max_groups
         c = self.max_children
-        # Only the live slots are gathered and assembled; the record's fixed
-        # capacity is zero-padded once at the end.  A settled board carries a
-        # handful of groups, so building all 48 group and 160 child slots per
-        # lane (and masking the rest) was most of this section's own time.  The
-        # padded slots are still bit-exact: zeros for the feature/position/
+        # Only the live slots are gathered and assembled.  A settled board
+        # carries a handful of groups, so building all 48 group and 160 child
+        # slots per lane (and masking the rest) was most of this section's own
+        # time.  The oracle form pads with zeros for the feature/position/
         # extent tensors, zero for the ids, and OWNER_NEUTRAL for a group.
         live_g = min(g, max(1, int(entity_count.max()))) if live_slots else g
         # Advanced indexing is the gather: ``take_along_axis`` rebuilds an index
@@ -868,9 +938,20 @@ class VectorGroupBuilder:
         child_group[~child_mask] = 0
 
         def pad_slots(values: np.ndarray, width: int, fill: Any = 0) -> np.ndarray:
-            """Grow a live-width slot axis to the record's fixed capacity."""
+            """Grow a live-width slot axis to the record's fixed capacity.
 
-            if int(values.shape[1]) == width:
+            Only the ``live_slots=False`` oracle pads.  The producer keeps the
+            lane's live width: every consumer reads the slot count from the
+            record's own ``mask``/``child_mask`` shape, and a padded tail is a
+            fresh zeroed allocation nothing reads.  At a settled board that pad
+            was 0.3–0.6 ms of the 1.3–1.5 ms build (a 7.5 MB zeroed copy per
+            seat; session 43).  A caller that needs the fixed capacity — the
+            digest gate against the per-lane record, or storage that stacks
+            decisions of different widths — pads with
+            :func:`pad_group_section`.
+            """
+
+            if live_slots or int(values.shape[1]) == width:
                 return values
             output = np.full((values.shape[0], width) + values.shape[2:], fill, dtype=values.dtype)
             output[:, : int(values.shape[1])] = values
@@ -3016,6 +3097,11 @@ def compare_group_section(
 ) -> list[str]:
     """Every group/child tensor field, lane by lane, against the oracle."""
 
+    section = pad_group_section(
+        section,
+        groups=int(tensorizer.config.max_battle_groups),
+        children=int(tensorizer.config.max_children_total),
+    )
     mismatches: list[str] = []
     selected = range(batch.count) if lanes is None else [int(lane) for lane in lanes]
     for lane in selected:
@@ -3089,6 +3175,8 @@ __all__ = [
     "compare_spatial_plane_section",
     "compare_tower_section",
     "oracle_groups",
+    "pad_group_record",
+    "pad_group_section",
     "reference_action_mask",
     "reference_entities",
     "reference_observation",

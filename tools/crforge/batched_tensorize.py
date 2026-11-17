@@ -318,7 +318,12 @@ def main(argv: list[str] | None = None) -> int:
                     expected = stock.tensorize(view, validate=False)
                     if lane in persistent_lanes:
                         stock_batches[key] = expected
-                    actual = lane_batch(stacked, lane)
+                    actual = lane_batch(
+                        stacked,
+                        lane,
+                        group_capacity=int(config.max_battle_groups),
+                        child_capacity=int(config.max_children_total),
+                    )
                     found = compare_semantic_batches(actual, expected)
                     if found:
                         mismatches.extend(f"step={step} seat={seat} lane={lane} {value}" for value in found)

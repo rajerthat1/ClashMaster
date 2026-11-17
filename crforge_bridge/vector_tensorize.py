@@ -75,6 +75,7 @@ from .vector_rows import (
     VectorSpatialPlaneSection,
     VectorTowerBuilder,
     VectorTowerSection,
+    pad_group_record,
 )
 
 
@@ -447,23 +448,38 @@ def _slice_record(record: Any, lane: int) -> Any:
     return type(record)(**values)
 
 
-def lane_batch(batch: UniversalSemanticBatchV4, lane: int) -> UniversalSemanticBatchV4:
+def lane_batch(
+    batch: UniversalSemanticBatchV4,
+    lane: int,
+    *,
+    group_capacity: int | None = None,
+    child_capacity: int | None = None,
+) -> UniversalSemanticBatchV4:
     """Slice one lane back to the exact record the per-lane tensorizer emits.
 
     Every fixed-size section keeps its V4 capacity; the relation edge set is
     trimmed to that lane's live rows, because the per-lane path sizes the
-    record to ``max(1, count)``.  This is the digest gate's projection, not a
-    training-loop path.
+    record to ``max(1, count)``.  The batched producer emits the group/child
+    sections at the batch's live width, so a caller comparing against the stock
+    record passes the configured capacities to pad them back.  This is the
+    digest gate's projection, not a training-loop path.
     """
 
     index = int(lane)
     count = max(1, int(batch.relation_edges.mask[index].sum()))
+    groups = _slice_record(batch.groups, index)
+    if group_capacity is not None or child_capacity is not None:
+        groups = pad_group_record(
+            groups,
+            groups=group_capacity if group_capacity is not None else int(groups.mask.shape[1]),
+            children=child_capacity if child_capacity is not None else int(groups.child_mask.shape[1]),
+        )
     return UniversalSemanticBatchV4(
         match_scalars=batch.match_scalars[index : index + 1].clone(),
         own_cards=_slice_record(batch.own_cards, index),
         opponent_cards=_slice_record(batch.opponent_cards, index),
         towers=_slice_record(batch.towers, index),
-        groups=_slice_record(batch.groups, index),
+        groups=groups,
         active_effects=_slice_record(batch.active_effects, index),
         events=_slice_record(batch.events, index),
         relation_edges=RelationEdgesV4(

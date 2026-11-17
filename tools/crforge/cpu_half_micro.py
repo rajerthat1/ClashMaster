@@ -19,7 +19,11 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
   compared on the prefix ``build`` actually reads (session 42);
 * the group build at live width vs the previous full-capacity assembly
   (``VectorGroupBuilder.build(..., live_slots=False)`` is the oracle), which is
-  where the padded 48/160 slots were being paid for;
+  where the padded 48/160 slots were being paid for — plus the fixed-capacity
+  pad itself, replicated field by field on the live arrays the build pads;
+* the model forward at the live group width vs the padded one: the group
+  encoder's token and child/group-attention shapes follow ``groups.mask``, so
+  the build's record width is also an inference cost (session 43);
 * ``record_action``: the vectorised NumPy pass vs the per-lane loop it replaced
   (the loop is one device sync per field per row on CUDA, which is what made the
   box's ``decode`` bucket 68 ms at 128 lanes).
@@ -41,6 +45,7 @@ import json
 import statistics
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -272,6 +277,16 @@ def _dense_child_order(rows: dict[str, Any], candidate: np.ndarray, targeted: np
     return np.argsort(key, axis=1, kind="stable")
 
 
+def _pad_slots(values: np.ndarray, width: int, fill: Any = 0) -> np.ndarray:
+    """Grow a live-width slot axis to a fixed capacity, as ``build`` does."""
+
+    if int(values.shape[1]) == width:
+        return values
+    output = np.full((values.shape[0], width) + values.shape[2:], fill, dtype=values.dtype)
+    output[:, : int(values.shape[1])] = values
+    return output
+
+
 def _time(fn: Any, repeats: int) -> float:
     samples = []
     for _ in range(repeats):
@@ -295,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     from crforge_bridge.jvm import start as start_jvm
     from crforge_bridge.vector_actions import candidate_tables
     from crforge_bridge.vector_observation import VectorObservationEncoder
+    from crforge_bridge.vector_rows import OWNER_NEUTRAL, pad_group_section
     from crforge_bridge.vector_tensorize import VectorTensorizer, interleave_rows
     from native_runner.timeline import load_game_mode_timeline
     from native_runner.training.v4.factory import production_semantic_bundle
@@ -417,7 +433,12 @@ def main(argv: list[str] | None = None) -> int:
 
         wide_section = groups.build(batch, live_slots=False)
         live_section = groups.build(batch, live_slots=True)
-        assert _records_equal(wide_section, live_section)
+        # The producer keeps the live width now; project it onto the oracle's
+        # fixed capacity to prove the two forms are the same record.
+        live_padded = pad_group_section(
+            live_section, groups=groups.max_groups, children=groups.max_children
+        )
+        assert _records_equal(wide_section, live_padded)
         dense_rows = _dense_entity_rows(groups, batch)
         live_rows = groups._entity_rows(batch)
         assert set(dense_rows) == set(live_rows)
@@ -442,6 +463,87 @@ def main(argv: list[str] | None = None) -> int:
         }
         build["saved_ms"] = build["full_capacity_ms"] - build["live_slots_ms"]
         build["entity_rows_saved_ms"] = build["entity_rows_dense_ms"] - build["entity_rows_ms"]
+
+        # ---- the fixed-capacity pad (what the producer no longer pays) ------
+        # ``build`` used to assemble every field at the lane's live width and
+        # then copy it into the record's fixed 48 group / 160 child slots: a
+        # fresh zeroed allocation plus a prefix copy per field (~7.5 MB per seat
+        # at 128 lanes).  Session 43 stopped padding on the producer path, so
+        # this measures the work that left, replicated exactly over the live
+        # arrays the build used to pad and checked against the oracle's tail.
+        group_live = int(live_section.groups.mask.shape[1])
+        child_live = int(live_section.groups.child_mask.shape[1])
+        pad_inputs: list[tuple[str, np.ndarray, int, Any, torch.Tensor]] = []
+        for name, default_fill in (
+            ("source_card_vocab_id", 0),
+            ("group_type", 0),
+            ("owner_type", OWNER_NEUTRAL),
+            ("runtime_form", 0),
+            ("features", 0.0),
+            ("position", 0.0),
+            ("extent", 0.0),
+            ("mask", False),
+        ):
+            pad_inputs.append(
+                (
+                    name,
+                    getattr(live_section.groups, name).numpy().copy(),
+                    groups.max_groups,
+                    default_fill,
+                    getattr(wide_section.groups, name),
+                )
+            )
+        for name, default_fill in (
+            ("child_archetype_id", 0),
+            ("child_group_index", 0),
+            ("child_type", 0),
+            ("child_features", 0.0),
+            ("child_position", 0.0),
+            ("child_extent", 0.0),
+            ("child_radius", 0.0),
+            ("child_mask", False),
+        ):
+            pad_inputs.append(
+                (
+                    name,
+                    getattr(live_section.groups, name).numpy().copy(),
+                    groups.max_children,
+                    default_fill,
+                    getattr(wide_section.groups, name),
+                )
+            )
+
+        def pad_all() -> list[torch.Tensor]:
+            return [
+                torch.from_numpy(_pad_slots(values, width, fill)) for _, values, width, fill, _ in pad_inputs
+            ]
+
+        padded_fields = pad_all()
+        for (name, values, width, _, expected), actual in zip(pad_inputs, padded_fields, strict=True):
+            assert torch.equal(actual, expected), (
+                f"{name}: live={tuple(values.shape)} width={width} actual={tuple(actual.shape)}"
+                f" expected={tuple(expected.shape)}"
+            )
+
+        def pad_alloc_copy() -> list[np.ndarray]:
+            return [_pad_slots(values, width, fill) for _, values, width, fill, _ in pad_inputs]
+
+        def pad_torch_only() -> list[torch.Tensor]:
+            return [torch.from_numpy(_pad_slots(values, width, fill)) for _, values, width, fill, _ in pad_inputs]
+
+        capacity_bytes = sum(
+            int(values.shape[0]) * width * int(np.prod(values.shape[2:], dtype=np.int64)) * values.dtype.itemsize
+            for _, values, width, _, _ in pad_inputs
+        )
+        build["pad_fields_ms"] = _time(pad_torch_only, args.repeats)
+        build["pad_alloc_copy_ms"] = _time(pad_alloc_copy, args.repeats)
+        build["pad_share_of_live_build"] = build["pad_fields_ms"] / build["live_slots_ms"]
+        build["build_with_pad_ms"] = build["live_slots_ms"] + build["pad_fields_ms"]
+        build["pad_share_of_previous_build"] = build["pad_fields_ms"] / build["build_with_pad_ms"]
+        build["pad_live_slots"] = {"groups": group_live, "children": child_live}
+        build["pad_capacity"] = {"groups": groups.max_groups, "children": groups.max_children}
+        build["pad_capacity_mb"] = capacity_bytes / (1024.0 * 1024.0)
+        build["pad_equal_values"] = True
 
         # ---- targeted mask: live rows vs the dense key arrays ---------------
         targeted_dense = _dense_targeted_mask(entity_rows)
@@ -550,6 +652,33 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("the record benchmark saw no candidate: settle longer before timing")
         record["saved_ms"] = record["per_lane_loop_ms"] - record["vectorised_ms"]
 
+        # ---- forward: the live-width group section vs the padded one -------
+        # The producer now hands the model the batch's live group/child width,
+        # so this is the model-side half of the same record change: the group
+        # encoder's token count and its child/group attention follow
+        # ``groups.mask``, not the configured maximum.
+        from crforge_bridge.vector_rows import pad_group_record
+
+        wide_stacks = replace(
+            stacks[seats[0]],
+            groups=pad_group_record(
+                stacks[seats[0]].groups, groups=groups.max_groups, children=groups.max_children
+            ),
+        )
+        with torch.no_grad():
+            model.encode_observation(stacks[seats[0]], validate=False)
+            model.encode_observation(wide_stacks, validate=False)
+            forward = {
+                "live_width_ms": _time(
+                    lambda: model.encode_observation(stacks[seats[0]], validate=False), args.repeats
+                ),
+                "full_capacity_ms": _time(
+                    lambda: model.encode_observation(wide_stacks, validate=False), args.repeats
+                ),
+            }
+        forward["saved_ms"] = forward["full_capacity_ms"] - forward["live_width_ms"]
+        forward["saved_fraction"] = forward["saved_ms"] / forward["full_capacity_ms"]
+
         # ---- the sections, on a fresh batch --------------------------------
         section_samples: dict[str, list[float]] = {}
         for _ in range(min(args.repeats, 12)):
@@ -571,6 +700,7 @@ def main(argv: list[str] | None = None) -> int:
             "group_gather": gather,
             "group_build": build,
             "group_sort": group_sort,
+            "forward": forward,
             "entity_mask": mask,
             "record_action": record,
             "sections_ms_mean": sections,

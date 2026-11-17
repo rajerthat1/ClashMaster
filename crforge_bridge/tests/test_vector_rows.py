@@ -28,6 +28,7 @@ from crforge_bridge.vector_rows import (
     compare_scalar_section,
     compare_spatial_plane_section,
     compare_tower_section,
+    pad_group_section,
     reference_entities,
     reference_pending_actions,
 )
@@ -139,7 +140,7 @@ def test_batched_groups_match_the_per_lane_oracle(crforge_runtime: None) -> None
 
 
 def test_live_width_padding_matches_full_capacity(crforge_runtime: None) -> None:
-    """The live-slot build must be byte-identical to the full-capacity form."""
+    """The live-slot build pads back to the full-capacity form byte for byte."""
 
     from dataclasses import fields, is_dataclass
 
@@ -164,7 +165,10 @@ def test_live_width_padding_matches_full_capacity(crforge_runtime: None) -> None
         for step in range(40):
             live = builder.build(batch)
             wide = builder.build(batch, live_slots=False)
-            assert equal(live, wide), f"step {step}: live-width and full-capacity builds differ"
+            assert int(live.groups.mask.shape[1]) <= builder.max_groups
+            assert int(live.groups.child_mask.shape[1]) <= builder.max_children
+            padded = pad_group_section(live, groups=builder.max_groups, children=builder.max_children)
+            assert equal(padded, wide), f"step {step}: live-width and full-capacity builds differ"
             # Also keep the padded tail honest against the per-lane oracle.
             assert compare_group_section(live, tensorizer, batch, tables=tables) == []
             counts = batch.entity_valid.sum(axis=1)
@@ -207,8 +211,10 @@ def test_empty_board_masks_every_row(crforge_runtime: None) -> None:
         section = builder.build(batch)
         assert not bool(section.groups.mask.any())
         assert not bool(section.groups.child_mask.any())
-        # ``_groups`` pre-fills owner_type with neutral before the loop.
-        assert section.groups.owner_type.tolist() == [[2] * builder.max_groups] * 2
+        # ``_groups`` pre-fills owner_type with neutral before the loop, and the
+        # live-width record keeps one slot for the empty board.
+        assert int(section.groups.owner_type.shape[1]) == 1
+        assert section.groups.owner_type.tolist() == [[2]] * 2
         assert compare_group_section(section, tensorizer, batch, tables=tables) == []
 
 
