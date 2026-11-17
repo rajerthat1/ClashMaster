@@ -60,6 +60,12 @@ Usage on each provider (the producer itself is the benchmark)::
     .venv/bin/python tools/crforge/cloud_capacity.py --run \\
         --sweep-procs 1 2 4 6 --provider thunder-a6000 --price-per-hour 0.35
 
+    # the forwarded loop, with the sampled decode in one graph (the A6000's
+    # fastest forward; the producer refuses it if the random probe is frozen)
+    .venv/bin/python tools/crforge/cloud_capacity.py --run \\
+        --fast-forward --full-cuda-graph --sweep-procs 1 2 4 6 \\
+        --provider thunder-a6000 --price-per-hour 0.35
+
     # score a provider from an artifact already on disk (a recorded run carries
     # no vCPU/GPU count, so both must be stated)
     .venv/bin/python tools/crforge/cloud_capacity.py \\
@@ -480,6 +486,8 @@ def producer_command(args: argparse.Namespace, *, output: Path, lanes: int, segm
         command.append("--fast-forward")
         if args.inference_precision is not None:
             command.extend(("--inference-precision", str(args.inference_precision)))
+        if getattr(args, "full_cuda_graph", False):
+            command.append("--full-cuda-graph")
         if args.no_cuda_graphs:
             command.append("--no-cuda-graphs")
     return command
@@ -938,6 +946,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="with --fast-forward: isolate the precision gain from the graph gain",
     )
+    parser.add_argument(
+        "--full-cuda-graph",
+        action="store_true",
+        help=(
+            "with --fast-forward: capture the sampled decode in the same graph (the A6000's "
+            "fastest forward; the producer refuses it if the random probe does not advance)"
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=1800.0, help="per-producer timeout in seconds")
     parser.add_argument("--sweep-procs", type=int, nargs="+", default=None, help="concurrent process counts to test")
     parser.add_argument("--sweep-lanes", type=int, default=None, help="lanes for the process sweep (default: primary)")
@@ -965,6 +981,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--fast-forward needs the warmup that keeps the first decision out of the rate")
     if args.no_cuda_graphs and not args.fast_forward:
         raise SystemExit("--no-cuda-graphs is a --fast-forward setting")
+    if args.full_cuda_graph and not args.fast_forward:
+        raise SystemExit("--full-cuda-graph is a --fast-forward setting")
+    if args.full_cuda_graph and args.no_cuda_graphs:
+        raise SystemExit("--full-cuda-graph is the captured path; drop --no-cuda-graphs")
     if args.inference_precision is not None and not args.fast_forward:
         raise SystemExit("--inference-precision is a --fast-forward setting")
     if args.gpu_efficiency <= 0.0 or args.gpu_efficiency > 1.0:
@@ -1056,6 +1076,8 @@ def main(argv: list[str] | None = None) -> int:
             "warmup_forward": (
                 not args.no_warmup_forward if args.run else primary_run["segment"].get("warmup_forward")
             ),
+            "fast_forward": args.fast_forward if args.run else None,
+            "full_cuda_graph": bool(getattr(args, "full_cuda_graph", False)) if args.run else None,
         },
         "runs": runs,
         "primary": {

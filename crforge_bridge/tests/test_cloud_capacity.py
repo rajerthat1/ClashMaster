@@ -300,6 +300,7 @@ def test_the_probe_forwards_the_in_process_forward_flags() -> None:
         fast_forward=True,
         inference_precision="fp32",
         no_cuda_graphs=True,
+        full_cuda_graph=False,
     )
 
     command = cloud_capacity.producer_command(args, output=Path("out.json"), lanes=128, segments=3, decisions=32)
@@ -307,6 +308,13 @@ def test_the_probe_forwards_the_in_process_forward_flags() -> None:
     assert "--fast-forward" in command
     assert command[command.index("--inference-precision") + 1] == "fp32"
     assert "--no-cuda-graphs" in command
+    assert "--full-cuda-graph" not in command
+    # The full-call graph is the other captured path; it is forwarded too.
+    args.no_cuda_graphs = False
+    args.full_cuda_graph = True
+    full = cloud_capacity.producer_command(args, output=Path("out.json"), lanes=128, segments=3, decisions=32)
+    assert "--full-cuda-graph" in full
+    assert "--no-cuda-graphs" not in full
     # Without --fast-forward the precision flags are not meaningful and are not sent.
     args.fast_forward = False
     plain = cloud_capacity.producer_command(args, output=Path("out.json"), lanes=128, segments=3, decisions=32)
