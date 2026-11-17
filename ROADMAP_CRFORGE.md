@@ -514,6 +514,23 @@ bridge suite 145, producer probe 2/2 on-policy at |KL| 7.46e-5.  Next: the
 fixed-capacity pad to 48/160 slots inside `build` — measure it before rewriting.
 See `FINDINGS.md` §3.76.
 
+**Status (2026-11-17, session 43).** The pad is measured and gone from the
+producer.  Replicated field by field, copying the live 11/11 rows into the
+record's 48/160 slots is **0.28–0.60 ms** of a **1.27–1.54 ms** build and
+**7.5 MB** of fresh zeroed arrays per seat; the padded build is **1.20–1.43×**
+the unpadded one (same process).  `VectorGroupBuilder.build` now returns the
+live width on the producer path, and every consumer already sizes itself from
+`groups.mask`/`child_mask`: the model's token count and group attention, record
+validation, the relation builder, PPO's padded concatenation and `to_storage`.
+`pad_group_section`/`pad_group_record` project back to the configured capacity
+for the per-lane oracle and the digest gate (`lane_batch` takes the capacities).
+The record width is also forward work: `encode_observation` at 128 CPU rows is
+**1.63–1.77 s live against 2.38–2.49 s padded** (27–34 %).  Digest
+**3,008/3,008** both seeds at **0.0476 / 0.0522 ms/lane-decision** (13.8× /
+12.4×), end to end **0.0650 / 0.0673**; bridge suite 145; a 2-update producer
+probe is 2/2 on-policy, 0 stale, 0 illegal/rejected, checkpoint
+reload-identical.  See `FINDINGS.md` §3.77.
+
 ---
 
 ## 5. CI and parity role (always on)

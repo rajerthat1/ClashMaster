@@ -4,44 +4,93 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 42)
+## Bottom line (2026-11-17, session 43)
 
-The group section's remaining dense passes are gone, and the CPU fixture that
-was measuring them was wrong.
+The group section no longer pads to the record's fixed capacity, and the model
+now reads the live width as well.
 
-1. **`_targeted_mask` and both sort keys now run at the live width.**  On a live
-   board (128 lanes, 11.5 live entities mean) `_targeted_mask` falls **0.356 →
-   0.083 ms** (4.3×), `_orders` **0.114 → 0.065** and `_child_order` **0.170 →
-   0.079 ms**; the three together are **0.64 → 0.23 ms** per seat.  The order
-   only has to cover the lane's retained width — `build` never reads past it —
-   so the sort is over the live slots and the padded tail repeats row 0, which
-   `build` masks off exactly as it masked the invalid tail before.
-2. **The micro fixture never had a live board.**  `cpu_half_micro.py` played at
-   tick 61 while `FIRST_PLAYABLE_TICK` is 90, so every play was refused and the
-   "settled board" was its six towers: zero non-tower entities.  It now waits
-   past the cooldown and settles, giving **11.5 live entities (max 17)**.  Every
-   micro number recorded in sessions 37–41 was measured at `live_g = 1`; the
-   wins recorded there were padding/width wins, not live-width wins.  The
-   session-39 group change still holds and is larger on a real board (**6.99 →
-   2.18 ms**, 3.2×), and session 41's `_entity_rows` is **1.70×** here (3.3× on
-   the empty fixture).  The producer's own `cpu_half` sections were always on
-   real boards, so the throughput arithmetic is unaffected.
-3. **The gate is bit-exact.**  `batched_tensorize.py` **3,008/3,008**
-   lane-decisions, both seats, 0 mismatches, 5,196 micro-actions (seed 2:
-   3,008/3,008, 5,361); **0.0660 / 0.0634 ms/lane-decision** (11.2× / 11.8×);
-   bridge suite **145 passed**; ruff clean; a 2-update producer probe is **2/2
-   on-policy** with |KL| 7.46e-5, 0 illegal, gate pass.
-4. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
+1. **The pad was 0.28–0.60 ms of a 1.27–1.54 ms build, and 7.5 MB per seat.**
+   Replicated field by field on the live arrays, the fixed-capacity copy is a
+   fresh **7.5 MB** zeroed allocation per seat (not the ~3 MB the handoff
+   estimated) plus a prefix copy.  Same-process, the old build is **1.20–1.43×**
+   the new one.  The producer now returns the live width; `live_slots=False`
+   still assembles and pads to 48/160 as the oracle.
+2. **Every consumer already reads the width from the record.**  Token count,
+   group attention, `validate`, the relation builder, PPO's padded
+   concatenation and `to_storage` all follow `groups.mask` /
+   `child_mask`.  `pad_group_section` / `pad_group_record` project a live record
+   back onto the fixed capacity for the per-lane oracle and the digest gate;
+   `lane_batch` takes `group_capacity`/`child_capacity` and
+   `compare_group_section` pads internally.
+3. **The width is also model work, and it is larger than the pad.**  On CPU at
+   128 rows the forward is **1.63–1.77 s live against 2.38–2.49 s padded**
+   (27–34 % saved): the group encoder's `belongs` tensor and child/group
+   attention were sized by 48 slots for 11 live rows.  The box has not measured
+   width; the A6000 forward was flat in rows.
+4. **The gate is bit-exact.**  `batched_tensorize.py` **3,008/3,008**
+   lane-decisions, both seats, 0 mismatches, 5,196 micro-actions,
+   **0.0476 ms/lane-decision** (13.8×), end to end **0.0650 ms/lane**; seed 2
+   **3,008/3,008**, 5,361 actions, **0.0522 ms** (12.4×), 0.0673; bridge suite
+   **145 passed**; ruff clean.  A 4-lane × 2-seat × 2-segment × 24-decision
+   producer probe with `--ppo-update` is **2/2 on-policy**, 0 stale, gate pass,
+   0 illegal / 0 rejected, 18/375 eligible ACT, checkpoint reload-identical.
+5. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
    lost 19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %,
-   p = 0.15); the 4–0 smoke was the deck matchup; `A-hog26-v738` is 49–1
-   against the seed and is a canary, not the learner's bar.  The 8-vCPU
-   measurement stays deferred until a training run shows a native win rate.
+   p = 0.15); `A-hog26-v738` is 49–1 against the seed and is a canary, not the
+   learner's bar.  The 8-vCPU measurement still waits for a training run with a
+   native win rate.
 
-The rig itself is fine: **100/100 native games** across the session-40 blocks,
-clean legality and transport. See `FINDINGS.md` §3.74 (native gate), §3.75
-(session 41) and §3.76 (this session, including the fixture correction).
+See `FINDINGS.md` §3.77 (this session), §3.76 (session 42) and §3.74 (native
+gate).
 
 ## Decisions — what changed
+
+### 2026-11-17 (session 43) — the group record keeps its live width, and the pad leaves the producer
+
+Session 42 left the fixed-capacity pad as the named next term and said to
+measure it first.  It measured at **0.28–0.60 ms** of the live build
+(**1.27–1.54 ms**) and **7.5 MB** per seat — and removing it also removed the
+padded rows from the model's forward.
+
+- **The pad, measured.**  `cpu_half_micro.py` now replicates the old pad field
+  by field on the live arrays and asserts the result equals the oracle's tail:
+  48 group + 160 child slots from 11 and 11 live rows is **7.5 MB** of fresh
+  zeroed arrays per seat.  Four same-process runs: pad 0.580 / 0.596 / 0.302 /
+  0.276 ms against build 1.362 / 1.544 / 1.271 / 1.352 ms, i.e. the padded
+  build is 1.20–1.43× the unpadded one.  The spread is allocator/page state;
+  the copy volume is fixed.
+- **The record carries the live width.**  `VectorGroupBuilder.build` returns
+  the batch's live group/child width on the producer path; the padded
+  full-capacity form stays as `live_slots=False` for the A/B and as the oracle.
+  Nothing downstream needed a fixed width: the model sizes its token set,
+  `belongs` and attention from `groups.mask`; `validate` checks capacities as
+  maxima; the relation builder derives group rows from the record; the PPO
+  update pads records to the chunk maximum with
+  `concatenate_padded_tensor_records`.
+- **The gate projects, it does not weaken.**  `pad_group_section` (sections) and
+  `pad_group_record` (records) grow a live record to the configured capacity
+  with the oracle's tail values — zeros, `OWNER_NEUTRAL` owner, `False` masks.
+  `lane_batch` gained `group_capacity`/`child_capacity` and the digest gate
+  passes them; `compare_group_section` pads internally, so every field,
+  including the tail and the digest, is still compared byte for byte.
+- **The forward A/B: 27–34 % on CPU.**  `cpu_half_micro.py` times
+  `model.encode_observation` on the same batch live and padded to 48/160:
+  **1.63 / 1.71 / 1.77 s live against 2.49 / 2.47 / 2.44 / 2.38 s padded** at
+  128 rows.  The width change is not only a build win; it removes masked tokens
+  from the group encoder.  This is this host's CPU; the A6000 was reported flat
+  in rows and its width term is unmeasured.
+- **Gate:** `batched_tensorize.py` **3,008/3,008** lane-decisions, both seats, 0
+  mismatches, 5,196 micro-actions, **0.0476 ms/lane-decision** (13.8×), end to
+  end **0.0650**; seed 2 **3,008/3,008**, 5,361 actions, **0.0522** (12.4×),
+  0.0673; bridge suite **145 passed**; ruff clean.  The variable-width record
+  updates in the real loop: a 4-lane × 2-seat × 2-segment × 24-decision
+  `--ppo-update` probe is **2/2 on-policy**, 0 stale, gate pass, 0 illegal / 0
+  rejected, checkpoint reload-identical.
+- **Next CPU term:** the remaining `build` is 1.27–1.54 ms per seat:
+  `_entity_rows` 0.37, the three sort/mask functions 0.17, and the rest is the
+  live-width gather/feature assembly.  Do not look for another dense pass —
+  there is none left in this section.  The open box question is whether the
+  group encoder's width term exists on the A6000.
 
 ### 2026-11-17 (session 42) — the group sort keys at live width, and the fixture that hid the board
 
@@ -83,7 +132,9 @@ every micro number since session 37 should be read.
   three functions above are 0.23, `_entity_rows` 0.76, and the rest is the
   gather/feature assembly plus the fixed-capacity pad to 48 group / 160 child
   slots (~3 MB of fresh zeroed arrays per build).  The padding is the next
-  candidate; measure it before rewriting it.
+  candidate; measure it before rewriting it.  *(Session 43: measured at
+  0.30–0.60 ms and 7.5 MB per seat, and the producer no longer pads; see
+  `FINDINGS.md` §3.77.)*
 
 ### 2026-11-17 (session 41) — `_entity_rows` builds at live width, and the group section follows
 

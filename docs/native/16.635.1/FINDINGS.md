@@ -6247,3 +6247,66 @@ Evidence: `runs/crforge-c4/cpu-half-micro-s42.json`,
 `runs/crforge-c4/batched-tensorize-s42.json`,
 `runs/crforge-c4/batched-tensorize-s42-seed2.json`,
 `runs/crforge-c4/self-play-s42-probe.json`.
+
+### 3.77 The fixed-capacity group pad: 0.3–0.6 ms, 7.5 MB per seat, and the forward width (2026-11-17)
+
+Session 42 left one CPU term named: `build` assembled the group/child section at
+the board's live width, then copied every field into the record's fixed 48/160
+slots.  It is measured, and the producer no longer pays it — the record now
+carries the batch's live width, and the model consumes that width too.
+
+**The pad is bigger than the handoff's estimate.**  Replicated field by field on
+the live arrays (11 group and 11 child rows at 128 lanes), the pad is a fresh
+allocation of **7.5 MB** per seat plus a prefix copy, and `torch.from_numpy`
+wraps the result zero-copy.  Four same-process measurements put it at **0.580,
+0.596, 0.302 and 0.276 ms**, against a live build of **1.362, 1.544, 1.271 and
+1.352 ms**; the old form is therefore **1.20–1.43×** the new one.  The spread is
+allocator/page state, not the copy volume, which is why it is stated as a range.
+The earlier "~3 MB" counted one dtype family; the child feature/position/extent/
+int64 fields are most of the bytes.
+
+**The producer emits the live width now.**  Every consumer reads the slot count
+from the record's own `mask` / `child_mask` shape — the model's token count and
+group attention, `UniversalSemanticBatchV4.validate`, the relation builder's
+card→group rows, the PPO `concatenate_padded_tensor_records` padding, and
+`to_storage`.  `build(..., live_slots=False)` still assembles and pads to the
+configured capacity as the oracle.  Two helpers project a live-width record back
+onto it, matching the oracle's padded tail (zeros, `OWNER_NEUTRAL` owner,
+`False` masks): `pad_group_section` for sections and `pad_group_record` for the
+digest gate's `lane_batch`, which now takes `group_capacity`/`child_capacity`.
+`compare_group_section` pads internally, so the per-lane oracle comparison is
+unchanged in strength.
+
+**The width is also forward work.**  `cpu_half_micro.py` now times
+`model.encode_observation` on the live record and on the same record padded to
+48/160, at 128 rows on this host: **1.63 / 1.71 / 1.77 s live vs 2.49 / 2.47 /
+2.44 / 2.38 s padded** (27–34 % saved).  The group encoder's `belongs` tensor and
+its child / group attention are sized by `groups.mask`, so a 48-slot record made
+the model pay for 37 masked rows it never reads.  This is a CPU measurement; the
+A6000 forward was previously reported flat in rows (§3.71) and its width
+dependence is unmeasured.
+
+**Gates.**  `batched_tensorize.py --seats 0 1`: **3,008/3,008** lane-decisions,
+both seats, 0 mismatches, 5,196 micro-actions, **0.0476 ms/lane-decision**
+(13.8× the 0.658 oracle), end to end **0.0650 ms/lane**; seed 2 repeats
+**3,008/3,008**, 5,361 actions, **0.0522 ms** (12.4×), 0.0673 end to end.
+Session 42's same tool was 0.0660/0.0634; its oracle was also slower
+(0.739/0.750 against 0.658/0.645), so part of the cross-process drop is the host
+and the same-process pad measurement above is the change.  Bridge suite **145
+passed**; ruff clean on the touched files.  A 4-lane × 2-seat × 2-segment × 24
+decision producer probe with `--ppo-update` is **2/2 on-policy**, 0 stale, gate
+pass, **0 illegal / 0 rejected**, 18/375 eligible ACT, and the checkpoint
+reloads to the same weight digest — the variable-width observations concatenate
+and update correctly.
+
+**What is left.**  The group section is now **1.27–1.54 ms** per seat on the
+fixture, and the pad term is gone from the producer.  The next group term is the
+remaining gather/feature assembly at live width (`_entity_rows` 0.37 ms, the
+three sort/mask functions 0.17 ms), not another dense pass.  The larger open
+question is the box: the width win is measured on CPU, and the forward is the
+term that would move on an A6000 if the group encoder is not already flat there.
+
+Evidence: `runs/crforge-c4/cpu-half-micro-s43.json`,
+`runs/crforge-c4/batched-tensorize-s43.json`,
+`runs/crforge-c4/batched-tensorize-s43-seed2.json`,
+`runs/crforge-c4/self-play-s43-variable-width.json`.
