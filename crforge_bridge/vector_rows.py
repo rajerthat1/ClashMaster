@@ -577,7 +577,16 @@ class VectorGroupBuilder:
 
     # ---- build -------------------------------------------------------------
 
-    def build(self, batch: VectorObservationBatch) -> VectorGroupSection:
+    def build(self, batch: VectorObservationBatch, *, live_slots: bool = True) -> VectorGroupSection:
+        """Build the section.
+
+        ``live_slots`` is the producer path: only the lanes' live group/child
+        slots are gathered and assembled, and the record's fixed capacity is
+        zero-padded once.  ``live_slots=False`` restores the previous
+        full-capacity assembly so ``cpu_half_micro.py`` can A/B the two forms in
+        one process; the returned record is identical either way.
+        """
+
         rows = self._entity_rows(batch)
         lanes = int(batch.count)
         valid = rows["valid"]
@@ -589,6 +598,13 @@ class VectorGroupBuilder:
 
         g = self.max_groups
         c = self.max_children
+        # Only the live slots are gathered and assembled; the record's fixed
+        # capacity is zero-padded once at the end.  A settled board carries a
+        # handful of groups, so building all 48 group and 160 child slots per
+        # lane (and masking the rest) was most of this section's own time.  The
+        # padded slots are still bit-exact: zeros for the feature/position/
+        # extent tensors, zero for the ids, and OWNER_NEUTRAL for a group.
+        live_g = min(g, max(1, int(entity_count.max()))) if live_slots else g
         # Advanced indexing is the gather: ``take_along_axis`` rebuilds an index
         # tuple on every call (35 times per build), which was a third of this
         # section's own time.  ``order`` holds row indices into a lane's entity
@@ -600,34 +616,37 @@ class VectorGroupBuilder:
 
         # Group rows keep the first ``retained_groups`` entries of the group
         # order; everything after is padded with zeros and masked off.
-        group_mask = np.arange(g, dtype=np.int64)[None, :] < retained_groups[:, None]
-        g_hp = gather(rows["hp"], group_order, g)
-        g_max_hp = gather(rows["max_hp"], group_order, g)
-        g_shield = gather(rows["shield"], group_order, g)
-        g_x = gather(rows["x"], group_order, g)
-        g_y = gather(rows["y"], group_order, g)
+        group_mask = np.arange(live_g, dtype=np.int64)[None, :] < retained_groups[:, None]
+        g_hp = gather(rows["hp"], group_order, live_g)
+        g_max_hp = gather(rows["max_hp"], group_order, live_g)
+        g_shield = gather(rows["shield"], group_order, live_g)
+        g_x = gather(rows["x"], group_order, live_g)
+        g_y = gather(rows["y"], group_order, live_g)
         g_extent = np.stack(
             [
-                gather(rows["extent_x0"], group_order, g),
-                gather(rows["extent_y0"], group_order, g),
-                gather(rows["extent_x1"], group_order, g),
-                gather(rows["extent_y1"], group_order, g),
+                gather(rows["extent_x0"], group_order, live_g),
+                gather(rows["extent_y0"], group_order, live_g),
+                gather(rows["extent_x1"], group_order, live_g),
+                gather(rows["extent_y1"], group_order, live_g),
             ],
             axis=-1,
         )
         g_velocity = np.stack(
-            [gather(rows["velocity"][..., 0], group_order, g), gather(rows["velocity"][..., 1], group_order, g)],
+            [
+                gather(rows["velocity"][..., 0], group_order, live_g),
+                gather(rows["velocity"][..., 1], group_order, live_g),
+            ],
             axis=-1,
         )
-        g_velocity_valid = gather(rows["velocity_valid"], group_order, g)
-        g_target = gather(rows["target"], group_order, g)
+        g_velocity_valid = gather(rows["velocity_valid"], group_order, live_g)
+        g_target = gather(rows["target"], group_order, live_g)
 
         # Group rank per entity: the retained portion of the group order.
         # Scatter only the kept slots: padded slots repeat entity row 0, and
         # an unguarded scatter would overwrite row 0's real rank with -1.
         group_rank = np.full(valid.shape, -1, dtype=np.int64)
-        retained_slots = group_order[:, :g]
-        retained_rank = np.broadcast_to(np.arange(g, dtype=np.int64)[None, :], retained_slots.shape)
+        retained_slots = group_order[:, :live_g]
+        retained_rank = np.broadcast_to(np.arange(live_g, dtype=np.int64)[None, :], retained_slots.shape)
         lane_rows = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], retained_slots.shape)
         group_rank[lane_rows[group_mask], retained_slots[group_mask]] = retained_rank[group_mask]
 
@@ -638,22 +657,23 @@ class VectorGroupBuilder:
         candidate_count = candidate.sum(axis=1).astype(np.int64)
         targeted = self._targeted_mask(rows)
         child_order = self._child_order(rows, candidate, targeted)
-        child_entity = child_order[:, :c]
-        child_candidate = np.take_along_axis(candidate, child_order, axis=1)[:, :c]
+        live_c = min(c, max(1, int(candidate_count.max()))) if live_slots else c
+        child_entity = child_order[:, :live_c]
+        child_candidate = np.take_along_axis(candidate, child_order, axis=1)[:, :live_c]
         child_count = np.minimum(candidate_count, self.max_children)
-        child_mask = np.arange(c, dtype=np.int64)[None, :] < child_count[:, None]
+        child_mask = np.arange(live_c, dtype=np.int64)[None, :] < child_count[:, None]
         child_mask &= child_candidate
         child_overflow = candidate_count - child_count
 
         child_rank = np.full(valid.shape, -1, dtype=np.int64)
         child_rank_rows = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], child_entity.shape)
-        child_rank_values = np.broadcast_to(np.arange(c, dtype=np.int64)[None, :], child_entity.shape)
+        child_rank_values = np.broadcast_to(np.arange(live_c, dtype=np.int64)[None, :], child_entity.shape)
         child_rank[child_rank_rows[child_mask], child_entity[child_mask]] = child_rank_values[child_mask]
 
         # ---- group tensors -------------------------------------------------
-        group_features = np.zeros((lanes, g, len(GROUP_FEATURE_NAMES)), dtype=np.float32)
-        group_position = np.empty((lanes, g, 2), dtype=np.float32)
-        group_extent = np.empty((lanes, g, 4), dtype=np.float32)
+        group_features = np.zeros((lanes, live_g, len(GROUP_FEATURE_NAMES)), dtype=np.float32)
+        group_position = np.empty((lanes, live_g, 2), dtype=np.float32)
+        group_extent = np.empty((lanes, live_g, 4), dtype=np.float32)
         group_mask_f = group_mask.astype(bool)
 
         # ``_finite(hitpoints, max_hitpoints or 1)``: a present hitpoint value
@@ -661,7 +681,7 @@ class VectorGroupBuilder:
         ratio = g_hp / np.where(g_max_hp > 0, g_max_hp, 1.0)
         retained_ids = np.zeros(valid.shape, dtype=bool)
         retained_ids[child_rank_rows[child_mask], child_entity[child_mask]] = True
-        g_retained = gather(retained_ids, group_order, g)
+        g_retained = gather(retained_ids, group_order, live_g)
 
         group_features[..., _G_MEMBERS] = 1.0 / 16.0
         group_features[..., _G_DROPPED] = np.where(g_retained, 0.0, 1.0 / 16.0)
@@ -689,46 +709,51 @@ class VectorGroupBuilder:
         group_position[..., 1] = g_y
         group_extent[...] = g_extent
 
-        g_side = gather(rows["side"], group_order, g)
+        g_side = gather(rows["side"], group_order, live_g)
         owner_type = np.where(g_side == self.tensorizer.actor_owner, OWNER_SELF, OWNER_ENEMY)
         group_owner = np.where((g_side == 0) | (g_side == 1), owner_type, OWNER_NEUTRAL)
-        source_card = gather(rows["card_vocab_id"], group_order, g)
+        source_card = gather(rows["card_vocab_id"], group_order, live_g)
         if np.any((source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask):
-            bad = int(gather(rows["card_id"], group_order, g)[(source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask][0])
+            bad = int(
+                gather(rows["card_id"], group_order, live_g)[(source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask][0]
+            )
             raise ValueError(f"public causal-group source card {bad} is outside this V4 catalog")
-        group_type = gather(rows["group_type"], group_order, g)
-        runtime_form = gather(rows["runtime_form"], group_order, g)
+        group_type = gather(rows["group_type"], group_order, live_g)
+        runtime_form = gather(rows["runtime_form"], group_order, live_g)
 
         # ---- child tensors -------------------------------------------------
-        child_features = np.zeros((lanes, c, len(CHILD_FEATURE_NAMES)), dtype=np.float32)
-        child_position = np.empty((lanes, c, 2), dtype=np.float32)
-        child_extent = np.empty((lanes, c, 4), dtype=np.float32)
-        child_radius = np.empty((lanes, c), dtype=np.float32)
-        child_archetype = np.empty((lanes, c), dtype=np.int64)
-        child_group = np.empty((lanes, c), dtype=np.int64)
-        child_type = np.empty((lanes, c), dtype=np.int64)
+        child_features = np.zeros((lanes, live_c, len(CHILD_FEATURE_NAMES)), dtype=np.float32)
+        child_position = np.empty((lanes, live_c, 2), dtype=np.float32)
+        child_extent = np.empty((lanes, live_c, 4), dtype=np.float32)
+        child_radius = np.empty((lanes, live_c), dtype=np.float32)
+        child_archetype = np.empty((lanes, live_c), dtype=np.int64)
+        child_group = np.empty((lanes, live_c), dtype=np.int64)
+        child_type = np.empty((lanes, live_c), dtype=np.int64)
 
-        c_hp = gather(rows["hp"], child_order, c)
-        c_max_hp = gather(rows["max_hp"], child_order, c)
-        c_shield = gather(rows["shield"], child_order, c)
-        c_age = gather(rows["age_ms"], child_order, c)
-        c_target = gather(rows["target"], child_order, c)
-        c_x = gather(rows["x"], child_order, c)
-        c_y = gather(rows["y"], child_order, c)
+        c_hp = gather(rows["hp"], child_order, live_c)
+        c_max_hp = gather(rows["max_hp"], child_order, live_c)
+        c_shield = gather(rows["shield"], child_order, live_c)
+        c_age = gather(rows["age_ms"], child_order, live_c)
+        c_target = gather(rows["target"], child_order, live_c)
+        c_x = gather(rows["x"], child_order, live_c)
+        c_y = gather(rows["y"], child_order, live_c)
         c_extent = np.stack(
             [
-                gather(rows["extent_x0"], child_order, c),
-                gather(rows["extent_y0"], child_order, c),
-                gather(rows["extent_x1"], child_order, c),
-                gather(rows["extent_y1"], child_order, c),
+                gather(rows["extent_x0"], child_order, live_c),
+                gather(rows["extent_y0"], child_order, live_c),
+                gather(rows["extent_x1"], child_order, live_c),
+                gather(rows["extent_y1"], child_order, live_c),
             ],
             axis=-1,
         )
         c_velocity = np.stack(
-            [gather(rows["velocity"][..., 0], child_order, c), gather(rows["velocity"][..., 1], child_order, c)],
+            [
+                gather(rows["velocity"][..., 0], child_order, live_c),
+                gather(rows["velocity"][..., 1], child_order, live_c),
+            ],
             axis=-1,
         )
-        c_velocity_valid = gather(rows["velocity_valid"], child_order, c)
+        c_velocity_valid = gather(rows["velocity_valid"], child_order, live_c)
 
         child_features[..., _C_HP_RATIO] = c_hp / np.where(c_max_hp > 0, c_max_hp, 1.0)
         child_features[..., _C_HP] = c_hp / 10_000.0
@@ -744,9 +769,9 @@ class VectorGroupBuilder:
         child_position[..., 0] = c_x
         child_position[..., 1] = c_y
         child_extent[...] = c_extent
-        child_radius[...] = gather(rows["radius"], child_order, c)
-        child_archetype[...] = gather(rows["archetype_id"], child_order, c)
-        child_type[...] = gather(rows["child_type"], child_order, c)
+        child_radius[...] = gather(rows["radius"], child_order, live_c)
+        child_archetype[...] = gather(rows["archetype_id"], child_order, live_c)
+        child_type[...] = gather(rows["child_type"], child_order, live_c)
         child_group[...] = group_rank[lane_index, child_entity]
 
         # The arena leaves a masked row at zero; the gathers above can carry a
@@ -769,23 +794,32 @@ class VectorGroupBuilder:
         child_type[~child_mask] = 0
         child_group[~child_mask] = 0
 
+        def pad_slots(values: np.ndarray, width: int, fill: Any = 0) -> np.ndarray:
+            """Grow a live-width slot axis to the record's fixed capacity."""
+
+            if int(values.shape[1]) == width:
+                return values
+            output = np.full((values.shape[0], width) + values.shape[2:], fill, dtype=values.dtype)
+            output[:, : int(values.shape[1])] = values
+            return output
+
         groups = BattleGroupSetV4(
-            source_card_vocab_id=torch.from_numpy(source_card),
-            group_type=torch.from_numpy(group_type),
-            owner_type=torch.from_numpy(group_owner),
-            runtime_form=torch.from_numpy(runtime_form),
-            features=torch.from_numpy(group_features),
-            position=torch.from_numpy(group_position),
-            extent=torch.from_numpy(group_extent),
-            mask=torch.from_numpy(group_mask_f),
-            child_archetype_id=torch.from_numpy(child_archetype),
-            child_group_index=torch.from_numpy(child_group),
-            child_type=torch.from_numpy(child_type),
-            child_features=torch.from_numpy(child_features),
-            child_position=torch.from_numpy(child_position),
-            child_extent=torch.from_numpy(child_extent),
-            child_radius=torch.from_numpy(child_radius),
-            child_mask=torch.from_numpy(child_mask),
+            source_card_vocab_id=torch.from_numpy(pad_slots(source_card, g)),
+            group_type=torch.from_numpy(pad_slots(group_type, g)),
+            owner_type=torch.from_numpy(pad_slots(group_owner, g, OWNER_NEUTRAL)),
+            runtime_form=torch.from_numpy(pad_slots(runtime_form, g)),
+            features=torch.from_numpy(pad_slots(group_features, g)),
+            position=torch.from_numpy(pad_slots(group_position, g)),
+            extent=torch.from_numpy(pad_slots(group_extent, g)),
+            mask=torch.from_numpy(pad_slots(group_mask_f, g, False)),
+            child_archetype_id=torch.from_numpy(pad_slots(child_archetype, c)),
+            child_group_index=torch.from_numpy(pad_slots(child_group, c)),
+            child_type=torch.from_numpy(pad_slots(child_type, c)),
+            child_features=torch.from_numpy(pad_slots(child_features, c)),
+            child_position=torch.from_numpy(pad_slots(child_position, c)),
+            child_extent=torch.from_numpy(pad_slots(child_extent, c)),
+            child_radius=torch.from_numpy(pad_slots(child_radius, c)),
+            child_mask=torch.from_numpy(pad_slots(child_mask, c, False)),
         )
         return VectorGroupSection(
             groups=groups,

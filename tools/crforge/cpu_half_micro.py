@@ -12,6 +12,9 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
   build, each rebuilding an index tuple);
 * the entity table gather: ``np.where(valid, table[rv], 0)`` vs masking the
   gather's own copy in place (nine fields per seat in ``_entity_rows``);
+* the group build at live width vs the previous full-capacity assembly
+  (``VectorGroupBuilder.build(..., live_slots=False)`` is the oracle), which is
+  where the padded 48/160 slots were being paid for;
 * ``record_action``: the vectorised NumPy pass vs the per-lane loop it replaced
   (the loop is one device sync per field per row on CUDA, which is what made the
   box's ``decode`` bucket 68 ms at 128 lanes).
@@ -263,6 +266,38 @@ def main(argv: list[str] | None = None) -> int:
         }
         gather["saved_ms"] = gather["take_along_axis_35_ms"] - gather["advanced_index_35_ms"]
 
+        # ---- group build: live slots vs full capacity ----------------------
+        # ``live_slots=False`` is the previous form: gather, assemble and mask
+        # all 48 group / 160 child slots even though a settled board carries a
+        # handful.  Both run on the same batch in this process, so the delta is
+        # the width change and nothing else.
+        def _records_equal(left: Any, right: Any) -> bool:
+            from dataclasses import fields, is_dataclass
+
+            if isinstance(left, torch.Tensor):
+                return torch.equal(left, right)
+            if isinstance(left, np.ndarray):
+                return np.array_equal(left, right)
+            if is_dataclass(left) and type(left) is type(right):
+                return all(
+                    _records_equal(getattr(left, item.name), getattr(right, item.name)) for item in fields(left)
+                )
+            return left == right
+
+        wide_section = groups.build(batch, live_slots=False)
+        live_section = groups.build(batch, live_slots=True)
+        assert _records_equal(wide_section, live_section)
+        entity_counts = batch.entity_valid.sum(axis=1)
+        build = {
+            "full_capacity_ms": _time(lambda: groups.build(batch, live_slots=False), args.repeats),
+            "live_slots_ms": _time(lambda: groups.build(batch, live_slots=True), args.repeats),
+            "entity_rows_ms": _time(lambda: groups._entity_rows(batch), args.repeats),
+            "live_entities_mean": float(entity_counts.mean()),
+            "live_entities_max": int(entity_counts.max()),
+            "equal_values": True,
+        }
+        build["saved_ms"] = build["full_capacity_ms"] - build["live_slots_ms"]
+
         # ---- table gather + mask ------------------------------------------
         # ``_entity_rows`` gathers nine per-vocabulary tables through the
         # entity row map and zeroes the invalid rows.  Masking the gather's own
@@ -342,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             "substrate": {"tables": str(DEFAULT_TABLES), "checkpoint": str(args.checkpoint), "device": "cpu"},
             "interleave": interleave,
             "group_gather": gather,
+            "group_build": build,
             "entity_mask": mask,
             "record_action": record,
             "sections_ms_mean": sections,

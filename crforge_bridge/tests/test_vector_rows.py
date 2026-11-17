@@ -138,6 +138,42 @@ def test_batched_groups_match_the_per_lane_oracle(crforge_runtime: None) -> None
             encoder.encode(batch)
 
 
+def test_live_width_padding_matches_full_capacity(crforge_runtime: None) -> None:
+    """The live-slot build must be byte-identical to the full-capacity form."""
+
+    from dataclasses import fields, is_dataclass
+
+    import torch
+
+    def equal(left, right) -> bool:
+        if isinstance(left, torch.Tensor):
+            return torch.equal(left, right)
+        if isinstance(left, np.ndarray):
+            return np.array_equal(left, right)
+        if is_dataclass(left) and type(left) is type(right):
+            return all(equal(getattr(left, item.name), getattr(right, item.name)) for item in fields(left))
+        return left == right
+
+    tensorizer = _tensorizer()
+    with _vector(count=4) as vector:
+        builder, tables = _builder(tensorizer, vector)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        saw_partial = False
+        for step in range(40):
+            live = builder.build(batch)
+            wide = builder.build(batch, live_slots=False)
+            assert equal(live, wide), f"step {step}: live-width and full-capacity builds differ"
+            # Also keep the padded tail honest against the per-lane oracle.
+            assert compare_group_section(live, tensorizer, batch, tables=tables) == []
+            counts = batch.entity_valid.sum(axis=1)
+            saw_partial = saw_partial or bool((counts < builder.max_groups).any())
+            _step(vector, step + 1)
+            encoder.encode(batch)
+        assert saw_partial, "the fixture never had a partially filled group record"
+
+
 def test_group_capacity_overflow_is_exact(crforge_runtime: None) -> None:
     """A two-group / three-child cap must drop the same rows as the oracle."""
 
