@@ -374,16 +374,21 @@ it**. A lower forward with a flat CPU half is not a throughput win.
 fp16 (fp32 log-probs/values), one CUDA Graph per padded row count over the
 **deterministic encode + core only**, one fp32 recurrent-state table, and a
 padded staging layout built once per row count and refilled in place (pinned
-host mirror + `non_blocking` on CUDA). Sampling is eager because torch 2.5 has
-no graph-safe RNG: a captured sampler would replay the same draws. The gate is
+host mirror + `non_blocking` on CUDA). Sampling is eager: torch 2.5 has no
+graph-safe RNG, and one code path covers both versions. The gate is
 `--verify-fast-forward` — sampled actions exactly equal to eager fp32,
-log-prob/entropy/value inside 5e-3 — and `inference.steady_state` reports the
-forward beside the CPU half. The CPU control is exact and performance-neutral
-(491 vs 488 ms at 16 rows); bf16 on this laptop is 17.5× slower, so `auto`
-resolves to fp32 on CPU. **The GPU numbers are still open** — fp16, graph
-capture and pinned H2D have not run on a CUDA host. Run
-`--fast-forward --verify-fast-forward` at 128 lanes × 3 × 32 first, then the
-same shape with `--no-cuda-graphs` and with `--inference-precision fp32`.
+log-prob/entropy/value inside 5e-3.
+
+Measured on one 6-vCPU A6000 (128 lanes × 2 seats × 3 × 32, probe shape):
+forward **182.1 → 132.9 ms** (−27 %), `g` 0.366 → 0.310, GPU ceiling
+**1.33 → 1.563 matches/s**, predicted **$62.2/1M**. But **the graph does not
+pay at this shape** (`--no-cuda-graphs` is 34 ms of wall faster; the pinned
+staging lands in the CPU half while the decode stays outside), and six
+concurrent producers measure **1.254 m/s / $77.5/1M**, only 3 % better than the
+pre-port 1.215/$80.0. Rollout storage adds 188 ms/decision. **The CPU half is
+the next gate:** tensorize 98 + decode 68 + step 113 + facts 12 = 291 ms must
+reach ~108 ms for six vCPUs to feed the 133 ms forward. Do not rent more vCPUs
+until it moves — the card is bound at 3.2 processes.
 
 ---
 

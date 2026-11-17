@@ -5529,7 +5529,7 @@ Evidence: `tools/crforge/cloud_capacity.py`,
 `cloud-thunder-a6000-6vcpu/raw/`),
 `runs/crforge-c4/cloud-capacity-a6000.json`.
 
-### 3.69 The `ever_server` forward port: gated on the CPU, unmeasured on the GPU (2026-11-16)
+### 3.69 The `ever_server` forward port: measured on the A6000 (2026-11-16)
 
 `crforge_bridge/fast_forward.py` ports the four inference tricks from
 `.resource/RoyaleFish/royalefish/ever_server.py` into the in-process producer
@@ -5544,12 +5544,15 @@ protocol (`net.py`) is not ported: crforge owns the GPU in-process.
 | layout/pack once | padded device batch built once per row count, refilled by valid-slice copy; pinned host mirror + `non_blocking` on CUDA | not run |
 
 **The graph covers the deterministic half only.**  torch 2.5.1 has no
-`CUDAGraph.register_generator_state`, so a captured `sample_for_ppo_rollout`
-would replay the same random draws (the server's use is deployment inference;
-a self-play collector cannot).  The port captures `model.forward`
+`CUDAGraph.register_generator_state`, so on that version a captured
+`sample_for_ppo_rollout` would replay the same random draws (the server's use is
+deployment inference; a self-play collector cannot).  torch 2.12.1 on the rented
+box does have the API, but the port keeps capturing only `model.forward`
 (encode + recurrent core) and samples eagerly through
-`UniversalCardPolicyV4.select_action_from_context`, which keeps fresh RNG and
-still captures the FLOP-heavy half.
+`UniversalCardPolicyV4.select_action_from_context`: one code path for both torch
+versions, and the gate compares identical RNG draws.  The measured result is
+that this partial graph does **not** pay (below); a full-call graph is a
+version-gated experiment, not a port default.
 
 **CPU control**, 8 lanes × 2 seats (16 rows) × 1 segment × 8 decisions, warmup
 on, `--no-rollout`, `OMP_NUM_THREADS=4`:
@@ -5582,3 +5585,66 @@ precision gain from the graph gain.  Evidence:
 `crforge_bridge/fast_forward.py`,
 `crforge_bridge/tests/test_fast_forward.py`,
 `runs/crforge-c4/fast-forward-cpu-{baseline,fp32,bf16,train}.json`.
+
+**A6000 measured (2026-11-16).** One Thunder `base` box, 6 vCPU, 1×A6000 48 GB,
+$0.35/h, torch 2.12.1+cu130, Java 21, `OMP_NUM_THREADS=1`; 128 lanes × 2 seats
+(256 rows) × 3 segments × 32 decisions, probe shape (`--no-rollout
+--no-validate`), steady last segment:
+
+| run | T ms | forward ms | CPU half ms | g | 1/g | GPU ceil | CPU ceil | verify |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| eager fp32 | 497.6 | 182.1 | 315.5 | 0.366 | 2.73 | 1.157 | 2.543 | — |
+| **fp16, no graph** | **425.1** | **132.9** | 292.2 | 0.313 | 3.20 | **1.588** | 2.978 | pass |
+| fp16 + graph | 459.7 | 136.1 | 323.6 | 0.296 | 3.38 | 1.550 | 2.755 | pass |
+| fp32 + graph | 494.9 | 169.0 | 325.8 | 0.342 | 2.93 | 1.249 | 2.557 | pass |
+| fp16 + graph, rollout | 613.5 | 139.2 | 474.3 | 0.227 | 4.41 | 1.517 | 2.063 | pass |
+
+Verification: 0/256 action mismatches on all six fields; fp16 log-prob Δ 6e-7,
+entropy 5.1e-6, value 3.8e-4; fp32 graph exact (1.2e-7 on value).  fp16 is
+−27 % on the forward; **the graph is 34 ms of wall worse** than the same fp16
+path eager because it captures only encode+core and its pinned staging is paid
+in the CPU half while the decode stays outside.  `--no-cuda-graphs` is the
+measured default at this shape.  The static effect/profile cache (below) is
+worth 65–77 ms on the laptop CPU and ~2 ms here: the forward at 256 rows is
+compute-bound, not fixed-overhead-bound.
+
+**The corrected lane table** (`cloud_capacity.py --run --fast-forward
+--no-cuda-graphs`, warmup on):
+
+| lanes × 2 seats @ 32 | T s | g | GPU slots | GPU ceiling | $/1M |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 0.2041 | 0.749 | 1.34 | 0.086 | $1,127 |
+| 32 | 0.2508 | 0.546 | 1.83 | 0.385 | $253 |
+| 64 | 0.3049 | 0.440 | 2.27 | 0.786 | $124 |
+| 128 | 0.4348 | 0.310 | 3.22 | 1.563 | $62.2 |
+
+**The sweep** at 128 lanes, 1/2/4/6 producers:
+
+| producers | T mean | per-proc m/s | aggregate | retention | forward × | CPU × |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.4780 | 0.441 | 0.441 | 0.91 | 1.07 | 1.11 |
+| 2 | 0.5854 | 0.360 | 0.721 | 0.74 | 1.38 | 1.33 |
+| 4 | 0.7615 | 0.277 | 1.108 | 0.57 | 1.58 | 1.83 |
+| 6 | 1.0098 | 0.209 | **1.254** | 0.43 | 1.95 | 2.49 |
+
+Verdict: saturated at 2 processes, bound **shared**, measured **0.80×** the
+1.563 GPU ceiling, equation confirmed.  The port moves the predicted ceiling
+1.33 → 1.563 (+17 %, $62.2/1M) but the six-producer rate only 1.215 → 1.254
+(+3 %), **$77.5/1M** against $80.0 before.  Both halves slow together at six
+(forward 1.95×, CPU 2.49×); the card is still bound at 3.2 processes and the
+CPU half (tensorize 98 + decode 68 + step 113 + facts 12 = 291 ms) is the gate.
+Rollout storage adds 188 ms/decision, more than the forward.
+
+**The static effect/profile cache.**  `encode_observation` rebuilt
+`effect_encoder.all_effects()` and the mechanic-profile pass on every forward,
+though both depend only on the weights: 65–77 ms per call on this CPU, 0.1 ms
+cached.  `UniversalCardPolicyV4.static_effect_memory` caches fp32 tables keyed
+by tensor identity+version, refreshes **in place** (so a captured graph reads
+the new values) and bypasses the cache whenever gradients are enabled, keeping
+the embeddings' gradient path intact.  On the A6000 it is ~2 ms.
+
+Evidence: `crforge_bridge/fast_forward.py`,
+`crforge_bridge/tests/test_fast_forward.py`,
+`runs/crforge-c4/fast-forward-a6000-*{probe,graph,rollout}.json`,
+`runs/crforge-c4/cloud-thunder-a6000-fast-6vcpu.json` (raw producers under
+`cloud-thunder-fast/`).
