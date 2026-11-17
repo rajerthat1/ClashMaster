@@ -6102,3 +6102,72 @@ Evidence: `runs/native-parity-s40/pilot-vs-seed-mirror.json` (+ five chunk
 directories), `runs/native-parity-s40/seed-vs-hog26.json` (+ five chunk
 directories), `tools/native_analysis/match-configs/mirror-xbow.json`,
 `tools/native_analysis/native_block.py`, `native_block_run.sh`.
+
+---
+
+### 3.75 `_entity_rows` builds at the board's live width (2026-11-17)
+
+The group section's remaining term was `VectorGroupBuilder._entity_rows`, and it
+was paying for the record's reserved width in a different way than session 39's
+slot fix: every field was computed over the whole **200-row entity axis** of
+each lane, while a settled board carries ~6 live entities.
+
+Three dense passes were the cost, not any one arithmetic op:
+
+- **Nine per-vocabulary gathers.** `np.where(valid, table[rv], 0)` on an int32
+  row map makes NumPy convert all 25,600 index entries to `intp` first, on every
+  call.  Six int64 gathers measured **0.42 ms**; the same six with one
+  pre-converted `intp` map measured **0.19 ms**, and the same six at live rows
+  (one `intp` conversion of 640 entries) **0.065 ms**.
+- **The `where` masks** over 25,600 slots per field, which for invalid slots
+  only ever wrote zero.
+- **The float64 velocity copy** (`np.zeros` + a full-width assignment) plus the
+  two divides.
+
+The new form takes the flat live indices once per call, builds each field from
+the live values and scatters into one zero row:
+
+```
+live = np.flatnonzero(valid.ravel())
+out = np.zeros(valid.size, dtype=...)      # or np.full(..., fill)
+out[live] = values
+out.reshape(shape)
+```
+
+The nine tables are gathered with `vocab_live` (the row map at the live rows),
+so the wide gather does not exist at all.  Dense zero-filled slots are exactly
+what the masks produced, so the returned arrays are bit-identical except for an
+invalid slot's velocity, which used to hold a copy and is now zero.  That slot was
+never readable: `velocity_valid` is false there and the group/child assembly
+masks it out.
+
+**Same-process A/B** (`cpu_half_micro.py`, which keeps the dense form as the
+oracle and asserts field-by-field equality), 128 lanes × 2 seats, 6 live
+entities, 20 repeats:
+
+| term | session 40 | session 41 |
+| --- | ---: | ---: |
+| `_entity_rows` | **1.098 ms** | **0.301 ms** (3.65×) |
+| group `build` (live slots) | 2.684 ms | **1.976 ms** |
+| group `build` (full capacity) | 7.572 ms | 7.353 ms (oracle) |
+
+**The digest gate is unchanged.**  `batched_tensorize.py --seats 0 1`:
+**3,008/3,008 lane-decisions** digest-identical with **0 mismatches** and 5,196
+recorded micro-actions (**0.0725 ms/lane-decision**, 11.99× the per-lane
+oracle); seed 2 reproduces **3,008/3,008** with 5,361 actions and 0.0779
+ms/lane-decision (11.33×).  Both walls are this host's — its oracle is also
+slower than session 39's (0.869 vs 0.706 ms/lane) — so the same-process A/B, not
+the cross-process wall, is the claim.  Bridge suite 145 passed; a 2-update
+producer probe is 2/2 on-policy with |KL| 7.46e-5 (session 39's first update) and
+0 illegal.
+
+**What is left.**  The group section still builds both sort keys and its
+targeted-entity mask over the 200-row axis.  Offline on the same synthetic batch:
+`_orders` 0.11 ms, `_child_order` 0.18 ms, `_targeted_mask` 0.27 ms — so
+`_targeted_mask` is the next candidate, and the gathers are still not worth a
+rewrite.
+
+Evidence: `runs/crforge-c4/cpu-half-micro-s41.json`,
+`runs/crforge-c4/batched-tensorize-s41.json`,
+`runs/crforge-c4/batched-tensorize-s41-seed2.json`,
+`runs/crforge-c4/self-play-s41-probe.json`.

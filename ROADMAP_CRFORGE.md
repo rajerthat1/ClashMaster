@@ -484,6 +484,20 @@ mirror is the policy gate and the 8-vCPU measurement stays deferred: the next
 spend is a training run with enough updates and seeds to move the policy.
 See `FINDINGS.md` §3.74.
 
+**Status (2026-11-17, session 41).** The last named CPU term is closed.
+`_entity_rows` built every field over the reserved 200-row entity axis with
+~6 live entities: nine `np.where(valid, table[rv], 0)` gathers (NumPy
+re-converts the int32 row map to `intp` on each call — six gathers alone were
+0.42 ms), plus the masks and a float64 velocity copy.  It now assembles at the
+live rows and scatters into one zero row per field, which is exactly what the
+masks produced for the invalid slots.  Same-process A/B at 128 lanes:
+**1.098 → 0.301 ms** (3.65×), group `build` **2.684 → 1.976 ms** per seat
+(`runs/crforge-c4/cpu-half-micro-s41.json`).  The digest gate is still
+**3,008/3,008** lane-decisions, both seats, 0 mismatches on seeds 1 and 2, and
+the bridge suite is 145 passed.  What is left dense over the entity axis is the
+group sort keys and `_targeted_mask` (offline 0.11 / 0.18 / 0.27 ms); the
+gathers are still not worth a rewrite.  See `FINDINGS.md` §3.75.
+
 ---
 
 ## 5. CI and parity role (always on)
@@ -630,9 +644,9 @@ OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/self_play.py \
   --count 128 --segments 1 --decisions-per-segment 8 --no-rollout \
   --profile-collection --output runs/crforge-c4/cpu-half-profile-128.json
 
-# CPU-half A/B: the interleave, the group gather and record_action against the
-# shims they replaced, in one process on one batch (a before/after across
-# processes measures the host's load, not the change).
+# CPU-half A/B: the interleave, the group gather, the entity-row build and
+# record_action against the shims they replaced, in one process on one batch
+# (a before/after across processes measures the host's load, not the change).
 OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/cpu_half_micro.py \
   --count 128 --repeats 40 --output runs/crforge-c4/cpu-half-micro-128.json
 
