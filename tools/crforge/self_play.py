@@ -139,6 +139,39 @@ STANDARD_GAME_MODE = 72_000_006
 MATCH_DECISIONS = 1_214
 
 
+def _timing_buckets(samples: dict[str, list[float]]) -> dict[str, dict[str, float]]:
+    """Median, mean, max and first sample per bucket.
+
+    The wall is a mean and a bucket's median is not: a cold first decision can
+    be seconds and still leave every median untouched.  Summing medians against
+    a mean wall is what produced the "unattributed ms" in ``FINDINGS.md`` §3.62;
+    the means and the residual are the reconciling statistics.
+    """
+
+    return {
+        "ms": {name: (statistics.median(values) if values else 0.0) for name, values in samples.items()},
+        "ms_mean": {name: (statistics.fmean(values) if values else 0.0) for name, values in samples.items()},
+        "ms_max": {name: (max(values) if values else 0.0) for name, values in samples.items()},
+        "ms_first": {name: (values[0] if values else 0.0) for name, values in samples.items()},
+    }
+
+
+def _timing_residual(
+    buckets: dict[str, dict[str, float]], *, collection_wall_s: float, decisions: int, boundary_ms: float
+) -> dict[str, float]:
+    """The part of the collection wall no bucket covers, per decision."""
+
+    if decisions <= 0:
+        return {"collection_ms_per_decision": 0.0, "accounted_ms_mean": 0.0, "unaccounted_ms_mean": 0.0}
+    per_decision = 1000.0 * collection_wall_s / decisions
+    accounted = sum(buckets["ms_mean"].values()) + boundary_ms / decisions
+    return {
+        "collection_ms_per_decision": per_decision,
+        "accounted_ms_mean": accounted,
+        "unaccounted_ms_mean": per_decision - accounted,
+    }
+
+
 def _interleave(records: Sequence[Any], *, fill: int = 0) -> Any:
     """Stack one record per actor seat into ``lane * seats + seat`` row order.
 
@@ -373,6 +406,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--warmup-ticks", type=int, default=FIRST_PLAYABLE_TICK)
+    parser.add_argument(
+        "--no-warmup-forward",
+        action="store_true",
+        help=(
+            "skip the startup warmup before segment 0; the default keeps the "
+            "first decision's lazy kernel and cuDNN setup out of every measured rate"
+        ),
+    )
     parser.add_argument(
         "--max-ticks",
         type=int,
@@ -653,6 +694,40 @@ def main(argv: list[str] | None = None) -> int:
         vector.step()
         encoder.encode(batch)
 
+    if not args.no_warmup_forward:
+        # The engine warmup above never runs the model.  On CUDA the first
+        # sampled decision pays the RNN's lazy setup and the allocator's first
+        # growth — a fixed ~5-7 s at every batch size (FINDINGS.md §3.67) —
+        # which lands in decision 0's bucket and inflates a mean rate while every
+        # median stays blind to it.  Prime the exact sampled path here, then put
+        # the RNG back so the action stream is byte-identical to a cold run.
+        warm_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
+        warm_batch = _interleave([warm_stacks[seat] for seat in seats])
+        rng_state = torch.get_rng_state()
+        numpy_state = np.random.get_state()
+        cuda_rng_states = torch.cuda.get_rng_state_all() if device.type == "cuda" else None
+        try:
+            with torch.inference_mode():
+                output = model.sample_for_ppo_rollout(
+                    warm_batch.to_model_input(device),
+                    state,
+                    episode_start=torch.zeros(args.count * len(seats), dtype=torch.bool, device=device),
+                    validate=not args.no_validate,
+                )
+                # Prime the decode path too; it is inside the measured wall and
+                # has its own first-call cost.
+                for index, seat in enumerate(seats):
+                    sequence = _seat_rows(output.actions, index, len(seats))
+                    plan = decoders[seat].decode(batch, sequence, warm_stacks[seat].candidates, seat=seat)
+                    plan_window_ticks(plan.offsets, window)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+        finally:
+            torch.set_rng_state(rng_state)
+            np.random.set_state(numpy_state)
+            if cuda_rng_states is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_states)
+
     segments: list[dict[str, Any]] = []
     totals = {
         "decisions": 0,
@@ -891,7 +966,9 @@ def main(argv: list[str] | None = None) -> int:
 
             segment_rollout = None
             segment_updates: list[dict[str, Any]] = []
+            segment_boundary_ms = 0.0
             if rollout_store is not None:
+                boundary_started = time.perf_counter()
                 # The observation after the last decision is the time-limit
                 # bootstrap every still-running lane needs at the segment cut.
                 boundary_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
@@ -909,6 +986,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 segment_rollout["summary"] = rollout_store.summary().as_dict()
                 segment_rollout["storage_mib"] = round(rollout_store.storage_bytes() / 2**20, 3)
+                segment_boundary_ms = (time.perf_counter() - boundary_started) * 1000.0
                 if trainer is not None:
                     if overlap is not None:
                         # Close this segment: join the previous update, sync the
@@ -941,6 +1019,7 @@ def main(argv: list[str] | None = None) -> int:
                 collection_wall = max(wall - boundary_wall, 0.0)
             for name, values in samples.items():
                 timing[name].extend(values)
+            buckets = _timing_buckets(samples)
             entry = {
                 "segment": segment,
                 "wall_s": wall,
@@ -969,7 +1048,14 @@ def main(argv: list[str] | None = None) -> int:
                 "illegal_peak": illegal_peak,
                 "rollout": segment_rollout,
                 "updates": segment_updates,
-                "ms": {name: (statistics.median(values) if values else 0.0) for name, values in samples.items()},
+                **buckets,
+                "segment_boundary_ms": segment_boundary_ms,
+                **_timing_residual(
+                    buckets,
+                    collection_wall_s=collection_wall,
+                    decisions=counts["decisions"],
+                    boundary_ms=segment_boundary_ms,
+                ),
             }
             segments.append(entry)
             for name, value in counts.items():
@@ -1170,6 +1256,7 @@ def main(argv: list[str] | None = None) -> int:
                 "device": str(device),
                 "seed": args.seed,
                 "warmup_ticks": args.warmup_ticks,
+                "warmup_forward": not args.no_warmup_forward,
                 "max_ticks": args.max_ticks,
                 "policy_cadence_ticks": window,
                 "engine_decision_ticks": 1,
@@ -1312,7 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
                 "matches_per_s": (
                     totals["lane_decisions"] / len(seats) / MATCH_DECISIONS / wall_total if wall_total else 0.0
                 ),
-                "ms": {name: (statistics.median(values) if values else 0.0) for name, values in timing.items()},
+                **_timing_buckets(timing),
                 # Engine work: every lane is stepped one tick at a time.
                 "env_steps_per_s": (totals["decisions"] * window * args.count / wall_total if wall_total else 0.0),
                 # What the learner would consume: one transition per actor row.

@@ -81,6 +81,67 @@ def test_a_horizon_without_a_recorded_reward_signal_is_null_not_zero() -> None:
     assert comparison["reward_abs_max_mean"]["carry"] == 0.0
 
 
+def test_the_share_is_the_reward_mass_one_row_accumulated_over_its_return() -> None:
+    trace = [{"valid_count": 192.0, "time_steps": 24, "return_mean": 0.4, "reward_sum": 0.0}]
+    segments = [
+        {"rollout": {"summary": {"reward_abs_sum": 0.192, "reward_min": -0.5, "reward_max": 0.5}}}
+    ]
+
+    metrics = learning_horizon._reward_metrics(trace, segments)
+
+    # 0.192 over 192 valid transitions at 24 steps = 8 rows; 0.024 per row / 0.4.
+    assert metrics["share_median"] == pytest.approx(0.06)
+    assert metrics["reward_abs_max_max"] == pytest.approx(0.5)
+    assert metrics["reward_abs_max_median"] == pytest.approx(0.5)
+    assert metrics["updates_with_reward"] == 1
+    assert metrics["source"] == ["segment_summary"]
+
+
+def test_the_trace_max_abs_reward_is_preferred_when_an_artifact_records_it() -> None:
+    trace = [
+        {
+            "valid_count": 192.0,
+            "time_steps": 24,
+            "return_mean": 0.4,
+            "reward_sum": 0.0,
+            "reward_abs_max": 0.001,
+        }
+    ]
+    segments = [
+        {"rollout": {"summary": {"reward_abs_sum": 0.012, "reward_min": -0.9, "reward_max": 0.9}}}
+    ]
+
+    metrics = learning_horizon._reward_metrics(trace, segments)
+
+    assert metrics["reward_abs_max_max"] == pytest.approx(0.001)
+    assert metrics["source"] == ["trace"]
+
+
+def test_a_missing_reward_sum_is_null_share_not_a_zero_share() -> None:
+    trace = [{"valid_count": 192.0, "time_steps": 24, "return_mean": 0.4, "reward_sum": 0.0}]
+
+    metrics = learning_horizon._reward_metrics(trace, [{"rollout": {"summary": {}}}])
+
+    assert metrics["share_median"] is None
+    assert metrics["updates_share_at_least_threshold"] is None
+
+
+def test_the_share_gate_is_reported_separately_from_the_training_gate() -> None:
+    summary = {
+        "reset": {**_policy("reset", 0.5, 1e-3), "reward_share_median_mean": 0.004},
+        "carry": {**_policy("carry", 0.6, 1e-3), "reward_share_median_mean": 0.002},
+    }
+
+    comparison = learning_horizon.build_comparison(summary)
+
+    assert comparison["reward_share_threshold"] == learning_horizon.REWARD_SHARE_RANKING_THRESHOLD
+    assert comparison["reward_share_median"] == {"reset": 0.004, "carry": 0.002}
+    assert comparison["return_rankable_on_reward_share"] is False
+    summary["reset"]["reward_share_median_mean"] = 0.7
+    summary["carry"]["reward_share_median_mean"] = 0.8
+    assert learning_horizon.build_comparison(summary)["return_rankable_on_reward_share"] is True
+
+
 def test_paired_seeds_count_a_repeated_gap_as_agreement() -> None:
     runs = [
         _run("reset", 1, 0.495),

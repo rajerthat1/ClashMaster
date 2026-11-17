@@ -20,7 +20,22 @@ The artifact is ``crforge-c4-learning-horizon.v1``.  Per-run producer artifacts
 stay under ``--run-dir`` and ``--reuse`` re-aggregates them.  With more than one
 seed the comparison also carries ``paired_seeds``: the same seed is the unit that
 is compared, so a ranking that flips between seeds is visible rather than averaged
-away::
+away.
+
+It also reports **how much of the return is observed reward**.  ``reward_sum`` is
+identically zero because the two seats' rewards are antisymmetric, so the tool
+never reads it.  Per update it records the maximum absolute reward (the trace's
+``reward_abs_max``, or ``reward_min``/``reward_max`` from an older segment
+summary) and the reward share::
+
+    reward_share = (reward_abs_sum / rows) / abs(return_mean)
+    rows         = valid_count / time_steps
+
+i.e. the reward mass one lane accumulated inside the window against the magnitude
+of that window's GAE return.  The remainder of the return is the value bootstrap
+at the segment boundary, so a return curve at a share near zero is a value-fit
+diagnostic, not a score.  ``REWARD_SHARE_RANKING_THRESHOLD`` is the fraction at
+which a typical update would be reward-dominated enough to rank on::
 
     OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/learning_horizon.py \\
         --count 4 --decisions-per-segment 24 --updates 50 --seeds 1 2 3 \\
@@ -43,6 +58,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PRODUCER = REPO_ROOT / "tools" / "crforge" / "self_play.py"
 SCHEMA = "crforge-c4-learning-horizon.v1"
 POLICIES = ("reset", "carry")
+# A typical update's observed reward has to be at least this fraction of its
+# return before the return curve can be read as a score rather than a fit to the
+# boundary value bootstrap.  Half is a deliberate bar, not a tuned one.
+REWARD_SHARE_RANKING_THRESHOLD = 0.5
 
 _TOOL_DIR = Path(__file__).resolve().parent
 if str(_TOOL_DIR) not in sys.path:
@@ -94,38 +113,104 @@ def _trend(values: list[float]) -> dict[str, float]:
     }
 
 
+def _segment_summary(segments: list[dict[str, Any]], index: int) -> dict[str, Any]:
+    if index >= len(segments):
+        return {}
+    return (segments[index].get("rollout") or {}).get("summary") or {}
+
+
+def _reward_metrics(
+    trace: list[dict[str, Any]], segments: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Per-update reward magnitude and its share of that update's return.
+
+    ``reward_sum`` is identically zero (the seats' rewards are antisymmetric), so
+    it is never a signal.  The maximum absolute reward is recorded in the trace
+    from 2026-11-19 onward; older artifacts carry the same quantity as the
+    segment summary's ``reward_min``/``reward_max``, so both are accepted.  The
+    share divides the reward mass one row accumulated over the window by the
+    magnitude of the return it is being compared against; the rest of the return
+    is the boundary bootstrap.
+    """
+
+    abs_max: list[float] = []
+    shares: list[float] = []
+    sources: set[str] = set()
+    have_share = False
+    for index, row in enumerate(trace):
+        segment = _segment_summary(segments, index)
+        recorded = row.get("reward_abs_max")
+        if recorded is not None:
+            value = abs(float(recorded))
+            sources.add("trace")
+        else:
+            value = max(
+                abs(float(segment.get("reward_min", 0.0))),
+                abs(float(segment.get("reward_max", 0.0))),
+            )
+            sources.add("segment_summary")
+        abs_max.append(value)
+
+        if "reward_abs_sum" not in segment:
+            shares.append(0.0)
+            continue
+        have_share = True
+        steps = float(row.get("time_steps") or segment.get("decisions") or 0.0)
+        valid = float(row.get("valid_count") or 0.0)
+        return_mean = row.get("return_mean")
+        if steps <= 0.0 or return_mean is None:
+            shares.append(0.0)
+            continue
+        rows = float(segment.get("rows") or 0.0) or (valid / steps if valid > 0.0 else 0.0)
+        if rows <= 0.0:
+            shares.append(0.0)
+            continue
+        reward_mass = float(segment["reward_abs_sum"]) / rows
+        denominator = abs(float(return_mean))
+        shares.append(reward_mass / denominator if denominator > 1e-12 else 0.0)
+
+    return {
+        "updates_with_reward": sum(1 for value in abs_max if value > 1e-12),
+        "reward_abs_max_max": max(abs_max) if abs_max else None,
+        "reward_abs_max_median": statistics.median(abs_max) if abs_max else None,
+        "shares": shares if have_share else None,
+        "share_median": statistics.median(shares) if have_share and shares else None,
+        "share_mean": _mean(shares) if have_share and shares else None,
+        "share_max": max(shares) if have_share and shares else None,
+        "updates_share_at_least_threshold": (
+            sum(1 for value in shares if value >= REWARD_SHARE_RANKING_THRESHOLD)
+            if have_share
+            else None
+        ),
+        "source": sorted(sources),
+    }
+
+
 def _summarize(artifact: dict[str, Any], *, policy: str, seed: int) -> dict[str, Any]:
     summary = cadence_compare.summarize_run(artifact)
     trace = artifact["training"]["trace"]
     segments = artifact.get("segments") or []
     act_rates = [float(segment.get("eligible_act_rate", 0.0)) for segment in segments]
     reachable = [bool((segment.get("rollout") or {}).get("finite", False)) for segment in segments]
-    # Reward presence is recorded twice: the trace's per-update max |reward|
-    # (2026-11-19 onward) and each segment rollout's ``reward_abs_sum`` (always).
-    # ``reward_sum`` itself is identically zero by antisymmetry and is not a signal.
-    trace_abs_max = (
-        [float(row["reward_abs_max"]) for row in trace]
-        if trace and all(row.get("reward_abs_max") is not None for row in trace)
-        else None
-    )
+    reward = _reward_metrics(trace, segments)
     segment_abs_sum = [
-        float((segment.get("rollout") or {}).get("summary", {}).get("reward_abs_sum", 0.0))
+        float(segment["rollout"]["summary"]["reward_abs_sum"])
         for segment in segments
         if "reward_abs_sum" in ((segment.get("rollout") or {}).get("summary") or {})
     ]
-    if trace_abs_max is not None:
-        updates_with_reward = sum(1 for value in trace_abs_max if value > 1e-12)
-    elif len(segment_abs_sum) == len(trace):
-        updates_with_reward = sum(1 for value in segment_abs_sum if value > 1e-12)
-    else:
-        updates_with_reward = None
     summary.update(
         {
             "policy": policy,
             "seed": int(seed),
             "updates_run": len(trace),
-            "updates_with_reward": updates_with_reward,
-            "reward_abs_max": max(trace_abs_max, default=None) if trace_abs_max is not None else None,
+            "updates_with_reward": reward["updates_with_reward"],
+            "reward_abs_max": reward["reward_abs_max_max"],
+            "reward_abs_max_median": reward["reward_abs_max_median"],
+            "reward_share_median": reward["share_median"],
+            "reward_share_mean": reward["share_mean"],
+            "reward_share_max": reward["share_max"],
+            "updates_reward_share_at_least_threshold": reward["updates_share_at_least_threshold"],
+            "reward_source": reward["source"],
             "reward_abs_sum_median": (
                 statistics.median(segment_abs_sum) if segment_abs_sum else None
             ),
@@ -169,6 +254,17 @@ def _policy_view(rows: list[dict[str, Any]], policy: str) -> dict[str, Any]:
             [row.get("updates_with_reward") for row in selected]
         ),
         "reward_abs_max_mean": _optional_mean([row.get("reward_abs_max") for row in selected]),
+        "reward_abs_max_median_mean": _optional_mean(
+            [row.get("reward_abs_max_median") for row in selected]
+        ),
+        "reward_share_median_mean": _optional_mean(
+            [row.get("reward_share_median") for row in selected]
+        ),
+        "reward_share_mean_mean": _optional_mean([row.get("reward_share_mean") for row in selected]),
+        "reward_share_max_mean": _optional_mean([row.get("reward_share_max") for row in selected]),
+        "updates_reward_share_at_least_threshold_mean": _optional_mean(
+            [row.get("updates_reward_share_at_least_threshold") for row in selected]
+        ),
         "reward_abs_sum_median_mean": _optional_mean(
             [row.get("reward_abs_sum_median") for row in selected]
         ),
@@ -244,6 +340,13 @@ def build_comparison(
         ranking = "tie"
     else:
         ranking = "carry" if delta > 0 else "reset"
+    reset_share = reset.get("reward_share_median_mean")
+    carry_share = carry.get("reward_share_median_mean")
+    rankable = (
+        None
+        if reset_share is None or carry_share is None
+        else min(float(reset_share), float(carry_share)) >= REWARD_SHARE_RANKING_THRESHOLD
+    )
     return {
         "reset_last_return_mean": reset["return_trend_last_mean_mean"],
         "carry_last_return_mean": carry["return_trend_last_mean_mean"],
@@ -267,6 +370,13 @@ def build_comparison(
             "reset": reset.get("reward_abs_max_mean"),
             "carry": carry.get("reward_abs_max_mean"),
         },
+        "reward_abs_max_median_mean": {
+            "reset": reset.get("reward_abs_max_median_mean"),
+            "carry": carry.get("reward_abs_max_median_mean"),
+        },
+        "reward_share_median": {"reset": reset_share, "carry": carry_share},
+        "reward_share_threshold": REWARD_SHARE_RANKING_THRESHOLD,
+        "return_rankable_on_reward_share": rankable,
         "reward_abs_sum_median_mean": {
             "reset": reset.get("reward_abs_sum_median_mean"),
             "carry": carry.get("reward_abs_sum_median_mean"),
@@ -439,6 +549,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     reward_max = comparison["reward_abs_max_mean"]
     reward_updates = comparison["updates_with_reward_mean"]
+    reward_share = comparison["reward_share_median"]
     if all(value is not None for value in reward_max.values()) and not any(reward_max.values()):
         print(
             "warning: no update saw a nonzero reward; the return trace carries no observed "
@@ -450,6 +561,12 @@ def main(argv: list[str] | None = None) -> int:
             "note: this artifact records neither per-update reward nor a segment reward sum; "
             "reward_sum is identically zero by antisymmetry and cannot show a reward",
             file=sys.stderr,
+        )
+    if all(value is not None for value in reward_share.values()):
+        print(
+            f"reward share of the return (per-row reward mass / |return|), median: "
+            f"reset {reward_share['reset']:.2e}, carry {reward_share['carry']:.2e} "
+            f"(rank threshold {REWARD_SHARE_RANKING_THRESHOLD:g})"
         )
     print(f"gate: {json.dumps(gate)}")
     return 0 if gate["pass"] else 1
