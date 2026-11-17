@@ -6,6 +6,71 @@
 
 ## Decisions — what changed
 
+### 2026-11-17 (session 38) — the box confirms the record, and the full-call graph is the fastest forward
+
+Session 38's first two items were one rental: re-measure the 128-lane producer
+with session 37's record, then settle `--full-cuda-graph`.  The box is a Thunder
+`base` (6 vCPU, 1×A6000, $0.35/h, torch 2.12.1+cu130), 128 lanes × 2 seats ×
+32 decisions, `OMP_NUM_THREADS=1`.
+
+- **Decode is 11.7 ms, down from 68.**  Steady fp16 `--no-cuda-graphs`: tensorize
+  105.2, **decode 11.7** (`decode_only 5.3 + record 5.0 + plan 0.4`), step 126.3,
+  facts 13.2, forward 161.1, `T = 417.6 ms` against session 36's 425.1 (tensorize
+  98, decode 68, step 113, facts 12, forward 133).  The record fix is confirmed;
+  this box's other buckets were slower, so the single-process wall barely moved.
+- **Six producers: 1.254 → 1.512 matches/s (+20.6 %), $77.5 → $64.3/1M.**  The
+  sweep is 0.478 / 0.940 / 1.477 / 1.512 at 1/2/4/6, retention 0.50 at six,
+  **1.17× the predicted 1.293 ceiling**, and the tool calls the binding
+  **shared**.  At six the CPU half is **547 ms, not 728** (2.15× vs 2.49×); the
+  forward slowdown is also milder (1.78× vs 1.95×).  Removing ~1,300 syncs per
+  decision removed a contention amplifier, not just 56 ms of work.  Quote the
+  box's own alternating A/B: the forward ranged 102–183 ms across runs, and the
+  first GPU run after an idle period was the slowest.
+- **The full-call graph passes and is the fastest shape.**  `--full-cuda-graph`
+  measured **forward 102–106 ms, `T` 0.338–0.347 s**, against partial graph
+  131–149 / 0.384–0.416 and eager fp16 139–183 / 0.407–0.448.  Verification is
+  0/256 mismatches on all six fields (fp16 log-prob Δ 3.6e-7, entropy 4.1e-6,
+  value 4.0e-4).  It captures encode + core + the sampled decode, so the eager
+  decode and its staging leave the packet.
+- **The full-call gate needed a policy-independent probe.**  It compared the
+  sampled log-probabilities of two replays of the warmup batch; an initial board
+  samples almost every row as WAIT, so identical actions cannot separate a frozen
+  stream from a healthy one.  The gate now captures a one-value `torch.rand` with
+  the decode and makes **that** the authority (`crforge_bridge/fast_forward.py`);
+  the log-prob delta is still recorded.  Torch 2.12 also names the default
+  generator before capture (`register_generator_state`; a deprecated no-op on
+  2.14+).  With both, the two full runs report **probe Δ 0.1616** and
+  **log-prob Δ 13.86** and pass.  Whether the earlier refusals were frozen
+  graphs or mere false refusals was not isolated; the probe is the gate, the
+  registration is the version shield.
+- **Session 36's "the graph costs 34 ms" is not reproduced.**  A partial graph
+  won both alternated pairs here (0.403 vs 0.448, 0.384 vs 0.407); the full graph
+  won by more.  The CPU half swings 10.7–42 ms run to run (interleave), so a
+  single cross-session comparison cannot settle it.
+- **Two CPU negatives are measured and not adopted.**  The `(features, lanes,
+  groups)` transpose is **1.02 ms against 0.56 ms** for the current last-axis
+  writes; `§3.70`'s "next attempt" is withdrawn.  Masking the nine entity-table
+  gathers in place saves **0.12 ms**, below the section's noise; it stays as the
+  micro tool's B-side.
+- **The box found a real GPU defect in the PPO update.**  With lane minibatching,
+  `distributed_ppo_update_v4` indexed a CPU `lane_indices` with the CUDA
+  `active_lanes`; the index now moves to `lane_indices.device`.  On top of that
+  fix, the overlapped loop at 128 lanes × 3 × 32 (full graph, lane-minibatch
+  16) is **92.1 s serial vs 86.2 s overlapped (1.07×)**: collection falls
+  468 → 380 lane-decisions/s (0.81×), 2 of 3 updates are stale, and **the gate
+  fails**.  The worker's backward and the collector's forward share one A6000,
+  so 5.9 s of the 39.6 s update is hidden and the rest is paid in contention —
+  the GPU form of session 32's CPU result.  It stays a gated option, not a
+  default.
+- **Gate:** bridge suite **144 passed** (14 fast-forward) and native PPO
+  (`test_training_v4_ppo_padding`, `test_training_v4_learning`) **36 passed**;
+  ruff clean on the touched files.
+
+Evidence: `runs/crforge-c4/cloud-thunder-a6000-s38.json` (raw under
+`runs/crforge-c4/cloud/`), `runs/crforge-c4/self-play-s38-*.json`,
+`runs/crforge-c4/cpu-half-micro-s38.json`, `FINDINGS.md` §3.71,
+`ROADMAP_CRFORGE.md` §4.
+
 ### 2026-11-17 — the CPU half is profiled: the 68 ms decode bucket was ~1,300 GPU syncs
 
 Session 37's first item needed no rental: profile the CPU half, then make it
@@ -930,6 +995,110 @@ do not start another R0 run.
 
 ---
 
+## Session 38 results (2026-11-17) — the box re-measure and the full-call graph
+
+**Read first:** the decision entry above, `FINDINGS.md` §3.71 and
+`ROADMAP_CRFORGE.md` §4.
+
+### What landed
+
+- **A captured random probe is the RNG gate.**  `_GraphSlot` captures a
+  one-value `torch.rand` with the sampled decode; `_assert_graph_rng_advances`
+  compares that, not the log-probabilities, because an initial board samples
+  almost every row as WAIT.  Torch 2.12 also names the default generator before
+  capture (`register_generator_state`); 2.14+ registers lazily and the call is a
+  no-op.  The artifact records `random_probe_delta_between_replays`,
+  `max_log_prob_delta_between_replays` and
+  `sampled_graph_generator_registration`.
+- **`overlap_compare.py` drives the forwarded loop.**  It gains `--fast-forward`,
+  `--no-cuda-graphs`, `--full-cuda-graph` and `--ppo-lane-minibatch`, and records
+  them in the artifact's shape block.
+- **A GPU device bug in the PPO minibatch.**  `distributed_ppo_update_v4` moved
+  `active_lanes` to `lane_indices.device`; lane minibatching previously crashed
+  on a CPU/CUDA index mix.
+- **`cpu_half_micro.py` measures the entity-table mask** (nine fields, in-place
+  vs `where`): 0.12 ms saved, below noise, not adopted.
+- **Bridge suite 144 passed (14 fast-forward), native PPO 36 passed**, ruff clean
+  on the touched files.
+
+### Measured — the 128-lane producer and the six-producer sweep
+
+`runs/crforge-c4/cloud-thunder-a6000-s38.json`, fp16 `--no-cuda-graphs`, steady
+last segment: `T = 417.6 ms`, forward 161.1, **decode 11.7** (decode_only 5.3 +
+record 5.0 + plan 0.4), tensorize 105.2, steps 126.3, facts 13.2; CPU half
+254.5 ms.  Session 36's 68 ms decode is gone; this box's other buckets are
+slower, so the single-process wall is 425.1 → 417.6 ms.
+
+| producers | `T` s | per-proc | aggregate | retention | forward × | CPU × | $/1M |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.4411 | 0.478 | 0.478 | 0.95 | 1.12 | 1.02 | 203 |
+| 2 | 0.4489 | 0.470 | 0.940 | 0.93 | 1.00 | 1.12 | 103 |
+| 4 | 0.5710 | 0.369 | 1.477 | 0.73 | 1.35 | 1.38 | 65.8 |
+| 6 | 0.8376 | 0.252 | **1.512** | 0.50 | 1.78 | 2.15 | **64.3** |
+
+The equation's one-process terms are `g = 0.390`, 2.56 processes, **1.293**
+ceiling; the six-producer aggregate is **1.17× that ceiling** and **+20.6 % over
+session 36's 1.254**. At six the CPU half is 547 ms, not 728; the sync storm was
+a contention amplifier. The binding is still **shared**, not clean GPU
+serialization.
+
+### Measured — the graph A/B
+
+Alternating, same box, same shape, warmup on:
+
+| run | graphs | full | `T` s | forward ms | CPU half ms | verify |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| ab1-nograph | off | — | 0.448 | 165.2 | 278.0 | pass |
+| ab1-partial | on | no | 0.403 | 145.5 | 256.9 | pass |
+| ab2-nograph | off | — | 0.407 | 138.8 | 251.7 | pass |
+| ab2-partial | on | no | 0.384 | 132.6 | 249.6 | pass |
+| **fullprobe1** | on | **yes** | **0.347** | **102.0** | 244.3 | pass |
+| partial3 | on | no | 0.398 | 143.6 | 255.0 | pass |
+| **fullprobe2** | on | **yes** | **0.338** | **106.5** | 231.5 | pass |
+| partial4 | on | no | 0.416 | 149.1 | 268.2 | pass |
+
+The full graph is **40 ms of forward / 40–78 ms of wall** better than the
+partial graph, and session 36's "+34 ms" is not reproduced. Verification:
+0/256 mismatches, fp16 log-prob Δ 3.6e-7, entropy 4.1e-6, value 4.0e-4; RNG
+probe Δ 0.1616, log-prob Δ 13.86. The forward ranged 102–183 ms across runs, so
+a cross-session single run cannot rank the shapes; the alternated pairs can.
+
+### Measured — the overlapped loop (full graph, lane-minibatch 16)
+
+| mode | wall s | collection s | update s | collection ld/s | stale |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| serial | 92.1 | 52.5 | 39.6 | 468.2 | 0 |
+| overlap | **86.2** | 64.7 | 50.5 | **379.9** | 2 |
+
+**1.07× wall, 0.81× collection, gate fail.** The worker's backward and the
+collector's forward share one A6000; 5.9 s of the 39.6 s update is hidden and
+the rest is contention. Stale |KL| 0.076, clip 8.4 % (the 0.404 on-policy KL is
+16 optimizer steps per segment, a mechanics run, not a learning claim).
+
+### Still open
+
+- **The six-producer sweep with `--full-cuda-graph`.** One process is 0.624
+  matches/s and the terms predict ~2.0; the aggregate is unmeasured. This is the
+  provider number.
+- **Groups' 44 ms.** The feature transpose is slower; the cost is
+  `_entity_rows` / the 35 gathers. Batch the gathers by dtype, or share the
+  seat-invariant fields between the two builders.
+- **The overlapped loop needs a separate card or a batched decision server.**
+  It is not a default on one A6000.
+- **Native parity cadence, unchanged.**
+
+### Next session (session 39)
+
+1. Run `cloud_capacity.py --run --fast-forward --full-cuda-graph --sweep-procs
+   1 2 4 6` at 128 lanes; save the report and the sweep. This is the first
+   measurement of the ~2.0 ceiling, and it updates §4's provider row.
+2. Reduce the group gathers (batch by dtype) and gate on `batched_tensorize.py`;
+   do not transpose the feature block.
+3. Re-run the provider comparison at the new ceiling; 6 vCPU remains the SKU
+   unless the full-graph ceiling changes the crossover.
+4. Keep the pipeline a gated option; do not default it on one card.
+5. Native parity cadence, unchanged.
+
 ## Session 37 results (2026-11-17) — the CPU half, profiled
 
 **Read first:** the decision entry above, `FINDINGS.md` §3.70 and
@@ -1005,7 +1174,7 @@ are the absolute state the box re-measure compares against.
   128 lanes); facts is the engine→numpy read.
 - **Native parity cadence, unchanged.**
 
-### Next session (session 38)
+### Next session (session 38) — executed; see the session-38 section above
 
 1. **Re-measure on the A6000** at 128 lanes × 3 segments × 32 decisions with the
    new record: `decode` should collapse from 68 ms, and the six-producer sweep

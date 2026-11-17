@@ -259,6 +259,7 @@ Per instance at the current packet (list prices; verify at checkout):
 |---|---:|---:|---:|
 | 1 process (today's measured row) | 0.33 | 0.35 | **295** |
 | **6 vCPU, live A6000 (2026-11-16)** | **1.215 measured** (1.331 ceiling) | 0.35 | **80** |
+| **6 vCPU, live A6000, new record (2026-11-17)** | **1.512 measured** (1.293 ceiling) | 0.35 | **64** |
 | 6–8 processes, no batching | 1.3–1.6 | 0.43 | **75–92** |
 | 8 processes + MPS + batched server | 2.0–2.6 | 0.43 | **46–60** |
 | packet ~200 ms, ~4 processes/GPU | ~4.2 | 0.43 | **~28** |
@@ -315,6 +316,19 @@ matches/s, which the card cannot deliver at `g = 0.37`. Do not buy the 8-vCPU
 A6000 until `g` falls (batched forward/MPS) or the 228 ms CPU packet leaves. The
 current word is **~1 A6000 per 4–6 vCPU**, not the 8–16 above; the 8–16
 crossover needs the same `g` reduction.
+
+**The new record moves the measured rate, not the ceiling (2026-11-17).**
+`runs/crforge-c4/cloud-thunder-a6000-s38.json`: `T = 0.4176 s`, forward
+**161.1 ms**, decode **11.7 ms** (the 68 ms sync storm is gone), CPU half
+254.5 ms, `g = 0.390`, so **2.56 processes** and a **1.293** ceiling.  Six
+concurrent producers measured **1.512 matches/s**, **1.17× the predicted
+ceiling** and **+20.6 % over the 2026-11-16 1.215**, at **$64.3 / 1M**.  The
+ceiling did not move (this box's forward is slower, 161 vs 158); the *measured*
+aggregate did, because removing ~1,300 device syncs per decision removed a
+contention amplifier.  The full-call graph on the same box is the next ceiling
+move: forward 102–106 ms and `T = 0.338–0.347 s` predict `g ≈ 0.30` (~3.2
+processes), one process **0.624 matches/s** and a **~2.0 matches/s** ceiling;
+the six-producer sweep is the confirmation, not this arithmetic.
 
 ### The 157 ms field and the `ever_server` inference port (2026-11-16)
 

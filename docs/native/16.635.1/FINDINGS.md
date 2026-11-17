@@ -5721,6 +5721,10 @@ build the feature block as one `(features, lanes, groups)` stack and transpose
 once, not to micro-optimise the gather. Engine steps are the JVM call; facts are
 the engine→numpy read.
 
+*Updated 2026-11-17 (session 38):* the transpose measured **1.02 ms against
+0.56 ms** for the current last-axis writes, so that suggestion is withdrawn; the
+next lever is fewer/batched gathers in `_entity_rows` (§3.71).
+
 **The sampled graph is gated, not assumed.** `--full-cuda-graph` captures
 encode + core + the sampled decode in one graph. The RNG mechanism is not
 `CUDAGraph.register_generator_state()`: PyTorch registers the **default** device
@@ -5731,6 +5735,13 @@ claim is therefore checked at run time rather than by version or by an API
 probe: two replays of the same batch must produce different log-probabilities,
 or the producer refuses the graph. A build without the cooperation fails loudly
 instead of sampling one frozen stream.
+
+*Updated 2026-11-17 (session 38):* comparing two replays' sampled
+log-probabilities is not a sufficient gate — an initial board samples almost
+every row as WAIT, so a healthy graph can return identical actions.  §3.71
+replaces the observable with a one-value `torch.rand` captured with the decode;
+with that probe (and explicit default-generator registration on torch 2.12) the
+full-call graph passes at **102–106 ms** of forward.
 
 **Gates.** `tools/crforge/batched_tensorize.py --count 48 --steps 14 --seats
 0 1 --verify-lanes 8`: **304/304 lane-decisions digest-identical** (both seats)
@@ -5748,3 +5759,139 @@ shape that never acts cannot pass and is not a throughput failure.
 Evidence: `runs/crforge-c4/cpu-half-profile-128.json`,
 `runs/crforge-c4/cpu-half-micro-128.json`, `runs/crforge-c4/cpu-half-after-128.json`,
 `runs/crforge-c4/self-play-s37-train.json`.
+
+### 3.71 The box re-measure: decode fell, the six-producer rate moved, and the full-call graph is faster (2026-11-17)
+
+Session 38's first two items were one rental: re-measure the 128-lane producer
+with the session-37 record, then settle `--full-cuda-graph`.  The box is a
+Thunder `base` (6 vCPU, 1×A6000 48 GB, $0.35/h, Python 3.12, torch
+2.12.1+cu130), `OMP_NUM_THREADS=1`, 128 lanes × 2 seats × 3 segments × 32
+decisions.  The full report is `runs/crforge-c4/cloud-thunder-a6000-s38.json`
+(raw producers under `runs/crforge-c4/cloud/`).
+
+#### The record fix is real on the box
+
+Steady last segment, fp16 with `--no-cuda-graphs`:
+
+| bucket (ms) | session 36 box | **session 38 box** | delta |
+| --- | ---: | ---: | ---: |
+| tensorize | 98 | 105.2 | +7 |
+| **decode** | **68** | **11.7** | **−56.3** |
+| engine steps | 113 | 126.3 | +13 |
+| facts | 12 | 13.2 | +1 |
+| forward | 132.9 | 161.1 | +28 |
+| `T` (decision wall) | 425.1 | **417.6** | −7.5 |
+
+`cpu_half.breakdown_ms_mean` splits the decode: **decode_only 5.3 + record 5.0
++ plan 0.4 = 10.7 ms**, against the 68 ms sync storm §3.70 identified.  The
+laptop's same-process A/B (4.32 → 0.11 ms) predicted this; the box confirms it
+and shows why the single-process wall moves so little: this box's tensorize,
+steps and forward all ran slower than session 36's, so −56 ms of decode
+mostly paid for those.  The sections: groups 44.1, interleave 30.4, relations
+12.1, planes 5.8, candidates 4.6, cards 4.0, towers 2.5, empty 0.6, scalars 0.5.
+
+#### The six-producer rate moved for the first time since 1.215
+
+`cloud_capacity.py --run --fast-forward --no-cuda-graphs --sweep-procs 1 2 4 6`:
+
+| producers | `T` s | per-proc | aggregate | retention | forward × | CPU × | $/1M (1,214) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.4411 | 0.478 | 0.478 | 0.95 | 1.12 | 1.02 | 203 |
+| 2 | 0.4489 | 0.470 | 0.940 | 0.93 | 1.00 | 1.12 | 103 |
+| 4 | 0.5710 | 0.369 | 1.477 | 0.73 | 1.35 | 1.38 | 65.8 |
+| 6 | 0.8376 | 0.252 | **1.512** | **0.50** | 1.78 | 2.15 | **64.3** |
+
+The one-process run is **0.505** matches/s (`T = 0.4176`), `g = 0.390`, so the
+equation predicts 2.56 processes and a **1.293** GPU ceiling.  At six the
+measured aggregate is **1.512**, **1.17× the predicted ceiling** and **+20.6 %
+over session 36's 1.254**; cost falls **$77.5 → $64.3 / 1M** (2,428: $128.6).
+The tool calls the binding **shared** and confirms the equation.  The mechanism
+is the sync storm: at six producers the CPU half was 728 ms in session 36 and
+is **547 ms** now (2.15× against 2.49×), while the forward slowdown is milder
+(1.78× against 1.95×).  Removing ~1,300 device syncs per decision removed a
+contention amplifier, not just 56 ms of single-process work.
+
+**Quote the box's own A/B, not a cross-session single run.**  The same shape's
+forward ranged 102–183 ms across runs and boxes in this session (the first GPU
+run after an idle period was the slowest).  The eight alternating A/B runs below
+are the controlled comparison; the sweep's absolute `T` is a measurement of one
+box at one time.
+
+#### The full-call graph passes, and it is the fastest shape
+
+Three configurations at the same shape, one after another on the same box
+(warmup on, `--verify-fast-forward`):
+
+| run | graphs | full call | `T` s | forward ms | CPU half ms | verify |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| ab1-nograph | off | — | 0.448 | 165.2 | 278.0 | pass |
+| ab1-partial | on | no | 0.403 | 145.5 | 256.9 | pass |
+| ab2-nograph | off | — | 0.407 | 138.8 | 251.7 | pass |
+| ab2-partial | on | no | 0.384 | 132.6 | 249.6 | pass |
+| **fullprobe1** | on | **yes** | **0.347** | **102.0** | 244.3 | pass |
+| partial3 | on | no | 0.398 | 143.6 | 255.0 | pass |
+| **fullprobe2** | on | **yes** | **0.338** | **106.5** | 231.5 | pass |
+| partial4 | on | no | 0.416 | 149.1 | 268.2 | pass |
+
+The full graph saves **~40 ms of forward and 40–78 ms of wall** against the
+partial graph, and it removes the eager decode and its staging from the packet.
+Session 36's "the graph is 34 ms of wall slower" is **not reproduced**: a
+partial graph won both alternated pairs here (by 45 and 23 ms of wall, 20 and
+6 ms of forward), and the full graph won by more.  The run-to-run CPU half
+(interleave 10.7–42 ms) is larger than the partial-graph effect; the full-graph
+effect is larger than that noise.
+
+The full-call attempts before the probe was added were refused by the RNG gate.
+The gate was comparing the sampled **log-probabilities** of two replays of the
+warmup batch, and an initial board samples almost every row as WAIT, so a
+healthy graph can return identical actions.  The gate now captures a one-value
+`torch.rand` with the decode and makes *that* the authority (log-prob delta is
+still recorded).
+On torch 2.12 the default generator is also named before capture
+(`CUDAGraph.register_generator_state`, a deprecated no-op on 2.14+); with both,
+the two full-graph runs report **probe Δ 0.1616** and **log-prob Δ 13.86** and
+pass.  The exact split between the probe and the explicit registration was not
+isolated; the probe is the gate and the registration is the version shield.
+Verification on both full runs: 0/256 mismatches on all six action fields,
+fp16 log-prob Δ 3.6e-7, entropy 4.1e-6, value 4.0e-4.
+
+#### The CPU half's remaining terms, and two measured negatives
+
+`cpu_half_micro.py` now also A/Bs the entity-table mask.  Two candidate changes
+were measured and **not adopted**:
+
+- Building the group feature block as `(features, lanes, groups)` and
+  transposing once measured **1.02 ms against 0.56 ms** for the current
+  last-axis writes at 128 lanes × 128 groups × 16 features, so the current form
+  is kept; §3.70's "next attempt" is withdrawn.
+- Masking the nine table gathers in place instead of `np.where` saves **0.12 ms**
+  over nine fields, below the section's noise.  It is kept as the micro tool's
+  B-side, not on the producer path.
+
+So groups' 44 ms is `_entity_rows` / the gathers and the feature block together,
+not one strided-write pattern; the next lever is fewer/batched gathers, not a
+transpose.
+
+#### The overlapped loop on the box
+
+The first serial run found a real GPU defect before it measured anything: with
+lane minibatching, `distributed_ppo_update_v4` indexed a CPU `lane_indices`
+tensor with the CUDA `active_lanes` tensor.  The index is now moved to
+`lane_indices.device`; the native PPO tests pass.  The pipeline comparison at
+128 lanes × 3 × 32 (full graph, `--ppo-lane-minibatch 16`, so 16 optimizer
+steps per segment) measured **serial 92.1 s** (collection 52.5 s + update
+39.6 s, 468.2 lane-decisions/s) against **overlap 86.2 s** (collection 64.7 s,
+379.9 lane-decisions/s), **2 of 3 updates stale**, stale |KL| 0.076 and clip
+8.4 % (the first update's KL is 0.404 because 16 optimizer steps fit in one
+segment; this is a mechanics run, not a learning claim).  The pipeline saves
+**5.9 s (1.07×)** but slows collection to **0.81×**, so the gate **fails**: the
+worker's backward and the collector's forward share one A6000 and the update is
+paid for in contention, the GPU form of session 32's CPU result.  The update is
+13.2 s per segment against 17.5 s of collection, so the ceiling is real, but it
+needs a separate card or a batched decision server before it is reachable.
+
+Evidence: `runs/crforge-c4/cloud-thunder-a6000-s38.json` (raw under
+`runs/crforge-c4/cloud/`), `runs/crforge-c4/self-play-s38-*.json`,
+`runs/crforge-c4/cpu-half-micro-s38.json`, `tools/crforge/cpu_half_micro.py`,
+`crforge_bridge/fast_forward.py`, `crforge_bridge/tests/test_fast_forward.py`,
+`native_runner/training/v4/distributed_ppo.py`.
