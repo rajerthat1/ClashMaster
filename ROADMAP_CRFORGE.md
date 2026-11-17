@@ -369,6 +369,22 @@ reproduce the fp32 sampled actions and log-probs on the same batch, and the
 artifact must report `ms.inference_ms` at 128 lanes **with the CPU half beside
 it**. A lower forward with a flat CPU half is not a throughput win.
 
+**Status (2026-11-16, session 36).** The forward port is in:
+`crforge_bridge/fast_forward.py` behind `self_play.py --fast-forward`. Autocast
+fp16 (fp32 log-probs/values), one CUDA Graph per padded row count over the
+**deterministic encode + core only**, one fp32 recurrent-state table, and a
+padded staging layout built once per row count and refilled in place (pinned
+host mirror + `non_blocking` on CUDA). Sampling is eager because torch 2.5 has
+no graph-safe RNG: a captured sampler would replay the same draws. The gate is
+`--verify-fast-forward` — sampled actions exactly equal to eager fp32,
+log-prob/entropy/value inside 5e-3 — and `inference.steady_state` reports the
+forward beside the CPU half. The CPU control is exact and performance-neutral
+(491 vs 488 ms at 16 rows); bf16 on this laptop is 17.5× slower, so `auto`
+resolves to fp32 on CPU. **The GPU numbers are still open** — fp16, graph
+capture and pinned H2D have not run on a CUDA host. Run
+`--fast-forward --verify-fast-forward` at 128 lanes × 3 × 32 first, then the
+same shape with `--no-cuda-graphs` and with `--inference-precision fp32`.
+
 ---
 
 ## 5. CI and parity role (always on)

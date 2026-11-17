@@ -5528,3 +5528,56 @@ Evidence: `tools/crforge/cloud_capacity.py`,
 `runs/crforge-c4/cloud-thunder-a6000-6vcpu.json` (raw producers under
 `cloud-thunder-a6000-6vcpu/raw/`),
 `runs/crforge-c4/cloud-capacity-a6000.json`.
+
+### 3.69 The `ever_server` forward port: gated on the CPU, unmeasured on the GPU (2026-11-16)
+
+`crforge_bridge/fast_forward.py` ports the four inference tricks from
+`.resource/RoyaleFish/royalefish/ever_server.py` into the in-process producer
+(`tools/crforge/self_play.py --fast-forward`).  The server's TCP/pickle wire
+protocol (`net.py`) is not ported: crforge owns the GPU in-process.
+
+| trick | port | measured here |
+| --- | --- | --- |
+| fp16 + fp32 action equality | `torch.autocast` fp16 on CUDA / bf16 opt-in on CPU; log-prob, entropy and value cast back to fp32 | bf16 gate passes, bf16 is **17.5× slower** on this CPU |
+| CUDA graphs at several batch sizes | one graph per padded row count, captured lazily | not run (CPU-only torch) |
+| one GPU-side LSTM state table | one fp32 `RecurrentPolicyStateV4`; `next_state` copied into it in place | fp32 exact, +0.5 % of the forward |
+| layout/pack once | padded device batch built once per row count, refilled by valid-slice copy; pinned host mirror + `non_blocking` on CUDA | not run |
+
+**The graph covers the deterministic half only.**  torch 2.5.1 has no
+`CUDAGraph.register_generator_state`, so a captured `sample_for_ppo_rollout`
+would replay the same random draws (the server's use is deployment inference;
+a self-play collector cannot).  The port captures `model.forward`
+(encode + recurrent core) and samples eagerly through
+`UniversalCardPolicyV4.select_action_from_context`, which keeps fresh RNG and
+still captures the FLOP-heavy half.
+
+**CPU control**, 8 lanes × 2 seats (16 rows) × 1 segment × 8 decisions, warmup
+on, `--no-rollout`, `OMP_NUM_THREADS=4`:
+
+| run | inference ms (mean) | tensorize | decode | step | facts | verification |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| eager fp32 | 488.1 (median) | 7.5 | 1.5 | 4.0 | 1.2 | — |
+| fast fp32 | **491.4** | 9.4 | 2.1 | 7.3 | 1.7 | 0/16 mismatches, all deltas 0.0 |
+| fast bf16 | **8,576.3** | 28.9 | 1.9 | 6.9 | 1.3 | 0/16, log-prob 1.1e-4, value 1.25e-3 |
+
+The fp32 fast path is the eager path plus one state copy: the seam is faithful
+and the tricks do nothing without a GPU.  The i5-1235U has no BF16/AMX unit,
+so bf16 autocast is emulated and 17.5× slower; `auto` resolves to fp32 on CPU
+and the bf16 option exists only to exercise the half path.  With
+`--ppo-update` the fast path still trains (4 lanes × 2 × 4: two finite updates,
+`approx_kl 1.6e-6`, on-policy, clip 0) and the table is rebound at every
+`boundary_state`.
+
+The artifact reports `inference.fast_forward`, `inference.verification`
+(per-field action mismatches, log-prob/entropy/value deltas, tolerance, pass)
+and `inference.steady_state` (`inference_ms_mean`, `inference_share`,
+`cpu_half_ms_mean`).  That is the roadmap's "forward with the CPU half beside
+it": a faster forward on a flat CPU half is visible rather than inferred.
+
+**Open:** fp16, graph capture and pinned staging are compiled but unexercised;
+the 157 → 21.5 ms target has no measurement.  The gate on a rented box is
+`--fast-forward --verify-fast-forward` at 128 lanes × 3 × 32, then the same run
+with `--no-cuda-graphs` and `--inference-precision fp32` to separate the
+precision gain from the graph gain.  Evidence:
+`crforge_bridge/fast_forward.py`,
+`crforge_bridge/tests/test_fast_forward.py`.

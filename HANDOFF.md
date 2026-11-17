@@ -6,6 +6,55 @@
 
 ## Decisions — what changed
 
+### 2026-11-16 — the `ever_server` forward is ported in-process; its gate is numerical, its wall is open
+
+Session 36's only item that does not need a rented GPU is the forward port, and
+it is in: `crforge_bridge/fast_forward.py` + `FastForwardV4`, wired into
+`tools/crforge/self_play.py` behind `--fast-forward`. The four tricks are the
+four the roadmap named; `net.py`'s TCP/pickle protocol is not ported.
+
+- **The graph covers the deterministic half, and that is a correctness decision.**
+  `ever_server` captures the *sampled* call. On torch 2.5.1 a captured sampler
+  replays the same random draws (there is no
+  `CUDAGraph.register_generator_state`), which is acceptable for a deployment
+  server and fatal for a self-play collector. The port captures
+  `model.forward` (encode + recurrent core) per row count and samples eagerly
+  from it through the new `UniversalCardPolicyV4.select_action_from_context`.
+  A replay therefore draws fresh numbers and the graph still covers the bulk of
+  the FLOPs.
+- **The CPU control says the port is not a CPU win, by construction.**
+  8 lanes × 1 × 8, warmup on, `--no-rollout`, OMP 4: eager fp32 inference
+  **488 ms**, fast fp32 **491 ms** (the fp32 state-table copy, ~0.5 %). The
+  verification is exact — 0/16 action mismatches, log-prob/entropy/value deltas
+  **0.0** — so the seam is faithful and the tricks do nothing without a GPU.
+- **bf16 on this laptop is a correctness check, not a speed lever.**
+  Same shape, `--inference-precision bf16`: actions equal, log-prob delta
+  **1.1e-4**, value **1.25e-3** (inside the 5e-3 gate), but inference
+  **8,576 ms/decision against 491 (17.5× slower)** — the i5-1235U has no
+  BF16/AMX unit. `auto` therefore resolves to **fp32 on CPU** and fp16 on CUDA;
+  the bf16 option exists only to exercise the half-precision path here.
+- **The training smoke keeps the loop intact.** 4 lanes × 2 segments ×
+  4 decisions with `--ppo-update --fast-forward --verify-fast-forward`:
+  **training pass**, both updates finite, `approx_kl 1.6e-6`, on-policy
+  (`stale: false`), no rejected action. The table is rebound at every
+  `boundary_state`, so `reset`/`carry`/`wave` and `--overlap-update` keep their
+  meaning; weights are mutated in place, so a captured graph reads the new
+  parameters without recapture.
+- **The artifact now carries the comparison the roadmap asked for.**
+  `inference.fast_forward` (precision, graph/pin state, captured shapes),
+  `inference.verification` (per-field action mismatches, log-prob/entropy/value
+  deltas, tolerance, pass) and `inference.steady_state`
+  (`inference_ms_mean`, `inference_share`, `cpu_half_ms_mean`) computed from the
+  last segment. A run with a faster forward and a flat CPU half is visible as
+  such instead of hidden in a bucket median.
+- **Open, and only a GPU box can close it:** fp16 plus graph capture plus pinned
+  H2D are compiled but unexercised here (CPU-only torch, no `nvidia-smi`), and
+  the 157 → 21.5 ms claim has no measurement yet. The gate to run there is
+  `--fast-forward --verify-fast-forward` at 128 lanes × 2 seats; a failing
+  verification aborts before segment 0.
+
+See the session-36 section below and `FINDINGS.md` §3.69.
+
 ### 2026-11-16 — the provider decision is one comparison: `N_proc` vs `G × E / g`
 
 The next session is a cloud-provider sweep, so the capacity equation is now
@@ -825,6 +874,122 @@ do not start another R0 run.
 > §3.43.
 
 ---
+
+## Session 36 results (2026-11-16) — the in-process forward port, gated on the CPU
+
+**Read first:** the decision entry above, this section, `FINDINGS.md` §3.69, and
+`ROADMAP_CRFORGE.md` §4.
+
+Session 36's items 1–3 (provider sweep, the 8/32/64/128-lane A6000 table, the
+overlapped loop on the A6000) each need a rental and are not touched here. Item
+4, the `ever_server` forward port, does not: the code path, its numerical gate
+and the artifact fields land now; the GPU wall stays a box measurement.
+
+### What landed
+
+- **`crforge_bridge/fast_forward.py` — `FastForwardV4`.** One object owns
+  everything the producer's forward needs between decisions:
+
+  | trick | in-process shape |
+  | --- | --- |
+  | precision | `torch.autocast` fp16 on CUDA / bf16 opt-in on CPU; log-prob, entropy and value restored to fp32 |
+  | graphs | one `torch.cuda.CUDAGraph` per padded row count, captured lazily; **encode+core only** |
+  | state table | one fp32 `RecurrentPolicyStateV4` for the run; `next_state` is copied into it, the graph reads/writes fixed buffers |
+  | layout/pack once | the padded device batch is built once per row count and refilled by a valid-slice copy; CUDA uses a pinned host mirror and `non_blocking` |
+
+- **The sampler is deliberately outside the graph.** torch 2.5.1 has no
+  graph-safe generator (`CUDAGraph.register_generator_state` is absent), so a
+  captured `sample_for_ppo_rollout` would replay the same draws. The port
+  captures `forward` and calls the new
+  `UniversalCardPolicyV4.select_action_from_context(batch, context, sample=...)`
+  eagerly; the graph still covers encode + recurrent core, and `sample=False`
+  is the producer's `--greedy` path.
+- **Producer flags:** `--fast-forward`, `--inference-precision
+  {auto,fp32,fp16,bf16}`, `--no-cuda-graphs`,
+  `--verify-fast-forward`. `auto` is fp16 on CUDA and fp32 on CPU (bf16 on this
+  CPU is 17.5× slower, below). `--verify-fast-forward` needs the warmup batch
+  and aborts before segment 0 if the actions differ.
+- **Artifact:** `inference.fast_forward`, `inference.verification`,
+  `inference.sampling` and `inference.steady_state` (the last segment's mean
+  decision, mean inference, share, CPU half, unaccounted). The shape block keeps
+  `warmup_forward` and the timing buckets unchanged.
+- **Tests:** `crforge_bridge/tests/test_fast_forward.py` (10) pins precision
+  resolution, the staged valid prefix, sampled equality with eager fp32, the
+  second decision's carry, a forward that does not advance the carry, `rebind`,
+  the verification pass and its RNG/state restoration, the bf16 report's
+  self-consistency, the row-count refusal and the disabled-graph description.
+  The whole crforge bridge suite is **133 passed**; the V4 model/session suites
+  are **27 passed**. Ruff clean.
+
+### Measured — the CPU control
+
+8 lanes × 2 seats (16 rows) × 1 segment × 8 decisions, warmup on, `--no-rollout`,
+`OMP_NUM_THREADS=4`:
+
+| run | inference ms (mean) | tensorize | decode | step | facts | verification |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| eager fp32 (baseline) | 488.1 (median) | 7.5 | 1.5 | 4.0 | 1.2 | — |
+| fast fp32 | **491.4** | 9.4 | 2.1 | 7.3 | 1.7 | 0/16 mismatches, all deltas 0.0 |
+| fast bf16 | **8,576.3** | 28.9 | 1.9 | 6.9 | 1.3 | 0/16 mismatches, log-prob 1.1e-4, value 1.25e-3 |
+
+Three results:
+
+1. **The fp32 fast path is the eager path plus one copy.** The state-table
+   commit costs ~0.5 % of the forward; the verification is exact. That is the
+   control the port needs: any GPU gain measured later is the precision/graph
+   half, not a changed graph of computation.
+2. **bf16 on a CPU without BF16/AMX is not the trick.** 8,576 vs 491 ms
+   (17.5× slower) while still passing the equality gate. It proves the
+   half-precision seam can run end to end on this host; it does not argue for
+   `--inference-precision bf16` as a speed option. `auto` never selects it.
+3. **The steady-state block does its job on a shape that has not warmed fully.**
+   The training smoke (4 lanes × 2 × 4) reports a 56 ms unaccounted mean and a
+   143.8 ms CPU half; the probe-shaped run reports 0.0 unaccounted. The field is
+   a diagnostic, not a gate.
+
+### The training smoke
+
+4 lanes × 2 seats × 2 segments × 4 decisions, `--ppo-update --fast-forward
+--verify-fast-forward`, CPU:
+
+- `training.pass: true`; two finite updates; `approx_kl 1.6e-6` and
+  `stale: false` on the first (no update preceded it), clip 0.
+- The gate is `false` only on `eligible_act_rate 0.0` — 64 lane-decisions and
+  four decisions per segment is a shape that never acts, which is not a
+  throughput failure (the cloud probe makes the same distinction).
+- The state table is rebound at the segment boundary (`reset` default), and
+  `--overlap-update` touches only `trainer.model`, so the collector's captures
+  remain valid.
+
+### Still open
+
+- **fp16, graph capture and pinned staging have never run.** This host is a
+  CPU-only torch build, so the CUDA branches are compiled but unexercised; the
+  first rented box must run `--fast-forward --verify-fast-forward` at
+  128 lanes × 3 × 32 and record `inference.steady_state`.
+- **The 157 → 21.5 ms target is untouched.** The port is necessary, not
+  sufficient: the CPU half must also fall to ~108 ms at 6 vCPU
+  (`ROADMAP_CRFORGE.md` §4).
+- **Graph capacity is fixed** at 512 active effects / 2,048 relation edges per
+  row (`policy_session`'s existing contract). A shape that exceeds it raises;
+  it does not silently fall back.
+- **MPS is not wired.** The roadmap's C4 recipe includes NVIDIA MPS; the
+  producer still expects one process per box section.
+
+### Next session (session 37)
+
+1. **Rent one 6-vCPU A6000 and run the port's gate**:
+   `--fast-forward --verify-fast-forward --count 128 --segments 3
+   --decisions-per-segment 32 --device cuda`, then the same with
+   `--no-cuda-graphs` and with `--inference-precision fp32` to separate the
+   precision gain from the graph gain. Save all three artifacts; the comparison
+   is `inference_ms_mean` beside `cpu_half_ms_mean`, not the forward alone.
+2. **Fix what the box finds before scaling.** If verification fails, the
+   action-mismatch fields name the head; do not relax the tolerance.
+3. **Then the provider sweep (session 36 items 1–2) at the forwarded packet.**
+   A lower `g` moves the A6000 crossover (`G × E / g`) and may make 8 vCPU pay
+   where it does not today.
+4. **Native parity cadence, unchanged.**
 
 ## Session 35 results (2026-11-16) — the provider decision is one comparison: `N_proc` vs `G × E / g`
 
