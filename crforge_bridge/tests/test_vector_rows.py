@@ -178,6 +178,45 @@ def test_live_width_padding_matches_full_capacity(crforge_runtime: None) -> None
         assert saw_partial, "the fixture never had a partially filled group record"
 
 
+def test_entity_rows_are_compact_to_the_live_rows(crforge_runtime: None) -> None:
+    """The row view packs only live non-tower rows, and maps back to their slots."""
+
+    tensorizer = _tensorizer()
+    with _vector(count=3) as vector:
+        builder, _tables = _builder(tensorizer, vector)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        for step in range(20):
+            _step(vector, 300 + step)
+            encoder.encode(batch)
+        rows = builder._entity_rows(batch)
+        counts = rows["counts"]
+        width = int(rows["valid"].shape[1])
+        assert width == max(1, int(counts.max()))
+        assert np.array_equal(rows["valid"], np.arange(width)[None, :] < counts[:, None])
+        dense_valid = batch.entity_valid & ~batch.entity_is_tower
+        for lane in range(batch.count):
+            slots = rows["slots"][lane, : int(counts[lane])]
+            assert int(slots.size) == int(dense_valid[lane].sum())
+            assert np.all(dense_valid[lane, slots])
+            assert np.all(np.diff(slots) > 0)
+        # The dense expansion writes each compact column back to its slot; the
+        # values the build can read are identical in both forms.
+        dense = builder._dense_entity_rows(batch, rows)
+        assert dense["valid"].shape == dense_valid.shape
+        assert np.array_equal(dense["valid"], dense_valid)
+        for name, values in dense.items():
+            if name == "valid":
+                continue
+            assert values.dtype == rows[name].dtype, name
+            index = rows["slots"]
+            if values.ndim > index.ndim:
+                index = index.reshape(index.shape + (1,) * (values.ndim - index.ndim))
+            projected = np.take_along_axis(values, index, axis=1)
+            assert np.array_equal(projected[rows["valid"]], rows[name][rows["valid"]]), name
+
+
 def test_group_capacity_overflow_is_exact(crforge_runtime: None) -> None:
     """A two-group / three-child cap must drop the same rows as the oracle."""
 

@@ -55,6 +55,7 @@ replace the validated evaluator/parity path.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -508,46 +509,53 @@ class VectorGroupBuilder:
 
     # ---- entity row view ---------------------------------------------------
 
-    def _entity_rows(self, batch: VectorObservationBatch) -> dict[str, np.ndarray]:
-        """Per-entity arrays for every lane, masked to live non-tower rows.
+    def _entity_rows(self, batch: VectorObservationBatch) -> dict[str, Any]:
+        """Per-entity arrays for every lane, compacted to the live rows.
 
-        The fields are assembled at the **live rows** and scattered into one
-        zero row per field.  A settled board carries ~6 live entities on a
-        200-row axis, so the dense form paid ~33x the live width for every
-        mask and table gather; the gather also re-converted the int32 row map
-        to ``intp`` on each of its nine calls.  The dense zero-filled slots are
-        exactly what the ``where`` masks produced, so every readable row is
-        bit-identical; only an invalid slot's velocity, which was a copy and is
-        now zero, differs — ``velocity_valid`` is false there and the group and
-        child assembly mask it out.  ``cpu_half_micro.py`` keeps the dense form
-        as its oracle and asserts the agreement.
+        Each lane's non-tower entity rows are packed into one lane-major
+        ``(lanes, widest live count)`` axis, with the entity slot each column
+        came from in ``slots`` and the live count in ``counts``.  The previous
+        form assembled the same values but scattered them into a zero-filled
+        ``(lanes, max_entities)`` array, so every field paid the 200-row axis
+        in writes — float64 ids included — for ~11 live rows.  The group build
+        only ever reads live rows, and the section's dense ``group_index`` /
+        ``child_index`` are scattered back once at the end.
+
+        A lane's compact columns are in ascending entity-slot order; ``valid``
+        marks the columns below that lane's count.  The padded columns carry
+        the same fills as before, but nothing reads them.
         """
 
-        valid = batch.entity_valid & ~batch.entity_is_tower
-        shape = valid.shape
-        live = np.flatnonzero(valid.ravel())
+        dense_valid = batch.entity_valid & ~batch.entity_is_tower
+        lanes, entity_slots = dense_valid.shape
+        live = np.flatnonzero(dense_valid.ravel())
+        lane_of = live // entity_slots
+        slot_of = live % entity_slots
+        counts = np.bincount(lane_of, minlength=lanes).astype(np.int64)
+        width = max(1, int(counts.max()))
+        starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
+        rank = np.arange(live.size, dtype=np.int64) - starts[lane_of]
+        slots = np.zeros((lanes, width), dtype=np.int64)
+        slots[lane_of, rank] = slot_of
+        valid = np.arange(width, dtype=np.int64)[None, :] < counts[:, None]
         row_vocab = np.clip(batch.entity_row_vocab, 0, self.tables.vocab_size - 1)
         vocab_live = row_vocab.ravel()[live]
-
-        def zero(dtype: Any, fill: Any = 0) -> np.ndarray:
-            return np.full(valid.size, fill, dtype=dtype) if fill else np.zeros(valid.size, dtype=dtype)
-
         def scatter(values: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
-            """Live-row values, ``fill`` in every other entity slot."""
+            """Live-row values, ``fill`` in every padded column."""
 
-            out = zero(values.dtype if dtype is None else dtype, fill)
-            out[live] = values
-            return out.reshape(shape)
+            out = np.full((lanes, width), fill, dtype=values.dtype if dtype is None else dtype)
+            out[lane_of, rank] = values
+            return out
 
         def field(source: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
-            """The live rows of one batch field, zeros (or ``fill``) elsewhere."""
+            """The live rows of one batch field, ``fill`` in every padded column."""
 
             return scatter(source.ravel()[live], dtype, fill)
 
         def table(values: np.ndarray) -> np.ndarray:
-            out = np.zeros(valid.size, dtype=values.dtype)
-            out[live] = values[vocab_live]
-            return out.reshape(shape)
+            out = np.zeros((lanes, width), dtype=values.dtype)
+            out[lane_of, rank] = values[vocab_live]
+            return out
 
         target_live = batch.entity_target.ravel()[live]
         hp = scatter(np.maximum(batch.entity_hp.ravel()[live], 0), np.float64)
@@ -566,12 +574,12 @@ class VectorGroupBuilder:
 
         # The model flips signs exactly as ``_model_velocity`` does, then the
         # tensorizer divides by world-to-board scale before the ``/ 10``.  Only
-        # the live rows carry a velocity; the rest are zero and
+        # the live rows carry a velocity; the padded columns are zero and
         # ``velocity_valid`` is false for them.
-        velocity = np.zeros((valid.size, 2), dtype=np.float64)
-        velocity[live] = batch.entity_velocity.reshape(-1, 2)[live]
-        velocity = velocity.reshape(*shape, 2)
-        velocity_valid = valid & batch.entity_velocity_valid
+        velocity = np.zeros((lanes, width, 2), dtype=np.float64)
+        velocity[lane_of, rank] = batch.entity_velocity.reshape(-1, 2)[live]
+        velocity_valid = field(batch.entity_velocity_valid, bool)
+        velocity_valid &= valid
         if self.perspective.flip_x:
             np.negative(velocity[..., 0], out=velocity[..., 0])
         if self.perspective.flip_y:
@@ -583,7 +591,9 @@ class VectorGroupBuilder:
 
         return {
             "valid": valid,
-            "row_vocab": row_vocab,
+            "counts": counts,
+            "slots": slots,
+            "row_vocab": scatter(vocab_live),
             "entity_id": field(batch.entity_id, np.int64, -1),
             "hp": hp,
             "max_hp": max_hp,
@@ -610,17 +620,43 @@ class VectorGroupBuilder:
             "side": field(batch.entity_side, fill=-1),
         }
 
+    def _dense_entity_rows(self, batch: VectorObservationBatch, rows: dict[str, Any]) -> dict[str, Any]:
+        """Expand compact rows onto the ``max_entities`` axis (oracle form).
+
+        ``build(live_slots=False)`` restores the session-42 assembly, which
+        gathers over the full entity axis.  This is its input: every compact
+        column written back to the entity slot it came from, and the fills the
+        dense form used on every other slot.
+        """
+
+        dense_valid = batch.entity_valid & ~batch.entity_is_tower
+        lanes, entity_slots = dense_valid.shape
+        slots = rows["slots"]
+        valid = rows["valid"]
+        lane_axis = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], valid.shape)
+        fills = {"entity_id": -1, "target_id": -1, "side": -1}
+        dense: dict[str, Any] = {}
+        for name, values in rows.items():
+            if name in {"valid", "counts", "slots"}:
+                continue
+            output = np.full((lanes, entity_slots) + values.shape[2:], fills.get(name, 0), dtype=values.dtype)
+            output[lane_axis[valid], slots[valid]] = values[valid]
+            dense[name] = output
+        dense["valid"] = dense_valid
+        return dense
+
     # ---- sort keys ---------------------------------------------------------
 
     def _slot_order(self, include: np.ndarray, keys: np.ndarray, width: int | None = None) -> np.ndarray:
-        """Order a lane's ``include`` slots by ``keys``, as entity indices.
+        """Order a lane's ``include`` slots by ``keys``, as indices into the axis.
 
         Only the included slots are sorted: ``build`` reads at most the lane's
-        live width from the result, and sorting (and keying) all ``max_entities``
-        entries was most of the sort's cost.  Padded slots repeat entity row 0;
-        ``build`` masks them off, exactly as it masked the invalid rows that
-        used to fill this tail.  ``width`` pads the axis out to a fixed capacity
-        for the ``live_slots=False`` oracle path.
+        live width from the result, and sorting (and keying) all entries was
+        most of the sort's cost.  The producer's axis is the compact live-row
+        axis (``_entity_rows``), the oracle's is the entity axis.  Padded slots
+        repeat index 0; ``build`` masks them off, exactly as it masked the
+        invalid rows that used to fill this tail.  ``width`` pads the axis out
+        to a fixed capacity for the ``live_slots=False`` oracle path.
         """
 
         lanes, entity_count = include.shape
@@ -714,7 +750,13 @@ class VectorGroupBuilder:
 
     # ---- build -------------------------------------------------------------
 
-    def build(self, batch: VectorObservationBatch, *, live_slots: bool = True) -> VectorGroupSection:
+    def build(
+        self,
+        batch: VectorObservationBatch,
+        *,
+        live_slots: bool = True,
+        phases: dict[str, float] | None = None,
+    ) -> VectorGroupSection:
         """Build the section.
 
         ``live_slots`` is the producer path: only the lanes' live group/child
@@ -727,9 +769,32 @@ class VectorGroupBuilder:
         The returned record is bit-identical either way once the live form is
         padded to the fixed capacity — the input to every consumer is the
         record's own mask shape, not the configured maximum.
+
+        Fields come from the compact live-row view (:meth:`_entity_rows`); the
+        dense entity axis is only rebuilt for the oracle path.
+
+        ``phases`` is an optional millisecond accumulator for the terms inside
+        the build (the tool's phase table); it does not change the record.
         """
 
+        if phases is not None:
+            _started = time.perf_counter()
+
+            def mark(name: str) -> None:
+                nonlocal _started
+                now = time.perf_counter()
+                phases[name] = phases.get(name, 0.0) + (now - _started) * 1000.0
+                _started = now
+
+        else:
+
+            def mark(name: str) -> None:
+                pass
+
         rows = self._entity_rows(batch)
+        if not live_slots:
+            rows = self._dense_entity_rows(batch, rows)
+        mark("entity_rows")
         lanes = int(batch.count)
         valid = rows["valid"]
         entity_count = valid.sum(axis=1).astype(np.int64)
@@ -750,9 +815,10 @@ class VectorGroupBuilder:
         live_g = min(g, max(1, int(entity_count.max()))) if live_slots else g
         # Advanced indexing is the gather: ``take_along_axis`` rebuilds an index
         # tuple on every call (35 times per build), which was a third of this
-        # section's own time.  ``order`` holds row indices into a lane's entity
-        # axis, so the pair of index arrays is the same operation without it.
+        # section's own time.  ``order`` holds columns into the row view's axis,
+        # so the pair of index arrays is the same operation without it.
         lane_index = np.arange(lanes, dtype=np.int64)[:, None]
+        mark("orders")
 
         def gather(values: np.ndarray, order: np.ndarray, width: int) -> np.ndarray:
             return values[lane_index, order[:, :width]]
@@ -783,11 +849,12 @@ class VectorGroupBuilder:
         )
         g_velocity_valid = gather(rows["velocity_valid"], group_order, live_g)
         g_target = gather(rows["target"], group_order, live_g)
+        mark("group_gathers")
 
         # Group rank per entity: the retained portion of the group order.
         # Scatter only the kept slots: padded slots repeat entity row 0, and
         # an unguarded scatter would overwrite row 0's real rank with -1.
-        group_rank = np.full(valid.shape, -1, dtype=np.int64)
+        group_rank = np.full(valid.shape, -1, dtype=np.int32)
         retained_slots = group_order[:, :live_g]
         retained_rank = np.broadcast_to(np.arange(live_g, dtype=np.int64)[None, :], retained_slots.shape)
         lane_rows = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], retained_slots.shape)
@@ -798,7 +865,9 @@ class VectorGroupBuilder:
         # ``group_index_by_entity``).
         candidate = group_rank >= 0
         candidate_count = candidate.sum(axis=1).astype(np.int64)
+        mark("group_rank")
         targeted = self._targeted_mask(rows)
+        mark("targeted_mask")
         child_order = self._child_order(rows, candidate, targeted, width=None if live_slots else c)
         live_c = min(c, max(1, int(candidate_count.max()))) if live_slots else c
         child_entity = child_order[:, :live_c]
@@ -808,10 +877,11 @@ class VectorGroupBuilder:
         child_mask &= child_candidate
         child_overflow = candidate_count - child_count
 
-        child_rank = np.full(valid.shape, -1, dtype=np.int64)
+        child_rank = np.full(valid.shape, -1, dtype=np.int32)
         child_rank_rows = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], child_entity.shape)
         child_rank_values = np.broadcast_to(np.arange(live_c, dtype=np.int64)[None, :], child_entity.shape)
         child_rank[child_rank_rows[child_mask], child_entity[child_mask]] = child_rank_values[child_mask]
+        mark("child_order_rank")
 
         # ---- group tensors -------------------------------------------------
         group_features = np.zeros((lanes, live_g, len(GROUP_FEATURE_NAMES)), dtype=np.float32)
@@ -863,6 +933,7 @@ class VectorGroupBuilder:
             raise ValueError(f"public causal-group source card {bad} is outside this V4 catalog")
         group_type = gather(rows["group_type"], group_order, live_g)
         runtime_form = gather(rows["runtime_form"], group_order, live_g)
+        mark("group_features")
 
         # ---- child tensors -------------------------------------------------
         child_features = np.zeros((lanes, live_c, len(CHILD_FEATURE_NAMES)), dtype=np.float32)
@@ -916,9 +987,12 @@ class VectorGroupBuilder:
         child_archetype[...] = gather(rows["archetype_id"], child_order, live_c)
         child_type[...] = gather(rows["child_type"], child_order, live_c)
         child_group[...] = group_rank[lane_index, child_entity]
+        mark("child_features")
 
         # The arena leaves a masked row at zero; the gathers above can carry a
         # padded slot's row-0 values into a masked one, so zero it explicitly.
+        # ``np.copyto(where=...)`` measured slower than the fancy assignment
+        # here (0.18 against 0.10 ms over the 14 fields), so keep the assignment.
         group_features[~group_mask_f] = 0.0
         group_position[~group_mask_f] = 0.0
         group_extent[~group_mask_f] = 0.0
@@ -936,6 +1010,7 @@ class VectorGroupBuilder:
         child_archetype[~child_mask] = 0
         child_type[~child_mask] = 0
         child_group[~child_mask] = 0
+        mark("masked_zeroing")
 
         def pad_slots(values: np.ndarray, width: int, fill: Any = 0) -> np.ndarray:
             """Grow a live-width slot axis to the record's fixed capacity.
@@ -975,10 +1050,25 @@ class VectorGroupBuilder:
             child_radius=torch.from_numpy(pad_slots(child_radius, c)),
             child_mask=torch.from_numpy(pad_slots(child_mask, c, False)),
         )
+        mark("record")
+        if live_slots:
+            # The producer's ranks are compact columns; the section's index
+            # arrays are per entity slot, so scatter them once through the
+            # compact→slot map.  Padded columns are excluded by ``valid``.
+            dense_shape = (lanes, int(batch.entity_valid.shape[1]))
+            entity_lane = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], valid.shape)
+            group_index = np.full(dense_shape, -1, dtype=np.int32)
+            child_index = np.full(dense_shape, -1, dtype=np.int32)
+            group_index[entity_lane[valid], rows["slots"][valid]] = group_rank[valid]
+            child_index[entity_lane[valid], rows["slots"][valid]] = child_rank[valid]
+        else:
+            group_index = group_rank
+            child_index = child_rank
+        mark("index_cast")
         return VectorGroupSection(
             groups=groups,
-            group_index=group_rank.astype(np.int32),
-            child_index=child_rank.astype(np.int32),
+            group_index=group_index,
+            child_index=child_index,
             group_overflow=group_overflow,
             child_overflow=child_overflow,
         )

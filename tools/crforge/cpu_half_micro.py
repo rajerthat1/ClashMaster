@@ -13,7 +13,9 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
 * the entity table gather: ``np.where(valid, table[rv], 0)`` vs masking the
   gather's own copy in place (nine fields per seat in ``_entity_rows``);
 * ``_entity_rows`` itself: the dense form (masks and gathers over the whole
-  entity axis) vs the live-row form the producer uses now (session 41);
+  entity axis) vs the compact live-row form the producer uses now (sessions 41
+  and 44); the dense form reimplements the fields from the batch and is the
+  oracle for the compact rows;
 * the group sort keys and ``_targeted_mask``: the same dense/local split.  An
   order only has to cover the lane's live width, so the compact sort is
   compared on the prefix ``build`` actually reads (session 42);
@@ -385,13 +387,14 @@ def main(argv: list[str] | None = None) -> int:
 
         # ---- group gather --------------------------------------------------
         groups = rows[0].group_builder
-        entity_rows = groups._entity_rows(batch)
+        dense_rows = _dense_entity_rows(groups, batch)
+        live_rows = groups._entity_rows(batch)
         g = groups.max_groups
         # A full-capacity slot matrix for the gather A/B: the producer's order is
         # only the live width now, but this measures the gather *form* at the
         # record's fixed width, so the number stays comparable across sessions.
-        slots = np.argsort(~entity_rows["valid"], axis=1, kind="stable")[:, :g]
-        values = entity_rows["hp"]
+        slots = np.argsort(~dense_rows["valid"], axis=1, kind="stable")[:, :g]
+        values = dense_rows["hp"]
         lane_index = np.arange(int(batch.count), dtype=np.int64)[:, None]
 
         def take_along() -> np.ndarray:
@@ -439,30 +442,42 @@ def main(argv: list[str] | None = None) -> int:
             live_section, groups=groups.max_groups, children=groups.max_children
         )
         assert _records_equal(wide_section, live_padded)
-        dense_rows = _dense_entity_rows(groups, batch)
-        live_rows = groups._entity_rows(batch)
-        assert set(dense_rows) == set(live_rows)
+        assert set(dense_rows) <= set(live_rows)
+        counts = live_rows["counts"]
+        slot_map = live_rows["slots"]
+        valid_live = live_rows["valid"]
         for name, values in dense_rows.items():
             assert values.dtype == live_rows[name].dtype, name
-            # The live-row form leaves an invalid slot's velocity at zero; the
-            # dense form copied it.  Both are unread (``velocity_valid`` is
-            # false), so compare the two on the rows the section can see.
-            if name == "velocity":
-                assert np.array_equal(values[live_rows["valid"]], live_rows[name][live_rows["valid"]]), name
-            else:
-                assert np.array_equal(values, live_rows[name]), name
+            index = slot_map if values.ndim == 2 else slot_map.reshape(slot_map.shape + (1,) * (values.ndim - 2))
+            projected = np.take_along_axis(values, index, axis=1)
+            assert np.array_equal(projected[valid_live], live_rows[name][valid_live]), name
         entity_counts = batch.entity_valid.sum(axis=1)
         build = {
             "full_capacity_ms": _time(lambda: groups.build(batch, live_slots=False), args.repeats),
             "live_slots_ms": _time(lambda: groups.build(batch, live_slots=True), args.repeats),
             "entity_rows_ms": _time(lambda: groups._entity_rows(batch), args.repeats),
             "entity_rows_dense_ms": _time(lambda: _dense_entity_rows(groups, batch), args.repeats),
+            "entity_rows_live_width": int(counts.max()),
             "live_entities_mean": float(entity_counts.mean()),
             "live_entities_max": int(entity_counts.max()),
             "equal_values": True,
         }
         build["saved_ms"] = build["full_capacity_ms"] - build["live_slots_ms"]
         build["entity_rows_saved_ms"] = build["entity_rows_dense_ms"] - build["entity_rows_ms"]
+
+        # ---- where the live build's time goes ------------------------------
+        # ``build(phases=...)`` accumulates its own terms without changing the
+        # record.  The phase sum is checked against the timed call above so the
+        # table cannot silently miss work.
+        phase_samples: dict[str, list[float]] = {}
+        for _ in range(args.repeats):
+            accumulator: dict[str, float] = {}
+            groups.build(batch, phases=accumulator)
+            for name, value in accumulator.items():
+                phase_samples.setdefault(name, []).append(value)
+        phases = {name: statistics.fmean(values) for name, values in phase_samples.items()}
+        build["phases_ms_mean"] = phases
+        build["phases_sum_ms"] = sum(phases.values())
 
         # ---- the fixed-capacity pad (what the producer no longer pays) ------
         # ``build`` used to assemble every field at the lane's live width and
@@ -546,11 +561,12 @@ def main(argv: list[str] | None = None) -> int:
         build["pad_equal_values"] = True
 
         # ---- targeted mask: live rows vs the dense key arrays ---------------
-        targeted_dense = _dense_targeted_mask(entity_rows)
-        targeted_live = groups._targeted_mask(entity_rows)
-        assert np.array_equal(targeted_dense, targeted_live)
-        build["targeted_mask_ms"] = _time(lambda: groups._targeted_mask(entity_rows), args.repeats)
-        build["targeted_mask_dense_ms"] = _time(lambda: _dense_targeted_mask(entity_rows), args.repeats)
+        targeted_dense = _dense_targeted_mask(dense_rows)
+        targeted_live = groups._targeted_mask(live_rows)
+        projected_targeted = np.take_along_axis(targeted_dense, slot_map, axis=1)
+        assert np.array_equal(projected_targeted[valid_live], targeted_live[valid_live])
+        build["targeted_mask_ms"] = _time(lambda: groups._targeted_mask(live_rows), args.repeats)
+        build["targeted_mask_dense_ms"] = _time(lambda: _dense_targeted_mask(dense_rows), args.repeats)
         build["targeted_mask_saved_ms"] = build["targeted_mask_dense_ms"] - build["targeted_mask_ms"]
 
         # ---- sort keys: live slots vs the dense entity-axis sort -----------
@@ -558,28 +574,35 @@ def main(argv: list[str] | None = None) -> int:
         # producer sorts only the live (or candidate) slots.  The dense forms
         # are the oracle; the compared prefix is each lane's own retained
         # width (the tails are masked off by ``build`` and need not agree).
-        candidate = live_section.group_index >= 0
+        dense_candidate = wide_section.group_index >= 0
+        candidate = np.take_along_axis(dense_candidate, slot_map, axis=1)
         targeted = targeted_live
-        group_counts = entity_rows["valid"].sum(axis=1)
+        group_counts = counts
         candidate_counts = candidate.sum(axis=1)
-        dense_order = _dense_orders(entity_rows)
-        live_order = groups._orders(entity_rows)
+        dense_order = _dense_orders(dense_rows)
+        live_order = groups._orders(live_rows)
         assert all(
-            np.array_equal(dense_order[lane, : group_counts[lane]], live_order[lane, : group_counts[lane]])
+            np.array_equal(
+                dense_order[lane, : group_counts[lane]],
+                slot_map[lane, live_order[lane, : group_counts[lane]]],
+            )
             for lane in range(dense_order.shape[0])
         )
-        dense_child = _dense_child_order(entity_rows, candidate, targeted)
-        live_child = groups._child_order(entity_rows, candidate, targeted)
+        dense_child = _dense_child_order(dense_rows, dense_candidate, targeted_dense)
+        live_child = groups._child_order(live_rows, candidate, targeted)
         assert all(
-            np.array_equal(dense_child[lane, : candidate_counts[lane]], live_child[lane, : candidate_counts[lane]])
+            np.array_equal(
+                dense_child[lane, : candidate_counts[lane]],
+                slot_map[lane, live_child[lane, : candidate_counts[lane]]],
+            )
             for lane in range(dense_child.shape[0])
         )
         group_sort = {
-            "orders_ms": _time(lambda: groups._orders(entity_rows), args.repeats),
-            "orders_dense_ms": _time(lambda: _dense_orders(entity_rows), args.repeats),
-            "child_order_ms": _time(lambda: groups._child_order(entity_rows, candidate, targeted), args.repeats),
+            "orders_ms": _time(lambda: groups._orders(live_rows), args.repeats),
+            "orders_dense_ms": _time(lambda: _dense_orders(dense_rows), args.repeats),
+            "child_order_ms": _time(lambda: groups._child_order(live_rows, candidate, targeted), args.repeats),
             "child_order_dense_ms": _time(
-                lambda: _dense_child_order(entity_rows, candidate, targeted), args.repeats
+                lambda: _dense_child_order(dense_rows, dense_candidate, targeted_dense), args.repeats
             ),
             "group_slots_max": int(group_counts.max()),
             "child_slots_max": int(candidate_counts.max()),
