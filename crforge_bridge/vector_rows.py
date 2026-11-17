@@ -443,49 +443,88 @@ class VectorGroupBuilder:
     # ---- entity row view ---------------------------------------------------
 
     def _entity_rows(self, batch: VectorObservationBatch) -> dict[str, np.ndarray]:
-        """Per-entity arrays for every lane, masked to live non-tower rows."""
+        """Per-entity arrays for every lane, masked to live non-tower rows.
+
+        The fields are assembled at the **live rows** and scattered into one
+        zero row per field.  A settled board carries ~6 live entities on a
+        200-row axis, so the dense form paid ~33x the live width for every
+        mask and table gather; the gather also re-converted the int32 row map
+        to ``intp`` on each of its nine calls.  The dense zero-filled slots are
+        exactly what the ``where`` masks produced, so every readable row is
+        bit-identical; only an invalid slot's velocity, which was a copy and is
+        now zero, differs — ``velocity_valid`` is false there and the group and
+        child assembly mask it out.  ``cpu_half_micro.py`` keeps the dense form
+        as its oracle and asserts the agreement.
+        """
 
         valid = batch.entity_valid & ~batch.entity_is_tower
-        rv = np.clip(batch.entity_row_vocab, 0, self.tables.vocab_size - 1)
-        take = lambda array: np.where(valid, array[rv], 0)
+        shape = valid.shape
+        live = np.flatnonzero(valid.ravel())
+        row_vocab = np.clip(batch.entity_row_vocab, 0, self.tables.vocab_size - 1)
+        vocab_live = row_vocab.ravel()[live]
 
-        entity_id = np.where(valid, batch.entity_id, -1).astype(np.int64)
-        hp = np.where(valid & (batch.entity_hp >= 0), batch.entity_hp, 0).astype(np.float64)
-        max_hp = np.where(valid & (batch.entity_max_hp >= 0), batch.entity_max_hp, 0).astype(np.float64)
-        shield = np.where(valid & (batch.entity_shield > 0), batch.entity_shield, 0).astype(np.float64)
-        age = np.where(valid, batch.entity_age_ms, 0).astype(np.float64)
-        target = valid & (batch.entity_target >= 0)
+        def zero(dtype: Any, fill: Any = 0) -> np.ndarray:
+            return np.full(valid.size, fill, dtype=dtype) if fill else np.zeros(valid.size, dtype=dtype)
 
-        x, y = self._tile_positions(batch, valid)
-        half_w = take(self.tables.footprint_half_w)
-        half_h = take(self.tables.footprint_half_h)
+        def scatter(values: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
+            """Live-row values, ``fill`` in every other entity slot."""
+
+            out = zero(values.dtype if dtype is None else dtype, fill)
+            out[live] = values
+            return out.reshape(shape)
+
+        def field(source: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
+            """The live rows of one batch field, zeros (or ``fill``) elsewhere."""
+
+            return scatter(source.ravel()[live], dtype, fill)
+
+        def table(values: np.ndarray) -> np.ndarray:
+            out = np.zeros(valid.size, dtype=values.dtype)
+            out[live] = values[vocab_live]
+            return out.reshape(shape)
+
+        target_live = batch.entity_target.ravel()[live]
+        hp = scatter(np.maximum(batch.entity_hp.ravel()[live], 0), np.float64)
+        max_hp = scatter(np.maximum(batch.entity_max_hp.ravel()[live], 0), np.float64)
+        shield = scatter(np.maximum(batch.entity_shield.ravel()[live], 0), np.float64)
+
+        x = field(batch.entity_x, np.float64)
+        y = field(batch.entity_y, np.float64)
+        x, y = _tile_positions(x, y, config=self.config, perspective=self.perspective)
+        half_w = table(self.tables.footprint_half_w)
+        half_h = table(self.tables.footprint_half_h)
         extent_x0 = x - half_w
         extent_y0 = y - half_h
         extent_x1 = x + half_w
         extent_y1 = y + half_h
 
-        velocity = np.zeros((*valid.shape, 2), dtype=np.float64)
-        velocity[...] = batch.entity_velocity.astype(np.float64)
-        velocity_valid = valid & batch.entity_velocity_valid
         # The model flips signs exactly as ``_model_velocity`` does, then the
-        # tensorizer divides by world-to-board scale before the ``/ 10``.
+        # tensorizer divides by world-to-board scale before the ``/ 10``.  Only
+        # the live rows carry a velocity; the rest are zero and
+        # ``velocity_valid`` is false for them.
+        velocity = np.zeros((valid.size, 2), dtype=np.float64)
+        velocity[live] = batch.entity_velocity.reshape(-1, 2)[live]
+        velocity = velocity.reshape(*shape, 2)
+        velocity_valid = valid & batch.entity_velocity_valid
         if self.perspective.flip_x:
-            velocity[..., 0] = -velocity[..., 0]
+            np.negative(velocity[..., 0], out=velocity[..., 0])
         if self.perspective.flip_y:
-            velocity[..., 1] = -velocity[..., 1]
-        velocity[..., 0] = velocity[..., 0] / (float(WORLD_WIDTH) / float(self.config.board_width))
-        velocity[..., 1] = velocity[..., 1] / (float(WORLD_HEIGHT) / float(self.config.board_height))
+            np.negative(velocity[..., 1], out=velocity[..., 1])
+        scale_x = float(WORLD_WIDTH) / float(self.config.board_width)
+        scale_y = float(WORLD_HEIGHT) / float(self.config.board_height)
+        np.divide(velocity[..., 0], scale_x, out=velocity[..., 0])
+        np.divide(velocity[..., 1], scale_y, out=velocity[..., 1])
 
         return {
             "valid": valid,
-            "row_vocab": rv,
-            "entity_id": entity_id,
+            "row_vocab": row_vocab,
+            "entity_id": field(batch.entity_id, np.int64, -1),
             "hp": hp,
             "max_hp": max_hp,
             "shield": shield,
-            "age_ms": age,
-            "target": target,
-            "target_id": np.where(valid, batch.entity_target, -1),
+            "age_ms": field(batch.entity_age_ms, np.float64),
+            "target": scatter(target_live >= 0),
+            "target_id": scatter(target_live, fill=-1),
             "x": x,
             "y": y,
             "extent_x0": extent_x0,
@@ -494,24 +533,16 @@ class VectorGroupBuilder:
             "extent_y1": extent_y1,
             "velocity": velocity,
             "velocity_valid": velocity_valid,
-            "card_id": take(self.tables.card_id),
-            "archetype_id": take(self.tables.archetype_id),
-            "child_type": take(self.tables.child_type),
-            "card_vocab_id": take(self.tables.card_vocab_id),
-            "runtime_form": take(self.tables.runtime_form),
-            "group_type": take(self.tables.group_type),
-            "is_hero_or_building": np.where(valid, self.tables.is_hero_or_building[rv], False),
-            "radius": take(self.tables.radius),
-            "side": np.where(valid, batch.entity_side, -1),
+            "card_id": table(self.tables.card_id),
+            "archetype_id": table(self.tables.archetype_id),
+            "child_type": table(self.tables.child_type),
+            "card_vocab_id": table(self.tables.card_vocab_id),
+            "runtime_form": table(self.tables.runtime_form),
+            "group_type": table(self.tables.group_type),
+            "is_hero_or_building": table(self.tables.is_hero_or_building),
+            "radius": table(self.tables.radius),
+            "side": field(batch.entity_side, fill=-1),
         }
-
-    def _tile_positions(self, batch: VectorObservationBatch, valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        return _tile_positions(
-            np.where(valid, batch.entity_x, 0).astype(np.float64),
-            np.where(valid, batch.entity_y, 0).astype(np.float64),
-            config=self.config,
-            perspective=self.perspective,
-        )
 
     # ---- sort keys ---------------------------------------------------------
 

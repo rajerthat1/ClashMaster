@@ -12,6 +12,8 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
   build, each rebuilding an index tuple);
 * the entity table gather: ``np.where(valid, table[rv], 0)`` vs masking the
   gather's own copy in place (nine fields per seat in ``_entity_rows``);
+* ``_entity_rows`` itself: the dense form (masks and gathers over the whole
+  entity axis) vs the live-row form the producer uses now (session 41);
 * the group build at live width vs the previous full-capacity assembly
   (``VectorGroupBuilder.build(..., live_slots=False)`` is the oracle), which is
   where the padded 48/160 slots were being paid for;
@@ -47,7 +49,9 @@ for _path in (_REPO_ROOT, _REPO_ROOT / ".resource" / "crforge" / "python"):
 def _load_self_play() -> Any:
     """Import the producer script as a module (it is a tool, not a package)."""
 
-    spec = importlib.util.spec_from_file_location("crforge_self_play", _REPO_ROOT / "tools" / "crforge" / "self_play.py")
+    spec = importlib.util.spec_from_file_location(
+        "crforge_self_play", _REPO_ROOT / "tools" / "crforge" / "self_play.py"
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -144,6 +148,78 @@ def _sequence_for(record: Any, config: Any) -> Any:
         target_cell=torch.from_numpy(cell),
         delay_offset_bin=torch.from_numpy(delay),
     )
+
+
+def _dense_entity_rows(groups: Any, batch: Any) -> dict[str, Any]:
+    """The pre-session-41 ``_entity_rows``: dense over the whole entity axis.
+
+    This is the oracle for the producer's live-row form, nothing more.  It
+    masks and gathers at ``max_entities`` width even though a settled board
+    carries a handful of live rows.
+    """
+
+    from crforge_bridge.vector_rows import WORLD_HEIGHT, WORLD_WIDTH, _tile_positions
+
+    valid = batch.entity_valid & ~batch.entity_is_tower
+    rv = np.clip(batch.entity_row_vocab, 0, groups.tables.vocab_size - 1)
+
+    def take(array: Any) -> Any:
+        return np.where(valid, array[rv], 0)
+
+    entity_id = np.where(valid, batch.entity_id, -1).astype(np.int64)
+    hp = np.where(valid & (batch.entity_hp >= 0), batch.entity_hp, 0).astype(np.float64)
+    max_hp = np.where(valid & (batch.entity_max_hp >= 0), batch.entity_max_hp, 0).astype(np.float64)
+    shield = np.where(valid & (batch.entity_shield > 0), batch.entity_shield, 0).astype(np.float64)
+    age = np.where(valid, batch.entity_age_ms, 0).astype(np.float64)
+    target = valid & (batch.entity_target >= 0)
+
+    x, y = _tile_positions(
+        np.where(valid, batch.entity_x, 0).astype(np.float64),
+        np.where(valid, batch.entity_y, 0).astype(np.float64),
+        config=groups.config,
+        perspective=groups.perspective,
+    )
+    half_w = take(groups.tables.footprint_half_w)
+    half_h = take(groups.tables.footprint_half_h)
+
+    velocity = np.zeros((*valid.shape, 2), dtype=np.float64)
+    velocity[...] = batch.entity_velocity.astype(np.float64)
+    velocity_valid = valid & batch.entity_velocity_valid
+    if groups.perspective.flip_x:
+        velocity[..., 0] = -velocity[..., 0]
+    if groups.perspective.flip_y:
+        velocity[..., 1] = -velocity[..., 1]
+    velocity[..., 0] = velocity[..., 0] / (float(WORLD_WIDTH) / float(groups.config.board_width))
+    velocity[..., 1] = velocity[..., 1] / (float(WORLD_HEIGHT) / float(groups.config.board_height))
+
+    return {
+        "valid": valid,
+        "row_vocab": rv,
+        "entity_id": entity_id,
+        "hp": hp,
+        "max_hp": max_hp,
+        "shield": shield,
+        "age_ms": age,
+        "target": target,
+        "target_id": np.where(valid, batch.entity_target, -1),
+        "x": x,
+        "y": y,
+        "extent_x0": x - half_w,
+        "extent_y0": y - half_h,
+        "extent_x1": x + half_w,
+        "extent_y1": y + half_h,
+        "velocity": velocity,
+        "velocity_valid": velocity_valid,
+        "card_id": take(groups.tables.card_id),
+        "archetype_id": take(groups.tables.archetype_id),
+        "child_type": take(groups.tables.child_type),
+        "card_vocab_id": take(groups.tables.card_vocab_id),
+        "runtime_form": take(groups.tables.runtime_form),
+        "group_type": take(groups.tables.group_type),
+        "is_hero_or_building": np.where(valid, groups.tables.is_hero_or_building[rv], False),
+        "radius": take(groups.tables.radius),
+        "side": np.where(valid, batch.entity_side, -1),
+    }
 
 
 def _time(fn: Any, repeats: int) -> float:
@@ -287,23 +363,39 @@ def main(argv: list[str] | None = None) -> int:
         wide_section = groups.build(batch, live_slots=False)
         live_section = groups.build(batch, live_slots=True)
         assert _records_equal(wide_section, live_section)
+        dense_rows = _dense_entity_rows(groups, batch)
+        live_rows = groups._entity_rows(batch)
+        assert set(dense_rows) == set(live_rows)
+        for name, values in dense_rows.items():
+            assert values.dtype == live_rows[name].dtype, name
+            # The live-row form leaves an invalid slot's velocity at zero; the
+            # dense form copied it.  Both are unread (``velocity_valid`` is
+            # false), so compare the two on the rows the section can see.
+            if name == "velocity":
+                assert np.array_equal(values[live_rows["valid"]], live_rows[name][live_rows["valid"]]), name
+            else:
+                assert np.array_equal(values, live_rows[name]), name
         entity_counts = batch.entity_valid.sum(axis=1)
         build = {
             "full_capacity_ms": _time(lambda: groups.build(batch, live_slots=False), args.repeats),
             "live_slots_ms": _time(lambda: groups.build(batch, live_slots=True), args.repeats),
             "entity_rows_ms": _time(lambda: groups._entity_rows(batch), args.repeats),
+            "entity_rows_dense_ms": _time(lambda: _dense_entity_rows(groups, batch), args.repeats),
             "live_entities_mean": float(entity_counts.mean()),
             "live_entities_max": int(entity_counts.max()),
             "equal_values": True,
         }
         build["saved_ms"] = build["full_capacity_ms"] - build["live_slots_ms"]
+        build["entity_rows_saved_ms"] = build["entity_rows_dense_ms"] - build["entity_rows_ms"]
 
         # ---- table gather + mask ------------------------------------------
         # ``_entity_rows`` gathers nine per-vocabulary tables through the
         # entity row map and zeroes the invalid rows.  Masking the gather's own
         # copy in place saves one allocation per field; measured here it saves
-        # only ~0.12 ms over nine fields, below the section's noise, so the
-        # producer keeps the single-expression ``where`` form.
+        # only ~0.1 ms over nine fields, below the section's noise.  Both forms
+        # are off the producer path since session 41 (it gathers at the live
+        # rows); this stays as the record of why the in-place mask was not the
+        # win.
         table = np.asarray(groups.tables.card_vocab_id)
         rv = np.clip(batch.entity_row_vocab, 0, groups.tables.vocab_size - 1)
         valid = batch.entity_valid & ~batch.entity_is_tower
@@ -332,7 +424,9 @@ def main(argv: list[str] | None = None) -> int:
         # ---- record_action -------------------------------------------------
         sequence = _sequence_for(stacks[0].candidates, model.config)
         tables = candidate_tables(stacks[0].candidates)
-        batch_stub = SimpleNamespace(count=int(batch.count), batch_size=int(batch.count), candidates=stacks[0].candidates)
+        batch_stub = SimpleNamespace(
+            count=int(batch.count), batch_size=int(batch.count), candidates=stacks[0].candidates
+        )
         tensorizer = rows[0]
         tensorizer.record_action(sequence, batch_stub, validate=False, tables=tables)
         expected = tensorizer.previous_action
