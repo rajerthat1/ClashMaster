@@ -58,3 +58,68 @@ def test_equal_returns_are_a_tie_not_a_win() -> None:
         {"reset": _policy("reset", 0.5, 1e-3), "carry": _policy("carry", 0.5, 1e-3)}
     )
     assert comparison["higher_last_window_return"] == "tie"
+
+
+def _run(policy: str, seed: int, last: float) -> dict[str, object]:
+    return {"policy": policy, "seed": seed, "return_trend": {"last_mean": last}}
+
+
+def test_a_horizon_without_a_recorded_reward_signal_is_null_not_zero() -> None:
+    summary = {
+        "reset": _policy("reset", 0.495, 5.9e-3),
+        "carry": _policy("carry", 0.580, 8.1e-3),
+    }
+
+    comparison = learning_horizon.build_comparison(summary)
+
+    assert comparison["updates_with_reward_mean"] == {"reset": None, "carry": None}
+    assert comparison["reward_abs_max_mean"] == {"reset": None, "carry": None}
+    summary["carry"]["updates_with_reward_mean"] = 12.0
+    summary["carry"]["reward_abs_max_mean"] = 0.0
+    comparison = learning_horizon.build_comparison(summary)
+    assert comparison["updates_with_reward_mean"]["carry"] == 12.0
+    assert comparison["reward_abs_max_mean"]["carry"] == 0.0
+
+
+def test_paired_seeds_count_a_repeated_gap_as_agreement() -> None:
+    runs = [
+        _run("reset", 1, 0.495),
+        _run("carry", 1, 0.580),
+        _run("reset", 2, 0.512),
+        _run("carry", 2, 0.603),
+        _run("reset", 3, 0.480),
+        _run("carry", 3, 0.521),
+    ]
+
+    paired = learning_horizon.build_comparison(
+        {"reset": _policy("reset", 0.496, 5.9e-3), "carry": _policy("carry", 0.568, 8.1e-3)},
+        runs,
+    )["paired_seeds"]
+
+    assert paired["seeds_compared"] == 3
+    assert paired["carry_leads_seeds"] == 3
+    assert paired["reset_leads_seeds"] == 0
+    assert paired["mean_carry_minus_reset"] == pytest.approx((0.085 + 0.091 + 0.041) / 3)
+    assert paired["seeds_agree"] is True
+    assert [pair["seed"] for pair in paired["pairs"]] == [1, 2, 3]
+
+
+def test_paired_seeds_expose_a_split_ranking() -> None:
+    runs = [
+        _run("reset", 1, 0.495),
+        _run("carry", 1, 0.580),
+        _run("reset", 2, 0.512),
+        _run("carry", 2, 0.431),
+        _run("reset", 3, 0.480),
+        # seed 3 has no carry run yet: it is not a pair
+    ]
+
+    paired = learning_horizon.build_comparison(
+        {"reset": _policy("reset", 0.496, 5.9e-3), "carry": _policy("carry", 0.506, 8.1e-3)},
+        runs,
+    )["paired_seeds"]
+
+    assert paired["seeds_compared"] == 2
+    assert paired["carry_leads_seeds"] == 1
+    assert paired["reset_leads_seeds"] == 1
+    assert paired["seeds_agree"] is False

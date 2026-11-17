@@ -515,7 +515,11 @@ class CrforgeTrainer:
             self.optimizer_steps = optimizer_step + len(rows_with_metrics)
 
         reward = rollout.rewards[rollout.valid_mask]
+        # The reward is antisymmetric across the two seats, so its plain sum is
+        # identically zero.  ``reward_abs_max`` is the field that says whether any
+        # seat saw a reward (terminal result or tower shaping) in this update.
         reward_sum = float(reward.sum()) if reward.numel() else 0.0
+        reward_abs_max = float(reward.abs().max()) if reward.numel() else 0.0
         entry = {
             "segment": int(segment),
             "update_index": self.updates,
@@ -549,6 +553,7 @@ class CrforgeTrainer:
                 "time_steps": int(rollout.time_steps),
                 "valid_count": valid,
                 "reward_sum": reward_sum,
+                "reward_abs_max": reward_abs_max,
                 "reward_mean": _metric_last(rows_with_metrics, "reward_mean"),
                 "return_mean": _metric_last(rows_with_metrics, "return_mean"),
                 "return_std": _metric_last(rows_with_metrics, "return_std"),

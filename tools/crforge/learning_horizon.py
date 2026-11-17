@@ -17,10 +17,13 @@ deferred.  Native matches are the promotion gate and are **not** run here:
 crforge is never a promotion source, and the native parity cadence is unchanged.
 
 The artifact is ``crforge-c4-learning-horizon.v1``.  Per-run producer artifacts
-stay under ``--run-dir`` and ``--reuse`` re-aggregates them::
+stay under ``--run-dir`` and ``--reuse`` re-aggregates them.  With more than one
+seed the comparison also carries ``paired_seeds``: the same seed is the unit that
+is compared, so a ranking that flips between seeds is visible rather than averaged
+away::
 
     OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/learning_horizon.py \\
-        --count 4 --decisions-per-segment 24 --updates 50 --seeds 1 \\
+        --count 4 --decisions-per-segment 24 --updates 50 --seeds 1 2 3 \\
         --output runs/crforge-c4/learning-horizon.json
 """
 
@@ -50,6 +53,11 @@ import cadence_compare  # the shared per-run summary and stale classifier
 
 def _mean(values: list[float]) -> float:
     return statistics.fmean(values) if values else 0.0
+
+
+def _optional_mean(values: list[float | None]) -> float | None:
+    present = [float(value) for value in values if value is not None]
+    return _mean(present) if present else None
 
 
 def _window(values: list[float], fraction: float = 0.2) -> int:
@@ -92,11 +100,35 @@ def _summarize(artifact: dict[str, Any], *, policy: str, seed: int) -> dict[str,
     segments = artifact.get("segments") or []
     act_rates = [float(segment.get("eligible_act_rate", 0.0)) for segment in segments]
     reachable = [bool((segment.get("rollout") or {}).get("finite", False)) for segment in segments]
+    # Reward presence is recorded twice: the trace's per-update max |reward|
+    # (2026-11-19 onward) and each segment rollout's ``reward_abs_sum`` (always).
+    # ``reward_sum`` itself is identically zero by antisymmetry and is not a signal.
+    trace_abs_max = (
+        [float(row["reward_abs_max"]) for row in trace]
+        if trace and all(row.get("reward_abs_max") is not None for row in trace)
+        else None
+    )
+    segment_abs_sum = [
+        float((segment.get("rollout") or {}).get("summary", {}).get("reward_abs_sum", 0.0))
+        for segment in segments
+        if "reward_abs_sum" in ((segment.get("rollout") or {}).get("summary") or {})
+    ]
+    if trace_abs_max is not None:
+        updates_with_reward = sum(1 for value in trace_abs_max if value > 1e-12)
+    elif len(segment_abs_sum) == len(trace):
+        updates_with_reward = sum(1 for value in segment_abs_sum if value > 1e-12)
+    else:
+        updates_with_reward = None
     summary.update(
         {
             "policy": policy,
             "seed": int(seed),
             "updates_run": len(trace),
+            "updates_with_reward": updates_with_reward,
+            "reward_abs_max": max(trace_abs_max, default=None) if trace_abs_max is not None else None,
+            "reward_abs_sum_median": (
+                statistics.median(segment_abs_sum) if segment_abs_sum else None
+            ),
             "return_trend": _trend([float(row["return_mean"]) for row in trace]),
             "reward_trend": _trend([float(row["reward_sum"]) for row in trace]),
             "value_explained_variance_trend": _trend(
@@ -133,6 +165,13 @@ def _policy_view(rows: list[dict[str, Any]], policy: str) -> dict[str, Any]:
         "seconds_per_update_mean": _mean([float(row["seconds_per_update"]) for row in selected]),
         "training_pass_all": all(bool(row["training_pass"]) for row in selected),
         "stale_updates_mean": _mean([float(row["stale_updates"]) for row in selected]),
+        "updates_with_reward_mean": _optional_mean(
+            [row.get("updates_with_reward") for row in selected]
+        ),
+        "reward_abs_max_mean": _optional_mean([row.get("reward_abs_max") for row in selected]),
+        "reward_abs_sum_median_mean": _optional_mean(
+            [row.get("reward_abs_sum_median") for row in selected]
+        ),
     }
     for key in keys:
         for field in ("first_mean", "last_mean", "delta", "slope_per_update"):
@@ -157,7 +196,47 @@ def _run(command: list[str], log_path: Path) -> float:
     return time.perf_counter() - started
 
 
-def build_comparison(summary: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _paired_seeds(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pair the policies at each seed: one seed is one observation of the gap."""
+
+    by_seed: dict[int, dict[str, dict[str, Any]]] = {}
+    for row in runs:
+        by_seed.setdefault(int(row["seed"]), {})[str(row["policy"])] = row
+    pairs: list[dict[str, Any]] = []
+    for seed in sorted(by_seed):
+        pair = by_seed[seed]
+        if "reset" not in pair or "carry" not in pair:
+            continue
+        reset_last = float(pair["reset"]["return_trend"]["last_mean"])
+        carry_last = float(pair["carry"]["return_trend"]["last_mean"])
+        delta = carry_last - reset_last
+        pairs.append(
+            {
+                "seed": seed,
+                "reset_last_return": reset_last,
+                "carry_last_return": carry_last,
+                "carry_minus_reset": delta,
+                "winner": "tie" if abs(delta) < 1e-9 else ("carry" if delta > 0 else "reset"),
+            }
+        )
+    deltas = [float(pair["carry_minus_reset"]) for pair in pairs]
+    return {
+        "seeds_compared": len(pairs),
+        "pairs": pairs,
+        "carry_leads_seeds": sum(1 for delta in deltas if delta > 0),
+        "reset_leads_seeds": sum(1 for delta in deltas if delta < 0),
+        "mean_carry_minus_reset": _mean(deltas),
+        "seeds_agree": (
+            None
+            if len(deltas) < 2
+            else all(delta > 0 for delta in deltas) or all(delta < 0 for delta in deltas)
+        ),
+    }
+
+
+def build_comparison(
+    summary: dict[str, dict[str, Any]], runs: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     reset = summary["reset"]
     carry = summary["carry"]
     delta = carry["return_trend_last_mean_mean"] - reset["return_trend_last_mean_mean"]
@@ -180,6 +259,19 @@ def build_comparison(summary: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "wall_delta_s": carry["wall_s_mean"] - reset["wall_s_mean"],
         "all_training_pass": reset["training_pass_all"] and carry["training_pass_all"],
         "all_updates_on_policy": reset["stale_updates_mean"] == 0.0 and carry["stale_updates_mean"] == 0.0,
+        "updates_with_reward_mean": {
+            "reset": reset.get("updates_with_reward_mean"),
+            "carry": carry.get("updates_with_reward_mean"),
+        },
+        "reward_abs_max_mean": {
+            "reset": reset.get("reward_abs_max_mean"),
+            "carry": carry.get("reward_abs_max_mean"),
+        },
+        "reward_abs_sum_median_mean": {
+            "reset": reset.get("reward_abs_sum_median_mean"),
+            "carry": carry.get("reward_abs_sum_median_mean"),
+        },
+        "paired_seeds": _paired_seeds(runs or []),
         "native_parity": {
             "matches": 0,
             "note": (
@@ -283,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     substrate = substrates[0] if substrates else {}
     if any(json.dumps(item, sort_keys=True) != json.dumps(substrate, sort_keys=True) for item in substrates[1:]):
         raise SystemExit("the runs do not share one substrate; the comparison is not like-for-like")
-    comparison = build_comparison(summary_by_policy)
+    comparison = build_comparison(summary_by_policy, runs)
     gate = {
         "updates_at_least_50": all(
             row["updates_run_mean"] >= 50.0 for row in summary_by_policy.values()
@@ -337,6 +429,28 @@ def main(argv: list[str] | None = None) -> int:
             f"{row['act_rate_trend_last_mean_mean']:>7.4f} {row['wall_s_mean']:>8.1f}"
         )
     print(f"ranking: {comparison['higher_last_window_return']}")
+    paired = comparison["paired_seeds"]
+    agree = paired["seeds_agree"]
+    print(
+        f"paired seeds: {paired['seeds_compared']}, carry leads "
+        f"{paired['carry_leads_seeds']}/{paired['seeds_compared']}, "
+        f"mean delta {paired['mean_carry_minus_reset']:+.4f}, "
+        f"agree {'n/a' if agree is None else agree}"
+    )
+    reward_max = comparison["reward_abs_max_mean"]
+    reward_updates = comparison["updates_with_reward_mean"]
+    if all(value is not None for value in reward_max.values()) and not any(reward_max.values()):
+        print(
+            "warning: no update saw a nonzero reward; the return trace carries no observed "
+            "score in this shape",
+            file=sys.stderr,
+        )
+    elif all(value is None for value in reward_updates.values()):
+        print(
+            "note: this artifact records neither per-update reward nor a segment reward sum; "
+            "reward_sum is identically zero by antisymmetry and cannot show a reward",
+            file=sys.stderr,
+        )
     print(f"gate: {json.dumps(gate)}")
     return 0 if gate["pass"] else 1
 

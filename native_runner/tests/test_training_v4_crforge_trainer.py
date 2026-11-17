@@ -110,6 +110,7 @@ def test_two_consecutive_updates_keep_one_optimizer_and_advance_the_policy() -> 
     assert gate["pass"] is True
     assert [row["update_index"] for row in trainer.trace] == [1, 2]
     assert trainer.trace[0]["policy_state_id_after"] == trainer.trace[1]["policy_state_id_before"]
+    assert trainer.trace[0]["reward_abs_max"] == pytest.approx(1.0)
     assert trainer.distinct_behaviour_ids == 2
 
 
