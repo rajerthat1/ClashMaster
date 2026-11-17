@@ -531,6 +531,22 @@ The record width is also forward work: `encode_observation` at 128 CPU rows is
 probe is 2/2 on-policy, 0 stale, 0 illegal/rejected, checkpoint
 reload-identical.  See `FINDINGS.md` §3.77.
 
+**Status (2026-11-17, session 44).**  The group build's last reserved-axis write
+is gone.  `_entity_rows` scattered each live field into a zero-filled
+`(lanes, max_entities)` array; it now returns lane-major
+`(lanes, widest live count)` rows plus `counts`/`slots`, and `build` scatters the
+dense `group_index`/`child_index` once at the end.  `build(phases=...)` attributes
+the section: rows **0.217**, child features 0.156, group features 0.121, child
+order/rank 0.112, zeroing 0.092, `_orders` 0.082, group gathers 0.081,
+`_targeted_mask` 0.050, group rank 0.033, index scatter 0.036 (sum 0.991).
+`_entity_rows` falls **0.43 → 0.18 ms** (2.4×; 5.5× the pre-session-41 dense
+form at 0.995) and `build` **1.35 → 1.00 ms**.  `np.copyto(where=)` for the
+masked zeroing measured slower (0.184 against 0.092) and was reverted.  Digest
+**3,008/3,008** both seeds at **0.0345 / 0.0490 ms/lane-decision** (18.5× /
+12.6×), end to end **0.0499 / 0.0638**; bridge suite 146; a 2-update producer
+probe is 2/2 on-policy with the same KL trace as session 43.  See
+`FINDINGS.md` §3.78.
+
 ---
 
 ## 5. CI and parity role (always on)

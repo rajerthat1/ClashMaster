@@ -4,46 +4,94 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 43)
+## Bottom line (2026-11-17, session 44)
 
-The group section no longer pads to the record's fixed capacity, and the model
-now reads the live width as well.
+The group section's last reserved-axis write is gone: `_entity_rows` now packs
+the live rows instead of scattering them into the 200-row entity axis.
 
-1. **The pad was 0.28–0.60 ms of a 1.27–1.54 ms build, and 7.5 MB per seat.**
-   Replicated field by field on the live arrays, the fixed-capacity copy is a
-   fresh **7.5 MB** zeroed allocation per seat (not the ~3 MB the handoff
-   estimated) plus a prefix copy.  Same-process, the old build is **1.20–1.43×**
-   the new one.  The producer now returns the live width; `live_slots=False`
-   still assembles and pads to 48/160 as the oracle.
-2. **Every consumer already reads the width from the record.**  Token count,
-   group attention, `validate`, the relation builder, PPO's padded
-   concatenation and `to_storage` all follow `groups.mask` /
-   `child_mask`.  `pad_group_section` / `pad_group_record` project a live record
-   back onto the fixed capacity for the per-lane oracle and the digest gate;
-   `lane_batch` takes `group_capacity`/`child_capacity` and
-   `compare_group_section` pads internally.
-3. **The width is also model work, and it is larger than the pad.**  On CPU at
-   128 rows the forward is **1.63–1.77 s live against 2.38–2.49 s padded**
-   (27–34 % saved): the group encoder's `belongs` tensor and child/group
-   attention were sized by 48 slots for 11 live rows.  The box has not measured
-   width; the A6000 forward was flat in rows.
+1. **`_entity_rows`: 0.43 → 0.18 ms (2.4×), build 1.35 → 1.00 ms (1.35×).**
+   The row view is a lane-major `(lanes, widest live count)` array plus
+   `counts` and `slots`; the order, targeted-mask and gather code needed no
+   representation change (they already worked from an include mask and flat
+   indices), and the section's dense `group_index`/`child_index` are scattered
+   back once at the end.  Against the pre-session-41 dense form the same tool
+   measures **0.18 against 0.995 ms** (5.5×).  `build(live_slots=False)`
+   densifies the compact rows, so the oracle A/B is unchanged.
+2. **The build has a phase table now.**  `build(phases=...)` accumulates its
+   own terms without changing the record; on the settled fixture they sum to
+   the timed call (0.991 of 1.00 ms): rows 0.217, child features 0.156, group
+   features 0.121, child order/rank 0.112, zeroing 0.092, orders 0.082,
+   group gathers 0.081, targeted 0.050, group rank 0.033, index scatter 0.036,
+   record 0.013.  The next term is no longer a single axis.
+3. **A zeroing rewrite measured worse and was reverted.**  `np.copyto(where=)`
+   in place of the 14 fancy assignments put zeroing at **0.184 against
+   0.092 ms**.
 4. **The gate is bit-exact.**  `batched_tensorize.py` **3,008/3,008**
    lane-decisions, both seats, 0 mismatches, 5,196 micro-actions,
-   **0.0476 ms/lane-decision** (13.8×), end to end **0.0650 ms/lane**; seed 2
-   **3,008/3,008**, 5,361 actions, **0.0522 ms** (12.4×), 0.0673; bridge suite
-   **145 passed**; ruff clean.  A 4-lane × 2-seat × 2-segment × 24-decision
-   producer probe with `--ppo-update` is **2/2 on-policy**, 0 stale, gate pass,
-   0 illegal / 0 rejected, 18/375 eligible ACT, checkpoint reload-identical.
-5. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
+   **0.0345 ms/lane-decision** (18.5×), end to end **0.0499**; seed 2
+   **3,008/3,008**, 5,361 actions, **0.0490** (12.6×), 0.0638.  The seed-to-seed
+   spread exceeds the session-43→44 difference, so the digest is the
+   correctness claim and the micro phase numbers are the change.  Bridge suite
+   **146 passed** (one new compact-row test); native PPO/trainer subset 49
+   passed, 4 skipped; ruff clean; the 4-lane × 2-seat × 2-segment × 24-decision
+   `--ppo-update` probe is **2/2 on-policy**, 0 stale, gate pass, 0 illegal /
+   0 rejected, checkpoint 277 reload-identical, with the same KL trace as
+   session 43's probe.
+5. **The forward width win from session 43 is unchanged** (1.74 s live vs
+   2.60 s padded at 128 CPU rows, 33 %); nothing in this session changed the
+   model input.
+6. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
    lost 19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %,
    p = 0.15); `A-hog26-v738` is 49–1 against the seed and is a canary, not the
    learner's bar.  The 8-vCPU measurement still waits for a training run with a
    native win rate.
 
-See `FINDINGS.md` §3.77 (this session), §3.76 (session 42) and §3.74 (native
+See `FINDINGS.md` §3.78 (this session), §3.77 (session 43) and §3.74 (native
 gate).
 
 ## Decisions — what changed
+
+### 2026-11-17 (session 44) — the entity rows are compact, and the build can name its own terms
+
+Session 43 closed the pad and left the remaining gather/feature assembly as the
+next term.  Measuring it needed a breakdown, and the breakdown named
+`_entity_rows` — which was still writing the 200-row axis on the way out.
+
+- **The row view is compact.**  `_entity_rows` returns lane-major
+  `(lanes, widest live count)` fields plus `counts` and `slots` (the entity slot
+  behind each column).  The padded columns keep the old fills and are unread.
+  `_orders`, `_child_order`, `_targeted_mask` and `build` already consumed an
+  include mask and flat indices, so their logic is unchanged; only the meaning
+  of an index (compact column vs entity slot) moved.  The dense
+  `group_index`/`child_index` the record needs are scattered back once.
+- **`build(phases=...)` is the new microscope.**  Every term is timed with one
+  `perf_counter` pair boundary when the caller passes a dict; the producer
+  passes nothing, so the flag costs one `if`.  The phase sum is checked against
+  the timed call, and `cpu_half_micro.py` records the table.
+- **The measurements.**  `_entity_rows` **0.43 → 0.18 ms**, build
+  **1.35 → 1.00 ms** per seat on the settled fixture; the pre-session-41 dense
+  form is 0.995 ms in the same process, so the compact rows are **5.5×** that.
+  Build phases: rows 0.217, child features 0.156, group features 0.121, child
+  order/rank 0.112, zeroing 0.092, group gathers 0.081, orders 0.082, targeted
+  0.050, group rank 0.033, index scatter 0.036, record 0.013.
+- **The oracle path still pads and still compares.**  `build(live_slots=False)`
+  densifies the compact rows (`_dense_entity_rows`) and runs the session-42
+  full-capacity assembly; `pad_group_section` still projects the live record
+  onto it, and the digest gate compares every field including the tail.
+- **Gate:** `batched_tensorize.py` **3,008/3,008** lane-decisions, both seats, 0
+  mismatches, **0.0345 / 0.0490 ms/lane-decision** (18.5× / 12.6×), end to end
+  **0.0499 / 0.0638**; bridge suite **146 passed**; native PPO/trainer subset 49
+  passed, 4 skipped; ruff clean; producer probe 2/2 on-policy, 0 stale, gate
+  pass, 0 illegal / 0 rejected, checkpoint reload-identical and the same KL
+  trace as session 43 (the record did not move).
+- **Negative:** `np.copyto(where=...)` for the masked zeroing is **0.184 ms
+  against 0.092**, so the fancy assignment stays.
+- **Next term:** the build is 1.00 ms with no reserved-axis work left; the
+  remaining terms are feature assembly (~0.28), rows (~0.22), order/rank/mask
+  (~0.23), zeroing (~0.09) and gathers (~0.08).  A further CPU win needs
+  batching field writes across both seats or one packed assembly pass, not
+  another single-field rewrite.  The A6000 width question from session 43 is
+  still open.
 
 ### 2026-11-17 (session 43) — the group record keeps its live width, and the pad leaves the producer
 
@@ -90,7 +138,9 @@ padded rows from the model's forward.
   `_entity_rows` 0.37, the three sort/mask functions 0.17, and the rest is the
   live-width gather/feature assembly.  Do not look for another dense pass —
   there is none left in this section.  The open box question is whether the
-  group encoder's width term exists on the A6000.
+  group encoder's width term exists on the A6000.  *(Session 44: `_entity_rows`
+  was still scattering into the 200-row axis; it is compact now, 0.43 → 0.18
+  ms, build 1.00 ms.  See `FINDINGS.md` §3.78.)*
 
 ### 2026-11-17 (session 42) — the group sort keys at live width, and the fixture that hid the board
 

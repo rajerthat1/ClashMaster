@@ -6310,3 +6310,83 @@ Evidence: `runs/crforge-c4/cpu-half-micro-s43.json`,
 `runs/crforge-c4/batched-tensorize-s43.json`,
 `runs/crforge-c4/batched-tensorize-s43-seed2.json`,
 `runs/crforge-c4/self-play-s43-variable-width.json`.
+
+### 3.78 The entity rows are compact: the 200-row scatter is gone (2026-11-17)
+
+Session 43 left the live-width group build at **1.27–1.54 ms** per seat and
+named the gather/feature assembly as the next term.  A phase table now
+attributes it, and the largest term was `_entity_rows`: it assembled each field
+from the live rows but scattered the result into a zero-filled
+`(lanes, max_entities)` array, so every field still paid the 200-row axis in
+writes for ~11 live rows.
+
+**The row view is now compact.**  `_entity_rows` packs each lane's live
+non-tower rows into one lane-major `(lanes, widest live count)` axis and returns
+`counts` and `slots` (the entity slot each column came from) beside the
+fields.  The padded columns carry the old fills but nothing reads them.
+`build`, `_orders`, `_child_order` and `_targeted_mask` already worked from an
+`include` mask and flat indices, so they needed no representation change —
+the order indices are now compact columns instead of entity slots.  The
+section's dense `group_index` / `child_index` are scattered back once at
+the end through `slots`.  ``build(..., live_slots=False)`` densifies the
+compact rows with ``_dense_entity_rows``, so the session-42 oracle and its A/B
+are unchanged.
+
+**The phase table** (`build(phases=...)`, 128 lanes, 11 live group and 11 child
+rows, 20 repeats, `runs/crforge-c4/cpu-half-micro-s44.json`):
+
+| phase | ms |
+| --- | ---: |
+| `_entity_rows` | **0.217** |
+| child feature assembly | 0.156 |
+| group feature assembly | 0.121 |
+| child order + rank | 0.112 |
+| masked zeroing | 0.092 |
+| `_orders` | 0.082 |
+| group gathers | 0.081 |
+| `_targeted_mask` | 0.050 |
+| group rank | 0.033 |
+| dense index scatter | 0.036 |
+| record construction | 0.013 |
+| **sum** | **0.991** |
+
+`_entity_rows` fell **0.43 → 0.18 ms** (2.4× on the same fixture; the phase
+figure above includes the clock overhead), and the build **1.35 → 1.00 ms**
+(1.35×).  Against the pre-session-41 dense form the tool measures the compact
+rows at **0.18 against 0.995 ms** (5.5×).  The compact form also shrinks the
+per-decision allocation by ~9× for these fields, which is why the win is
+larger than the write count alone.
+
+**A plausible zeroing rewrite measured worse.**  Replacing the 14
+`values[~mask] = fill` assignments with `np.copyto(where=...)` (no inverse
+index arrays) put the masked-zeroing phase at **0.184 ms against 0.092**, so it
+was reverted; the negative is recorded in the build comment.
+
+**The forward is unchanged.**  Session 43 already handed the model the live
+record width; `encode_observation` at 128 rows is **1.74 s against 2.60 s**
+padded (33 %), re-measured on the same process as the phase table.
+
+**Gates.**  `batched_tensorize.py --seats 0 1`: **3,008/3,008** lane-decisions,
+both seats, 0 mismatches, 5,196 micro-actions, **0.0345 ms/lane-decision**
+(18.5×), end to end **0.0499**; seed 2 **3,008/3,008**, 5,361 actions,
+**0.0490** (12.6×), 0.0638.  The seed-to-seed spread inside this tool is wider
+than the session-43 to -44 difference, so the digest is the correctness claim
+and the micro phase numbers are the change.  Bridge suite **146 passed** (one
+new compact-row test); native PPO/trainer subset 49 passed, 4 skipped; ruff
+clean.  A 4-lane × 2-seat × 2-segment × 24-decision `--ppo-update` probe is
+**2/2 on-policy**, 0 stale, gate pass, **0 illegal / 0 rejected**, checkpoint
+277 reload-identical; its KL trace is identical to session 43's probe
+(1.90e-3, −5.85e-3), i.e. the training record did not move.
+
+**What is left.**  The group build is **1.00 ms** per seat with no reserved-axis
+work left: the terms are now ~0.22 rows, ~0.28 feature assembly, ~0.23
+order/rank/mask, ~0.09 zeroing and ~0.08 gathers.  The next real move is
+batching those field writes across both seats or moving the remaining Python
+assembly into one packed pass; single-field rewrites are in the noise at this
+size.  The box question from session 43 (does the group encoder's width term
+exist on the A6000?) is still open.
+
+Evidence: `runs/crforge-c4/cpu-half-micro-s44.json`,
+`runs/crforge-c4/batched-tensorize-s44.json`,
+`runs/crforge-c4/batched-tensorize-s44-seed2.json`,
+`runs/crforge-c4/self-play-s44-compact-rows.json`.
