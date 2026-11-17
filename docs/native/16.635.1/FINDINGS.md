@@ -5648,3 +5648,103 @@ Evidence: `crforge_bridge/fast_forward.py`,
 `runs/crforge-c4/fast-forward-a6000-*{probe,graph,rollout}.json`,
 `runs/crforge-c4/cloud-thunder-a6000-fast-6vcpu.json` (raw producers under
 `cloud-thunder-fast/`).
+
+### 3.70 The CPU half, profiled: the 68 ms decode bucket was a sync storm (2026-11-17)
+
+Session 37 asked for the CPU half to be profiled at 256 rows before any
+provider decision moves. The profile is now part of the producer, so it is a
+repeated measurement rather than a one-off script:
+
+- **Per section.** `VectorTensorizer.tensorize(..., timings=...)` accumulates
+  each row builder's share (cards, towers, groups, empty, candidates, relations,
+  planes, scalars), and `self_play.py` records those plus the two-seat interleave
+  and the decode bucket split into `decode_only` / `record` / `plan`, in the
+  artifact's per-segment `cpu_half` block. They are recorded **beside** `ms`, not
+  inside it: a section is a subset of `tensorize_ms`, and
+  `timing_accounting.py` reconciles the sum of the top-level buckets against the
+  wall.
+- **Per function.** `self_play.py --profile-collection` wraps the collection loop
+  in cProfile and writes the top 30 functions by cumulative and by own time,
+  normalised to ms per decision.
+
+**The decode bucket on the A6000 was the previous-action record.** The box
+recorded decode 68 ms at 128 lanes while this laptop records 2.7 ms on the same
+code path. The difference is not numpy: `record_action` wrote the record one
+field at a time through tensor indexing
+(`previous.variant[lane, step] = candidates.variant[lane, row].cpu()`), and
+`sequence.gate[lane].item()` / `.cpu()` per lane is one device sync each. At 128
+lanes × 2 seats × 2 micro-actions × 6 fields that is ~1,300 syncs per decision.
+The write is now one NumPy pass — resolve the UID against the candidate rows,
+gather the five card columns, write the target/delay/mask — with the candidate
+columns converted once per decision by `candidate_tables()` and shared with the
+decoder.
+
+Same-process A/B (`tools/crforge/cpu_half_micro.py`, 128 lanes, 40 repeats, a
+batch with 128 rows acting):
+
+| shim | before | after | delta |
+| --- | ---: | ---: | ---: |
+| `record_action` (ms) | **4.32** | **0.11** | **−4.21 (38×)** |
+| two-seat interleave (ms) | 4.17 (stack) | 4.25 (direct write) | +0.08 (noise) |
+| 35 group gathers (ms) | 0.90 (`take_along_axis`) | 0.71 (advanced index) | −0.20 (noise across runs) |
+
+Two negatives are part of the result. The "one copy instead of two" interleave
+(a single write into `dst[seat::seats]`) is **not** faster — `torch.stack(dim=1)`
+already writes once into the interleaved destination and the reshape is a view —
+so the rewrite was reverted; it is kept in `cpu_half_micro.py` as the B-side.
+`np.take_along_axis` → advanced indexing measured 0.46 ms one run and −0.07 the
+next, so it is kept only because it allocates less, not as a win.
+
+**The sections, at 128 lanes × 2 seats (this laptop, CPU, live board).** Two
+runs at different board states; the range is the live entity count:
+
+| section | ms (run A) | ms (run B) | note |
+| --- | ---: | ---: | --- |
+| groups | 30.3 | 16.6 | feature assembly: one strided write per feature |
+| relations | 6.4 | 3.3 | lane-tagged sorted-key search |
+| candidates | 4.5 | 2.5 | 24 small arrays + placement grid per decision |
+| cards | 2.4 | 1.1 | static deck rows |
+| towers | 2.1 | 0.9 | six-row section |
+| planes | 1.7 | 1.1 | 14-channel board per seat |
+| empty | 0.7 | 0.6 | effects/events masks |
+| scalars | 0.5 | 0.2 | match scalars |
+| interleave | 9.0 | 4.2 | `stack` + free reshape |
+| engine steps | 31–37 | | 5 ticks × 128 lanes, JVM |
+| facts | 8–12 | | `encoder.encode` |
+
+**What it changes.** The box's 68 ms decode is a Python defect that the new
+record removes; the re-measurement is a box run. What remains is tensorize
+(groups first), engine steps and facts: the 291 → ~108 ms target is a 3.9× cut
+on tensorize + decode + step, and this session removes one term of it and names
+the rest. Groups' own time is the feature assembly, so the next attempt is to
+build the feature block as one `(features, lanes, groups)` stack and transpose
+once, not to micro-optimise the gather. Engine steps are the JVM call; facts are
+the engine→numpy read.
+
+**The sampled graph is gated, not assumed.** `--full-cuda-graph` captures
+encode + core + the sampled decode in one graph. The RNG mechanism is not
+`CUDAGraph.register_generator_state()`: PyTorch registers the **default** device
+generator unconditionally in `CUDAGraph::capture_begin()` ("default generator is
+always registered"), so a captured `Categorical.sample()` already advances on
+replay, and the explicit API is a deprecated no-op in newer torch builds. The
+claim is therefore checked at run time rather than by version or by an API
+probe: two replays of the same batch must produce different log-probabilities,
+or the producer refuses the graph. A build without the cooperation fails loudly
+instead of sampling one frozen stream.
+
+**Gates.** `tools/crforge/batched_tensorize.py --count 48 --steps 14 --seats
+0 1 --verify-lanes 8`: **304/304 lane-decisions digest-identical** (both seats)
+after the group-gather change, with 762 micro-actions recorded through the new
+`record_action`; 8.3× / 6.5× the oracle per seat, 0.099 ms/lane-decision
+batched. The bridge suite adds `test_cpu_half.py` (6) and three full-graph tests;
+`test_vector_actions`, `test_vector_tensorize` and `test_fast_forward` pass.
+
+A training smoke on the same code (4 lanes × 2 seats × 2 segments × 4 decisions,
+`--ppo-update --fast-forward --verify-fast-forward`) passes: two finite updates,
+verification exact on all six action fields (`max_abs_delta` 0.0), 0 rejected;
+the run gate is false only on `eligible_act_rate 0.0`, which a 64-lane-decision
+shape that never acts cannot pass and is not a throughput failure.
+
+Evidence: `runs/crforge-c4/cpu-half-profile-128.json`,
+`runs/crforge-c4/cpu-half-micro-128.json`, `runs/crforge-c4/cpu-half-after-128.json`,
+`runs/crforge-c4/self-play-s37-train.json`.

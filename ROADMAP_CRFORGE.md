@@ -390,6 +390,42 @@ the next gate:** tensorize 98 + decode 68 + step 113 + facts 12 = 291 ms must
 reach ~108 ms for six vCPUs to feed the 133 ms forward. Do not rent more vCPUs
 until it moves — the card is bound at 3.2 processes.
 
+**Status (2026-11-17, session 37).** The half is now profiled rather than
+estimated. `self_play.py --profile-collection` records a cProfile top list, and
+every artifact carries a per-segment `cpu_half` block: the eight row-builder
+sections, the two-seat interleave, and the decode bucket split into
+`decode_only` / `record` / `plan`. `tools/crforge/cpu_half_micro.py` A/Bs the
+Python shims in one process, so a faster shim is not confused with a quieter
+host. Two results:
+
+* **The box's 68 ms `decode` bucket was the previous-action record, not the
+  decoder.** `record_action` wrote one field per lane per micro-action through
+  tensor indexing — on CUDA that is one device sync per field per row, ~1,300 per
+  decision at 128 lanes. It is now one NumPy pass (UID match, gather, write),
+  with the candidate columns converted once per decision and shared with the
+  decoder: **4.3 → 0.11 ms** on CPU at 128 lanes over 40 repeats
+  (`cpu_half_micro.py`). The decoder itself is 0.6 ms.
+* **The tensorize bucket is the row builders, and groups dominate.** At 128
+  lanes × 2 seats on this laptop the sections are groups 17–30, relations 3–6,
+  candidates 2.5–4.5, cards 1–2.4, towers 0.9–2.1, planes 1.1–1.7, empty 0.6,
+  scalars 0.2–0.5, interleave 4–9 ms (the range is the board's live entity
+  count, not noise); engine steps 31–37 and facts 8–12. The group row's own time
+  is its feature assembly — one strided write per feature into a
+  `(lanes, groups, channels)` array — not the gather: `take_along_axis` →
+  advanced indexing measured **0.20 ms** one run and −0.07 the next, i.e. noise.
+  The "one copy instead of two" interleave rewrite measured −0.08 ms (also
+  noise: `torch.stack` already writes once into an interleaved destination) and
+  was reverted.
+
+**The sampled decode is now a flag, not an unknown.** `--full-cuda-graph`
+captures encode + core + `select_action_from_context` in one graph and refuses to
+run unless two replays of the same batch draw different log-probabilities — the
+frozen-RNG signature. PyTorch registers the default generator at
+`capture_begin`, so the gate is behavioural rather than a version claim; a build
+without that cooperation fails loudly instead of sampling one frozen stream. The
+wall is a box measurement, as is the re-run of the process sweep, and
+`--verify-fast-forward` still gates the result on action equality.
+
 ---
 
 ## 5. CI and parity role (always on)
@@ -528,6 +564,27 @@ PYTHONPATH=.resource/crforge/python .venv/bin/python -m crforge_env.bench \
   --count 8 --segments 1 --decisions-per-segment 40 \
   --force-second-micro alternate --no-rollout \
   --output runs/crforge-c4/self-play-two-micro.json
+
+# CPU-half profile: every artifact carries ``cpu_half`` (the eight row-builder
+# sections, the interleave, and decode_only/record/plan); --profile-collection
+# adds a cProfile top list by cumulative and own time, in ms per decision.
+OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/self_play.py \
+  --count 128 --segments 1 --decisions-per-segment 8 --no-rollout \
+  --profile-collection --output runs/crforge-c4/cpu-half-profile-128.json
+
+# CPU-half A/B: the interleave, the group gather and record_action against the
+# shims they replaced, in one process on one batch (a before/after across
+# processes measures the host's load, not the change).
+OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/cpu_half_micro.py \
+  --count 128 --repeats 40 --output runs/crforge-c4/cpu-half-micro-128.json
+
+# full-call CUDA Graph (GPU box only): encode + core + sampled decode in one
+# capture.  Refused unless two replays draw different log-probabilities (a frozen
+# RNG), and --verify-fast-forward still requires fp32 action equality.
+.venv/bin/python tools/crforge/self_play.py \
+  --count 128 --segments 3 --decisions-per-segment 32 --no-rollout \
+  --fast-forward --full-cuda-graph --verify-fast-forward \
+  --output runs/crforge-c4/full-graph-128.json
 
 # C4 cadence gate: reset vs carry vs wave at one shape, one checkpoint and one
 # seed list.  Each update is classified on-policy or stale (a previous update in

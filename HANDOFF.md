@@ -6,6 +6,61 @@
 
 ## Decisions — what changed
 
+### 2026-11-17 — the CPU half is profiled: the 68 ms decode bucket was ~1,300 GPU syncs
+
+Session 37's first item needed no rental: profile the CPU half, then make it
+fall.  The profile is now part of the producer and the biggest term was a
+Python defect, not arithmetic.
+
+- **The box's decode bucket was `record_action`, not the decoder.**  The record
+  wrote one tensor element per lane per micro-action per field, and each
+  `.item()`/`.cpu()` on a sampled tensor is a device sync: at 128 lanes × 2
+  seats × 2 micro-actions × 6 fields that is ~1,300 syncs per decision, which is
+  the recorded 68 ms.  It is one NumPy pass now (UID match, gather, write), with
+  the candidate columns converted once per decision by `candidate_tables()` and
+  shared with the decoder: **4.32 → 0.11 ms** on CPU at 128 lanes over 40
+  repeats.  The decoder itself is 0.6 ms.
+- **tensorize is the row builders, and groups dominate.**  At 128 lanes × 2
+  seats on this laptop the sections are groups 17–30, relations 3–6, candidates
+  2.5–4.5, cards 1–2.4, towers 0.9–2.1, planes 1.1–1.7, empty 0.6, scalars
+  0.2–0.5 and interleave 4–9 ms (the range is the live entity count); engine
+  steps 31–37, facts 8–12.  Groups' own time is its **feature assembly** (one
+  strided write per feature into a `(lanes, groups, channels)` array), not the
+  gather.
+- **Two plausible optimisations measured as noise and one was reverted.**  The
+  "one copy instead of two" interleave (write into `dst[seat::seats]`) is not
+  faster: `torch.stack(dim=1)` already writes once into the interleaved
+  destination and the reshape is a view.  `np.take_along_axis` → advanced
+  indexing measured 0.46 ms one run and −0.07 the next.  Both are kept in
+  `tools/crforge/cpu_half_micro.py` as B-sides, not claimed as wins.
+- **Every artifact now carries the half.**  Per segment: `cpu_half` with the
+  eight sections, the interleave, and `decode_only`/`record`/`plan`; and
+  `--profile-collection` adds a cProfile top list by cumulative and own time.
+  They sit beside `ms`, never inside it, so `timing_accounting.py` still
+  reconciles the bucket sum against the wall.
+- **`--full-cuda-graph` is wired and refuses a frozen stream.**  One capture
+  covers encode + core + `select_action_from_context`; before the first decision
+  two replays of the same batch must draw different log-probabilities, or the
+  flag is refused.  That is a behavioural gate, not a torch-version claim:
+  `CUDAGraph::capture_begin()` registers the **default** generator
+  unconditionally, so a captured `Categorical.sample()` advances on replay, and
+  `register_generator_state()` is a deprecated no-op in newer torch builds.  A
+  build without the cooperation now fails loudly instead of sampling one
+  frozen stream.
+  `--verify-fast-forward` still requires fp32 action equality.  The wall is a
+  box measurement.  *(This supersedes session 36's "a captured sampler would
+  freeze its RNG": the default generator is registered by the capture itself.)*
+- **Decision:** the provider sweep stays paused.  One term of the 291 → ~108 ms
+  target is gone; the rest is groups (feature assembly), the engine step and
+  facts.  The box re-measure and the six-producer sweep are session 38's first
+  items, not a second rental on the strength of a CPU-side rewrite.
+- **Gate:** `batched_tensorize.py` **304/304 lane-decisions digest-identical**
+  (both seats, 762 micro-actions through the new record); bridge suite gains
+  `test_cpu_half.py` (6) and three full-graph tests; ruff clean.
+
+See the session-37 section below, `FINDINGS.md` §3.70 and
+`ROADMAP_CRFORGE.md` §4.
+
 ### 2026-11-16 — the `ever_server` forward is ported in-process and measured on the A6000: 183 → 133 ms, but 6 producers gain only 3 %
 
 The forward port is in (`crforge_bridge/fast_forward.py`, `self_play.py
@@ -874,6 +929,96 @@ do not start another R0 run.
 > §3.43.
 
 ---
+
+## Session 37 results (2026-11-17) — the CPU half, profiled
+
+**Read first:** the decision entry above, `FINDINGS.md` §3.70 and
+`ROADMAP_CRFORGE.md` §4.
+
+### What landed
+
+- **`VectorTensorizer.tensorize(..., timings=...)`** accumulates every row
+  builder's share; `VectorTensorizer.record_action` takes an optional
+  `candidate_tables()` conversion so the decode and the record share it, and it
+  writes the whole record in one NumPy pass.
+- **`interleave_rows`** moves into `crforge_bridge/vector_tensorize.py` (testable,
+  shared) with the measured note that `stack` + `reshape` is already one copy.
+- **The producer's `cpu_half` block**: per segment, the eight sections, the
+  interleave, and the decode split; `--profile-collection` writes the cProfile
+  top list.  `--full-cuda-graph` wires the sampled graph.
+- **`tools/crforge/cpu_half_micro.py`**: the same-process A/B for the shims
+  (interleave, group gather, `record_action`), which is how a reverted
+  "optimisation" stays documented instead of being re-tried.
+
+### Measured — the sections at 128 lanes × 2 seats (laptop CPU, live board)
+
+| section | ms (run A, 20 reps) | ms (run B, 40 reps) |
+| --- | ---: | ---: |
+| groups | 30.3 | 16.6 |
+| relations | 6.4 | 3.3 |
+| candidates | 4.5 | 2.5 |
+| cards | 2.4 | 1.1 |
+| towers | 2.1 | 0.9 |
+| planes | 1.7 | 1.1 |
+| empty | 0.7 | 0.6 |
+| scalars | 0.5 | 0.2 |
+| interleave | 9.0 | 4.2 |
+| engine steps | 31–37 | |
+| facts | 8–12 | |
+
+The 3.9× that would put the half at ~108 ms is not in one place: groups' feature
+assembly, the JVM step call and the facts read are the three terms.
+
+### Measured — the shims, in one process (`cpu_half_micro.py`, 40 repeats)
+
+| shim | before | after | verdict |
+| --- | ---: | ---: | --- |
+| `record_action` (128 rows acting) | 4.32 ms | **0.11 ms** | 38×, and it removes the GPU syncs the box recorded as `decode` |
+| two-seat interleave | 4.17 ms (`stack`) | 4.25 ms (direct write) | no win; reverted |
+| 35 group gathers | 0.90 ms (`take_along_axis`) | 0.71 ms (advanced) | within run-to-run noise |
+
+### Measured — the producer's buckets, same shape, before/after code
+
+| bucket (ms mean) | before | after |
+| --- | ---: | ---: |
+| tensorize | 77.9 | 41.6 |
+| decode | 3.4 | 2.7 |
+| step | 41.2 | 31.3 |
+| facts | 9.6 | 7.8 |
+
+The wall is inference-dominated on this host (9.3 s → 7.9 s for the CPU fp32
+forward at 256 rows), so ~10 % of that is host load, visible in the unchanged
+buckets.  The micro A/B, not this table, is the attribution; the producer numbers
+are the absolute state the box re-measure compares against.
+
+### Still open
+
+- **The box re-measure.**  `record_action` is the term the box can confirm:
+  decode was 68 ms there.  Run the 128-lane producer, then the 1/2/4/6 sweep,
+  then the overlapped loop.
+- **`--full-cuda-graph` wall.**  The gate is in; the capture, its replay cost and
+  whether it beats `--no-cuda-graphs` are box measurements.  The frozen-RNG
+  refusal is the safety net if a build does not register the generator.
+- **Groups.**  Build the feature block as one `(features, lanes, groups)` stack
+  and transpose once, instead of ~20 strided writes per seat.
+- **Steps and facts.**  The engine step is 31–37 ms here (5 JVM calls/decision at
+  128 lanes); facts is the engine→numpy read.
+- **Native parity cadence, unchanged.**
+
+### Next session (session 38)
+
+1. **Re-measure on the A6000** at 128 lanes × 3 segments × 32 decisions with the
+   new record: `decode` should collapse from 68 ms, and the six-producer sweep
+   should move for the first time since 1.215.  Record both, and the
+   `cpu_half.breakdown_ms_mean` block, in `runs/crforge-c4/`.
+2. **Then `--full-cuda-graph --verify-fast-forward`** on the same box; the RNG
+   gate and the action-equality gate both have to pass, and the wall is compared
+   against `--no-cuda-graphs`.
+3. **Overlapped loop on the box** (session 36 item 4): 128 lanes, forward 133 ms,
+   update the short side.
+4. **Groups' feature assembly** — the largest remaining CPU term; gate it on the
+   `batched_tensorize.py` digest, not on a wall alone.
+5. **Native parity cadence, unchanged.**
 
 ## Session 36 results (2026-11-16) — the in-process forward port, measured on the A6000
 
