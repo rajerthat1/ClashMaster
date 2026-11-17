@@ -6,6 +6,51 @@
 
 ## Decisions — what changed
 
+### 2026-11-19 — the horizon's return is a value fit, not a score; the A6000's 228 ms was a statistic
+
+Session 33 asked for the reward share before any cadence is ranked on the
+simulator's return, and session 32 left the A6000's ~228 ms/decision
+unattributed.  Both are measured, and the second is not work at all.
+
+- **The share is 0.2–0.8 % of a typical update.**  Per update,
+  `(reward_abs_sum / rows) / |return_mean|`: the six 50-update runs have median
+  shares **1.7e-3 … 8.1e-3** (3-seed means 4.7e-3 `reset`, 4.3e-3 `carry`), and
+  only **5 of 300 updates** reach the 50 % ranking threshold — every one a
+  terminal.  `reward_abs_max` is ~1e-3 typically and 0.83–0.94 at the terminals.
+- **The best-return run never took a tower.**  `carry` seed 1 — the one-seed
+  leader at 0.5803 — has **no terminal, no truncation, and no reward above
+  0.0033** in 1,200 decisions per lane (about one match).  A score cannot rank
+  the run with no game result first; the return is the boundary value fit.
+- **Longer windows do not rescue it.**  The 24/60/120-decision probe rises
+  **3.1×** from 24 to 60 decisions (median share 8.2e-3 → 2.6e-2) and then
+  **stops** (2.5e-2 at 120, 0.97×).  Even a 120-decision window, which at 16
+  updates is longer than a whole match, keeps the typical update ~20× below the
+  50 % bar and reward-dominated in only **19 %** of updates.  The return is a
+  **value-fit diagnostic**, not a score.
+- **The 228 ms is a mean-median mismatch, not missing work.**  Every timing
+  bucket is a median and the wall is a mean.  One cold first decision costs
+  **4.9–5.5 s at every lane count from 8 to 128**; at 32 decisions that same
+  setup amortises to the **227 ms** that was called unattributed.
+  Two 128-lane shapes solve **F ≈ 4.0 s + 523 ms/decision = 490 ld/s** steady
+  state against the recorded 395.8 (1.24×).  All six 8-decision scaling runs are
+  **65–82 % one-time cost**, so their GPU/laptop rates — including "0.34× at
+  8 lanes" — are not steady-state results and must be re-measured.
+- **Decision:** `reset` remains the training default because it is the
+  seed-stable cadence, **not** because its simulator return is higher.  Do not
+  rank a cadence on the return; native parity (50–150 matches every N updates)
+  is unchanged and is still the only promotion gate.  A simulator-side learning
+  signal must observe the game — terminal/crown/tower rate over windows that
+  contain episodes — not the GAE return.  The A6000 scaling and overlapped-loop
+  gates are re-run with `--warmup-forward` before they size anything.
+- **Landed:** horizon reward-share fields; `tools/crforge/reward_share.py`;
+  `tools/crforge/timing_accounting.py`; producer `ms_mean`/`ms_max`/`ms_first`
+  and residual accounting; `--warmup-forward` (default) primes the sampled and
+  decoded path and restores the torch/numpy/CUDA RNG, `--no-warmup-forward`
+  reproduces the old timings.  Bridge suite **105 passed**; crforge trainer
+  **13 passed**; ruff clean.
+
+See the session-34 section below and `FINDINGS.md` §3.67.
+
 ### 2026-11-19 — the overlapped loop is correct; on CPU it is not a training default
 
 `--overlap-update` collects segment `k+1` while segment `k` updates, on a second
@@ -690,6 +735,130 @@ do not start another R0 run.
 > §3.43.
 
 ---
+
+## Session 34 results (2026-11-19) — the return is a value fit; the A6000's 228 ms was a statistic
+
+**Read first:** this section, `FINDINGS.md` §3.67, and the session-33 section
+below.
+
+### What landed
+
+- **The horizon reports the reward share of its return.**
+  `tools/crforge/learning_horizon.py` now derives `reward_abs_max` per update
+  from the trace or, for older artifacts, from the segment summary's
+  `reward_min`/`reward_max`, and records, per run: `reward_abs_max_median`,
+  `reward_share_median`/`mean`/`max`,
+  `updates_reward_share_at_least_threshold` and `reward_source`.  The comparison
+  carries `reward_share_median`, `reward_share_threshold` and
+  `return_rankable_on_reward_share`.  `--reuse` regenerated both horizon
+  artifacts from the existing runs.
+- **`tools/crforge/reward_share.py`** — the shape probe at 24/60/120 decisions
+  per segment, same update count and seeds, with the share's growth over the
+  baseline and a conservative verdict (a shape ranks only when its median update
+  and at least half its updates are reward-dominated).
+- **Timing accounting in the producer.**  `tools/crforge/self_play.py` now
+  records `ms_mean`, `ms_max` and `ms_first` next to the median buckets, plus
+  `segment_boundary_ms`, `collection_ms_per_decision`, `accounted_ms_mean` and
+  `unaccounted_ms_mean` per segment.  `--warmup-forward` (default) primes the
+  sampled and decoded path on the real batch before segment 0 and restores the
+  torch/numpy/CUDA RNG in a `finally`, so the action stream is unchanged
+  (validated: cold vs warm at 4 lanes × 2 × 12 with a stored rollout agree on
+  8 ACT / 192 eligible and on every per-segment value/log-prob/reward summary);
+  `--no-warmup-forward` reproduces the old timings.
+- **`tools/crforge/timing_accounting.py`** — reads producer artifacts, reports
+  the median/mean reconciliation and solves `ms = S + F/decisions` from two
+  segment lengths at one lane count.
+- **Tests:** `test_learning_horizon.py` gains the reward-share and
+  trace-vs-segment-source cases; new `test_reward_share.py` (4) and
+  `test_timing_accounting.py` (4).  **Bridge suite 105 passed**; the crforge
+  trainer suite 13 passed; ruff clean on the touched files.
+
+### Measured — the reward share at 24 decisions (six 50-update runs)
+
+`reward_share = (reward_abs_sum / rows) / |return_mean|` per update.  Same
+4-lane × 24-decision × 50-update runs and seeds as session 33
+(`runs/crforge-c4/learning-horizon.json`):
+
+| policy | seed | updates w/ reward | median max \|reward\| | run max \|reward\| | median share | max share | updates ≥ 50 % | last-10 return |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reset` | 1 | 48/50 | 1.02e-3 | 0.906 | 4.9e-3 | 1.89 | 1 | 0.4951 |
+| `reset` | 2 | 48/50 | 1.01e-3 | 0.922 | 6.5e-3 | 1.68 | 2 | 0.4888 |
+| `reset` | 3 | 48/50 | 1.01e-3 | 0.931 | 2.6e-3 | 0.83 | 2 | 0.4640 |
+| `carry` | 1 | 48/50 | 5.8e-4 | **0.003** | 1.7e-3 | 0.02 | 0 | **0.5803** |
+| `carry` | 2 | 49/50 | 9.8e-4 | 0.881 | 3.2e-3 | 2.51 | 1 | 0.3411 |
+| `carry` | 3 | 48/50 | 1.01e-3 | 0.935 | 8.1e-3 | 5.25 | 1 | 0.3062 |
+
+3-seed median share: **0.47 % `reset`, 0.43 % `carry`**; **5 of 300 updates**
+reach 50 %, all terminal.  `carry` seed 1 — the one-seed leader — has no terminal,
+no truncation and no reward above 0.0033 in 1,200 decisions/lane, and the highest
+return of all six runs.  `return_rankable_on_reward_share: false`.
+
+### Measured — longer windows flatten at ~2.5 %
+
+Same `reset` cadence, 16 updates, `runs/crforge-c4/reward-share.json`:
+
+| decisions/segment | seeds | median share | max share | updates ≥ 50 % | median max \|reward\| | wall |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 1, 2 | 8.2e-3 | 5.8e-2 | 0 / 32 | 1.01e-3 | 291 s |
+| 60 | 1, 2 | **2.6e-2** | 1.5 | 5 / 32 (16 %) | 2.8e-3 | 715 s |
+| 120 | 1 | **2.5e-2** | 2.8 | 3 / 16 (19 %) | 2.6e-3 | 1,631 s |
+
+The share grows 3.1× from 24 to 60 and then is flat: the accumulated reward and
+the return it is measured against grow together.  The 120-decision/seed-2 run
+was stopped after 5 of 16 segments once the trend was clear; the artifact lists
+it under `missing_runs` with `gate.complete: false`, and the verdict does not
+depend on it.
+
+### Measured — the A6000's "unattributed 228 ms" is one cold decision
+
+Every bucket is a median; `collection_wall_s / decisions` is a mean.  One cold
+decision of 4.9–5.5 s at **every** batch size from 8 to 128 lanes is the
+difference; at 32 decisions it amortises to the 227 ms that was called
+unattributed.  Two 128-lane shapes solve **F ≈ 4.0 s + 523 ms/decision = 490
+ld/s** steady state against the recorded 395.8 (1.24×).
+All six `gpu-forward-scaling-*` runs are 8 decisions long, so 65–82 % of each is
+one-time cost; their end-to-end rates — including "0.34× at 8 lanes" — are not
+steady-state results.  The CPU control (64 lanes × 2 × 8) closes the loop: the
+residual from the means is **0.0 ms in all four segments**, the cold first
+segment costs **+3.48 s** against the second (4,139.0 vs 3,704.6 ms/decision),
+and `--warmup-forward` removes it (3,630.0 ms/decision at segment 0, first
+inference no longer the max).  `runs/crforge-c4/timing-accounting-{gpu,cpu}.json`,
+`runs/crforge-c4/cpu-timing-{cold,warm}.json`, `FINDINGS.md` §3.67.
+
+### Found by running it
+
+1. **The return's best run never took a tower.** `carry` seed 1 has the highest
+   last-10 return (0.5803) and no terminal, no truncation and no reward above
+   0.0033 in 50 segments. That is not a close call the mean hid; the run's whole
+   reward mass is ~0.2 % of its return. The one-seed lead was a value fit.
+2. **Longer windows do not fix a bootstrap-dominated return.** 24 → 60 decisions
+   triples the share; 60 → 120 is flat, because the reward and the return it is
+   measured against grow together. The window at 120 decisions is already longer
+   than a match, and 13 of 16 updates are still not reward-dominated.
+3. **The 228 ms was the statistic.** Summing median buckets against a mean wall
+   invented 35 % "unattributed" work at 128 lanes and 65–82 % at the 8-decision
+   scaling shapes. The producer had the data to show it — `ms_first` and
+   `ms_mean` now record it.
+4. **The fixed cost is batch-size independent.** 4.9–5.5 s from 8 to 128 lanes
+   is setup (lazy kernels/allocator), not work that scales with rows. That is
+   why it survived every shape and looked like a per-decision cost.
+5. **A stopped probe is still evidence.** `--aggregate-only` reports missing
+   runs and `gate.complete: false` instead of re-collecting or pretending the
+   shape set is complete; the 120/seed-2 run was stopped once the flat trend
+   was measured.
+
+### Next session (session 35)
+
+1. **Re-measure the A6000 with `--warmup-forward`** at 8–128 lanes and record
+   `ms_mean`/`ms_first`: the 8-decision scaling table is 65–82 % one-time cost,
+   so the gate-shape GPU/laptop ratio and the overlapped-loop gate both need the
+   corrected steady state.
+2. **Then the overlapped loop on the A6000** (session-32 item 1, still open).
+3. **Native parity cadence, unchanged:** 50–150 native matches every N updates
+   and after every adapter change; crforge is never a promotion gate.
+4. **Do not rank a cadence on the simulator return.**  If a simulator-side
+   learning signal is needed, use a statistic that observes the game (terminal
+   rate, towers/crowns) over windows that contain episodes, not the GAE return.
 
 ## Session 33 results (2026-11-19) — seeds 2 and 3 reverse the horizon ranking
 

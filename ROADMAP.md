@@ -623,6 +623,11 @@ Rules:
 - Keep rejected actions at zero; a rollout with rejections is invalid.
 - Do not call self-play actions “expert” for IL.
 - Promote only on native-engine gates; simulator wins are not evidence.
+- **Do not rank a training cadence on the crforge return.** Observed reward is
+  0.2–0.8 % of a typical update's return at 24 decisions, and 60→120-decision
+  windows are flat (2.5 %); the curve is a boundary value fit, not a score
+  (`docs/native/16.635.1/FINDINGS.md` §3.67). Rank on native matches, or on a
+  simulator statistic that observes the game (terminal/crown/tower rate).
 
 **Gate:** N4.
 

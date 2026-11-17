@@ -4859,6 +4859,14 @@ Amortised (128 lanes × 32 decisions, `gpu-forward-scaling-128-long.json`): wall
 forward is 24 % of the wall. The remaining ~228 ms of the 647 ms decision is not
 in any bucket and is the next thing to profile.
 
+> **Corrected 2026-11-19 (§3.67).** There is no missing work. The buckets are
+> **medians** and the wall is a **mean**: one cold first decision of 4.9–5.5 s
+> (constant from 8 to 128 lanes) is 227 ms/decision when amortised over 32. The
+> same correction applies to every 8-decision row above, which is 65–82 %
+> one-time cost; those are not steady-state rates. The steady-state estimate is
+> **≈490 lane-decisions/s** (F ≈ 4.0 s + 523 ms/decision), and the producer now
+> records `ms_mean`/`ms_first` and warms the sampled path by default.
+
 #### The update is where the GPU actually pays
 
 8 lanes × 64 decisions = 1,024 frames, 16 rows — the §3.59 gate shape
@@ -5286,3 +5294,171 @@ Evidence: `tools/crforge/learning_horizon.py`,
 `crforge_bridge/training.py` (`reward_abs_max`),
 `runs/crforge-c4/learning-horizon.json`,
 `runs/crforge-c4/horizon/{reset,carry}-seed{1,2,3}.json`.
+
+### 3.67 The horizon's return is a value fit, and the A6000's "unattributed" 228 ms is a statistic (2026-11-19)
+
+Session 33 left two open measurements: whether a longer segment makes the
+observed reward a large enough part of the return to rank a cadence on it, and
+what the ~228 ms/decision the A6000 run could not place in any timing bucket
+was.  The first is answered by a reward-share report and a 24/60/120-decision
+probe; the second is not a missing measurement at all — the artifacts recorded
+**medians** while the wall they were compared with is a **mean**, and the
+process's startup supplied the difference.  Both are now instrumented: `tools/crforge/reward_share.py`,
+`tools/crforge/timing_accounting.py`, and four new fields on every producer
+artifact (`ms_mean`, `ms_max`, `ms_first`, and the residual accounting).
+
+#### The reward share: 0.2–0.8 % of a typical update's return
+
+`learning_horizon.py` now reports, per update and per run:
+
+```text
+reward_share = (reward_abs_sum / rows) / abs(return_mean)
+```
+
+i.e. the reward mass one lane accumulated inside the window, against the
+magnitude of the GAE return the update scored.  `reward_abs_sum` is used because
+`reward_sum` cancels by antisymmetry; it is a magnitude, so the share is an
+upper bound on the signed reward.  A typical update is reward-dominated enough
+to rank only at a share of **0.5**; the six 50-update runs (4 lanes × 24
+decisions × 50, seed 1–3) are far below it:
+
+| policy | seed | updates w/ reward | median max \|reward\| | run max \|reward\| | median share | max share | updates ≥ 50 % | last-10 return |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `reset` | 1 | 48/50 | 1.02e-3 | 0.906 | 4.9e-3 | 1.89 | 1 | 0.4951 |
+| `reset` | 2 | 48/50 | 1.01e-3 | 0.922 | 6.5e-3 | 1.68 | 2 | 0.4888 |
+| `reset` | 3 | 48/50 | 1.01e-3 | 0.931 | 2.6e-3 | 0.83 | 2 | 0.4640 |
+| `carry` | 1 | 48/50 | 5.8e-4 | **0.003** | 1.7e-3 | 0.02 | 0 | **0.5803** |
+| `carry` | 2 | 49/50 | 9.8e-4 | 0.881 | 3.2e-3 | 2.51 | 1 | 0.3411 |
+| `carry` | 3 | 48/50 | 1.01e-3 | 0.935 | 8.1e-3 | 5.25 | 1 | 0.3062 |
+
+Three-seed median share: **0.47 % (`reset`) and 0.43 % (`carry`)**.  Only
+**5 of 300 updates** reach 50 %, and every one of them is a terminal update — a
+single reward of ~0.9 against a small return.  `comparison.reward_share_median`
+and `return_rankable_on_reward_share: false` are recorded on
+`runs/crforge-c4/learning-horizon.json`.
+
+**`carry` seed 1 is the cleanest counter-example to reading the return as a
+score.**  It is the run the one-seed ranking in §3.65 put first (0.5803), and in
+50 segments — 1,200 decisions per lane, about one match — it recorded **no
+terminal and no truncation**, and its largest single reward in the whole run is
+**0.0033**, 270× below a terminal and ~6 % of a tower.  The highest return came
+from the run that destroyed the least.  That is a boundary value fit, not a
+game result.
+
+#### Longer windows (24 → 60 → 120 decisions)
+
+The open question from §3.66 was whether a longer segment accumulates enough
+reward to change that.  `tools/crforge/reward_share.py` runs the same `reset`
+cadence at 16 updates and two seeds for 24, 60 and 120 decisions per segment, so
+the shapes differ only in the window (`runs/crforge-c4/reward-share.json`):
+
+| decisions/segment | seeds | median share | max share | updates ≥ 50 % | median max \|reward\| | last-3 return | wall |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 1, 2 | 8.2e-3 | 5.8e-2 | 0 / 32 | 1.01e-3 | 0.341 | 291 s |
+| 60 | 1, 2 | **2.6e-2** | 1.5 | 5 / 32 (16 %) | 2.8e-3 | 0.307 | 715 s |
+| 120 | 1 | **2.5e-2** | 2.8 | 3 / 16 (19 %) | 2.6e-3 | 0.413 | 1,631 s |
+
+The share rises **3.1×** from 24 to 60 decisions and then **stops**: 60 → 120 is
+0.97×.  A longer window does accumulate more reward, but the return it is
+compared against grows at the same rate — the boundary bootstrap rises with the
+value, and once a terminal lands in the window the terminal reward itself is in
+the denominator.  The median stays around **2.5 %**, ~20× below the 50 % bar,
+and only 16–19 % of updates are reward-dominated even when the window is longer
+than a match (120 × 16 = 1,920 decisions per lane against a 1,214-decision
+match).  **Longer segments are not the lever.**  A statistic that observes the
+game — terminal rate, towers/crowns — over windows that contain whole episodes
+is a different measurement, not a longer version of this one.
+
+The probe's sixth run (120 decisions, seed 2) was stopped after 5 of 16 segments
+once the 24/60/120/seed-1 trend was in; the artifact records it under
+`missing_runs` with `gate.complete: false`, and the verdict does not depend on
+it.  The walls are this laptop's and are not a throughput claim.
+
+Evidence: `tools/crforge/reward_share.py`,
+`crforge_bridge/tests/test_reward_share.py`,
+`runs/crforge-c4/reward-share.json`,
+`runs/crforge-c4/reward-share/reset-seed{1,2}-d24.json`,
+`runs/crforge-c4/reward-share/reset-seed{1,2}-d60.json`,
+`runs/crforge-c4/reward-share/reset-seed1-d120.json`.
+
+#### The A6000's ~228 ms was a mean-median mismatch, not unmeasured work
+
+Every timing bucket is a **median** (`self_play.py` stores
+`statistics.median(values)`), while `collection_wall_s / decisions` is a
+**mean**.  The start of a process pays lazy setup — dominated by the first
+sampled forward, with a smaller first tensorize and first engine step — which
+raises the mean and leaves every median untouched.  Reading the six A6000
+artifacts with that in mind:
+
+| artifact | lanes | decisions | wall/decision | Σ median buckets | residual | implied fixed cost |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `gpu-forward-scaling-8` | 8 | 8 | 752.9 ms | 136.8 | 616.1 | 4.93 s |
+| `gpu-forward-scaling-16` | 16 | 8 | 828.6 | 159.2 | 669.4 | 5.36 s |
+| `gpu-forward-scaling-32` | 32 | 8 | 790.5 | 171.4 | 619.1 | 4.95 s |
+| `gpu-forward-scaling-64` | 64 | 8 | 913.0 | 240.7 | 672.3 | 5.38 s |
+| `gpu-forward-scaling-128` | 128 | 8 | 1018.8 | 329.4 | 689.3 | 5.51 s |
+| `gpu-forward-scaling-128-long` | 128 | 32 | 646.8 | 419.7 | 227.1 | **7.27 s** |
+
+The implied fixed cost is **4.9–5.5 s across a 16× lane range** and lands on
+7.3 s at 32 decisions.  That is not per-row work: it is one-time setup, and it
+is what "the remaining ~228 ms of the 647 ms decision" is — 7.3 s amortised over
+32 decisions.  The 32-decision artifact's steady-state medians are also 27 %
+higher than the 8-decision run at the same lane count (419.7 vs 329.4 ms), so
+its raw residual overstates the fixed part; the two-point fit below separates
+them.
+
+Two artifacts at 128 lanes and different segment lengths solve
+`ms = S + F/decisions`: **F ≈ 4.0 s**, **S ≈ 523 ms/decision**, i.e. **490
+lane-decisions/s** steady state against the recorded 395.8 (1.24×).  The fit is
+two points from one box session, so read the range as 490–610 ld/s (the
+median-sum reading is the upper end) until the next run records the means.
+
+A CPU control makes the mechanism visible without a GPU.  64 lanes × 2 segments ×
+8 decisions, `--no-warmup-forward` against the default:
+
+| run | segment | wall/decision | first inference | median inference | first tensorize | residual from means |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cold | 0 | 4,139.0 ms | 4,327.5 | 4,044.5 | 180.3 | **0.0** |
+| cold | 1 | 3,704.6 ms | 4,106.3 | 3,588.3 | 26.8 | **0.0** |
+| warm | 0 | 3,630.0 ms | 3,473.4 | 3,489.7 | 18.6 | **0.0** |
+| warm | 1 | 3,868.5 ms | 4,000.3 | 3,781.6 | 17.2 | **0.0** |
+
+The residual from the **means** is **0.0 ms in all four segments** — the buckets
+are contiguous and complete, so the reconciliation is exact; the 49–107 ms
+"residual" from the medians is the mean-median gap, not missing work.  The cold
+first segment is **3.48 s** more expensive than the second (4,139.0 − 3,704.6
+ms/decision × 8), with `ms_first = ms_max` on the first decision and a 180 ms
+first tensorize.  With `--warmup-forward` the first segment falls to 3,630.0
+ms/decision (509 ms/decision, ~4.1 s, below the cold run) and the first inference
+is no longer the maximum.  The warm control's segment 1 is 3,868.5 ms/decision
+against the cold run's 3,704.6: host noise is ~5 %, which is why the segment
+pair, not a single run, is the unit.
+
+The fixed cost is real on both substrates — **~3.5 s per process on CPU**, where
+one decision already costs 4 s, and **~5 s on the GPU**, where one decision costs
+0.15 s — and it is exactly what comparing median buckets with a mean wall turned
+into "unattributed" time on the fast substrate.
+
+This also invalidates a table in §3.62 rather than refining it: **all six
+scaling runs are 8 decisions long, so 65–82 % of each run is one-time cost**.
+The end-to-end "GPU vs laptop" column — including "0.34× at 8 lanes" — is not a
+steady-state rate, and the GPU is not shown to be slower at the gate shape.
+Re-measure it with `--warmup-forward` before sizing multiproc from it.
+
+The producer now reports `ms_mean`/`ms_max`/`ms_first` next to the medians, and
+per segment `segment_boundary_ms`, `collection_ms_per_decision`,
+`accounted_ms_mean` and `unaccounted_ms_mean`, so the wall reconciles or the
+residual is named.  The default `--warmup-forward` runs one sampled call on the
+real batch before segment 0, primes the decode path, and restores the torch,
+numpy and CUDA RNG in a `finally`; `--no-warmup-forward` reproduces the old
+timing.  The warmup does not perturb the stream: cold and warm runs at 4 lanes ×
+2 segments × 12 decisions with a stored rollout agree exactly — **8 ACT / 192
+eligible in both**, and identical per-segment value/log-prob/reward summaries
+(`runs/crforge-c4/warmup-rng-{cold,warm}.json`).
+
+Evidence: `runs/crforge-c4/timing-accounting-gpu.json`,
+`runs/crforge-c4/timing-accounting-cpu.json`,
+`runs/crforge-c4/gpu-forward-scaling-*.json`,
+`runs/crforge-c4/cpu-timing-{cold,warm}.json`,
+`tools/crforge/timing_accounting.py`,
+`crforge_bridge/tests/test_timing_accounting.py`.
