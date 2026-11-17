@@ -253,11 +253,12 @@ Three rules follow:
    "stronger CPU" means a different provider, while 8 vCPU vs 6 vCPU is 23 %
    more money for 33 % more cores.
 
-Per 8-vCPU instance at the current packet (list prices; verify at checkout):
+Per instance at the current packet (list prices; verify at checkout):
 
 | shape | matches/s | $/h | $ / 1M matches |
 |---|---:|---:|---:|
 | 1 process (today's measured row) | 0.33 | 0.35 | **295** |
+| **6 vCPU, live A6000 (2026-11-16)** | **1.215 measured** (1.331 ceiling) | 0.35 | **80** |
 | 6–8 processes, no batching | 1.3–1.6 | 0.43 | **75–92** |
 | 8 processes + MPS + batched server | 2.0–2.6 | 0.43 | **46–60** |
 | packet ~200 ms, ~4 processes/GPU | ~4.2 | 0.43 | **~28** |
@@ -267,6 +268,106 @@ So multiproc is the largest immediate $/match win, and it is still the
 The order is **multiproc → wire C3-B → de-Python the 228 ms → graphs/state →
 more boxes**. Buying a second GPU before the first is fed buys idle time, and
 buying a bigger GPU buys the 24 % that is already launch-bound.
+
+### Capacity equation (the provider decision, 2026-11-16)
+
+`tools/crforge/cloud_capacity.py` makes the provider comparison executable:
+
+```
+matches/s ≈ 0.211 × min(N_proc, G × E / g) / T
+```
+
+- `0.211` is the **shape constant** — 128 lanes × 2 seats = 256 lane-decisions
+  per round ÷ 1,214 lane-decisions per match. The tool recomputes it for any
+  shape; hold the shape fixed when comparing providers.
+- `N_proc` is the usable vCPU count (one producer owns one core, one
+  `VectorBattle` and one forward), `G` the GPU count (fractional for a MIG
+  slice), `E` the fraction of each card the workload may use, and
+  `g = inference_ms / decision_ms` the forward's share of the decision.
+  `G × E / g` is therefore **how many producer processes one card serves**.
+- `T` is the steady-state decision wall; the tool uses the last warm segment and
+  warns on a short or `--no-warmup-forward` artifact.
+- The verdict is `N_proc` against `G × E / g`, independent of `0.211` and `T`.
+  Rent vCPUs up to the crossover, then GPUs; below it the card is idle, above it
+  the extra cores queue. `--sweep-procs 1 2 4 6` validates the crossover by
+  running that many producers concurrently and separating a forward slowdown
+  (GPU) from a CPU-half slowdown (cores).
+
+Recorded A6000 terms at 128 lanes: `T = 0.6468 s`, `g = 0.2434`, so **one card
+serves 4.11 processes**; one process is 0.326 matches/s (the 0.33 row above),
+six vCPUs are **GPU-bound** at 1.34 matches/s, $72.6 / 1M at $0.35/h (1,214
+convention; a physical match, 2,428, is twice that).
+
+Live 6-vCPU A6000 (2026-11-16, Thunder `base`, `runs/crforge-c4/
+cloud-thunder-a6000-6vcpu.json`): `T = 0.4287 s`, forward **158.4 ms**,
+`g = 0.3695`, so **2.71 processes**; CPU ceiling 2.952, **GPU ceiling 1.331**.
+One process is 0.492; six concurrent producers measured **1.215 (0.91× the
+ceiling)**, **$73.0/M predicted, $80.0/M measured**. The recorded box and the
+live box have different CPUs (`T` 0.6468 vs 0.4287) and different process
+crossovers (4.11 vs 2.71), but the same forward (157–158 ms) and the same
+**~1.33 matches/s ceiling**. **The ceiling belongs to the card; `G × E / g`
+belongs to the CPU half.**
+
+That resolves the SKU question: **6 vCPU is the A6000 configuration at this
+packet.** The 8-vCPU best case is the same 1.331 ceiling, so at $0.43/h it is
+**$89.7/M**, above the 6-vCPU measured $80.0/M; break-even needs 1.493
+matches/s, which the card cannot deliver at `g = 0.37`. Do not buy the 8-vCPU
+A6000 until `g` falls (batched forward/MPS) or the 228 ms CPU packet leaves. The
+current word is **~1 A6000 per 4–6 vCPU**, not the 8–16 above; the 8–16
+crossover needs the same `g` reduction.
+
+### The 157 ms field and the `ever_server` inference port (2026-11-16)
+
+Two different things, often conflated:
+
+**The 157 ms is one field, not the packet.** In
+`runs/crforge-c4/gpu-forward-scaling-128-long.json` — the recorded A6000,
+128 lanes × 2 seats (256 rows) — the per-decision buckets are:
+
+| bucket | ms |
+|---|---:|
+| tensorize | 81 |
+| **inference** | **157** |
+| decode | 97 |
+| step | 75 |
+| facts | 9 |
+| unattributed (mean − median, §3.67) | ~228 |
+| **total** | **647** |
+
+`ms.inference_ms` is the model forward **plus its per-call overhead**, per
+decision round. 157 → 21.5 ms is **7.3×**, the forward reduction needed for
+**~$20 / 1M physical matches** at $0.35/h (the 2,428 convention; the exact
+arithmetic gives 21.7 ms). Under the 1,214 convention the same $20 is **43.4 ms
+(3.6×)** — quote the convention or the target moves 2×.
+
+**The other ~490 ms is separate CPU-side work and is a second gate.** It is
+tensorize 81 + decode 97 + engine steps 75 + facts 9 + the ~228 residual. A
+21.5 ms forward alone does not raise throughput: the GPU ceiling becomes
+~9.7 matches/s (1,214), but at the recorded 490 ms CPU half and 6 vCPU the CPU
+ceiling is only **~2.5 matches/s**; on the live faster-CPU box (270 ms half) it
+is **~4.3**. To let 6 vCPUs feed the 21.5 ms forward, the CPU half must fall to
+**~108 ms** (`T = N_proc × F`), or `N_proc` must rise to ~14 on the live half
+(~24 on the recorded one). The forward port is necessary, not sufficient.
+
+**"Port ever_server" is four inference tricks, not the file or its wire
+protocol.** Source: `.resource/RoyaleFish/royalefish/ever_server.py` (with
+`ever_packed.py` and `net.py`). Target: `tools/crforge/self_play.py` →
+`bridge_session.py` → `PolicySessionV4`, the in-process forward. Take:
+
+1. fp16 with an fp32 action-equality check;
+2. CUDA graphs captured at several batch sizes;
+3. one GPU-side LSTM state table;
+4. the layout/pack computed once and reused.
+
+Do **not** port `net.py`'s TCP/pickle messages: crforge has no separate GPU
+process, so the server's wire contract is discarded. The training-side
+`ever_*` features (sparse trajectories, row-packed updates, loader process) are
+a separate item; this port is only the forward path.
+
+Gate the port on action equivalence and on both clocks: fp16/graph replay must
+reproduce the fp32 sampled actions and log-probs on the same batch, and the
+artifact must report `ms.inference_ms` at 128 lanes **with the CPU half beside
+it**. A lower forward with a flat CPU half is not a throughput win.
 
 ---
 

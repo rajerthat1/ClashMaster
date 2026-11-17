@@ -5462,3 +5462,69 @@ Evidence: `runs/crforge-c4/timing-accounting-gpu.json`,
 `runs/crforge-c4/cpu-timing-{cold,warm}.json`,
 `tools/crforge/timing_accounting.py`,
 `crforge_bridge/tests/test_timing_accounting.py`.
+
+### 3.68 The provider decision is one comparison: `N_proc` vs `G × E / g` (2026-11-16)
+
+`tools/crforge/cloud_capacity.py` makes the cloud-provider question executable:
+
+```
+matches/s ≈ 0.211 × min(N_proc, G × E / g) / T
+```
+
+At 128 lanes × 2 seats, `0.211 = 256 / 1,214` is the shape's matches per
+decision round; `N_proc` is the usable vCPU count (one producer owns one core,
+one `VectorBattle` and one forward); `G` and `E` are the GPUs and the fraction
+of each the workload may use; `g = inference_ms / decision_ms` is the forward's
+share of the decision; `T` is the steady-state decision wall.  `G × E / g` is
+the number of producer processes one card serves, so the verdict is the smaller
+of the two terms and is independent of `0.211` and `T`.  The tool warns on a
+short or `--no-warmup-forward` artifact (the §3.67 fixed cost) and checks the
+rate as well as the process count.
+
+**Recorded A6000** (128 lanes × 32 decisions, `gpu-forward-scaling-128-long`):
+`T = 0.6468 s`, forward 157.4 ms, `g = 0.2434`, **4.11 processes**, CPU ceiling
+1.956, GPU ceiling **1.339** matches/s, 0.326 at one process.  At 6 vCPU the
+box is GPU-bound; $72.6 / 1M at $0.35/h (1,214 convention).
+
+**Live 6-vCPU A6000** (Thunder `base`, 2026-11-16; `runs/crforge-c4/
+cloud-thunder-a6000-6vcpu.json`): `T = 0.4287 s`, forward **158.4 ms**,
+`g = 0.3695`, **2.71 processes**, CPU ceiling 2.952, GPU ceiling **1.331**;
+one process 0.492; six concurrent producers **1.215 (0.91× the ceiling)**.
+Predicted $73.0 / 1M; **measured $80.0 / 1M**.  The 2,428 convention is double.
+
+| producers | `T` mean | per-process | aggregate | retention | forward × | CPU × |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.4488 s | 0.470 | 0.470 | 0.96 | 1.01 | 1.07 |
+| 4 | 0.8279 s | 0.255 | 1.020 | 0.52 | 1.90 | 1.95 |
+| 6 | 1.0418 s | 0.202 | **1.215** | 0.41 | 2.37 | 2.47 |
+
+Three results:
+
+1. **The GPU ceiling is invariant to the CPU; the process count is not.**  The
+   two A6000s have different CPUs (`T` 0.6468 vs 0.4287) and different
+   crossovers (4.11 vs 2.71) but the same forward (157–158 ms) and the same
+   ~1.33 matches/s ceiling.  Quote the ceiling for a provider decision, not
+   "processes per card".
+2. **The process bound is soft; the rate bound is not.**  At six producers both
+   halves slow together (forward 2.37×, CPU 2.47×), so the sweep calls the
+   binding **shared**, but the aggregate still reaches 0.91× the GPU ceiling.
+   `min()` is a conservative bound and the rate is the decision quantity.
+3. **8 vCPU is dominated at this packet.**  At $0.43/h the 8-vCPU best case is
+   the same 1.331 ceiling, **$89.7 / 1M**, above the 6-vCPU measured **$80.0 /
+   1M**.  Break-even needs 1.493 matches/s, above the ceiling.  `tnr modify`
+   also refuses "A6000 with 1 GPU(s)" at 8 vCPU; the arithmetic is the proof.
+   Rent 6 vCPU until `g` falls (batched forward/MPS) or the 228 ms CPU packet
+   leaves.
+
+The Thunder `base` setup needs Java **21** (the jars are class-file 65), plus
+`jpype1`, `orjson`, `pyarrow`, `gymnasium`, `pettingzoo`, the
+`native_runner/releases/16.635.1.json` descriptor, and tables at
+`~/.crforge/tables/16.635.8`; `PYTHONPATH=.resource/crforge/python` exposes
+`crforge_env`.  The model, env and tables are ~75 MB; `Clashback` and
+`data_16635/` are not on this path.
+
+Evidence: `tools/crforge/cloud_capacity.py`,
+`crforge_bridge/tests/test_cloud_capacity.py`,
+`runs/crforge-c4/cloud-thunder-a6000-6vcpu.json` (raw producers under
+`cloud-thunder-a6000-6vcpu/raw/`),
+`runs/crforge-c4/cloud-capacity-a6000.json`.

@@ -6,6 +6,96 @@
 
 ## Decisions — what changed
 
+### 2026-11-16 — the provider decision is one comparison: `N_proc` vs `G × E / g`
+
+The next session is a cloud-provider sweep, so the capacity equation is now
+executable instead of arithmetic on a whiteboard:
+
+```
+matches/s ≈ 0.211 × min(N_proc, G × E / g) / T
+```
+
+- **The equation reproduces the recorded A6000 run, so its terms are pinned.**
+  At 128 lanes × 32 decisions the run's steady `T` is **0.6468 s** and its median
+  forward is **157.4 ms**, so `g = 0.2434` and one card serves
+  **`1/g = 4.11` processes** — the roadmap's "run ~4 without changes". At one
+  process the equation gives **0.326 matches/s**, the ROADMAP's 0.33; at 6 vCPU
+  it gives **1.34 matches/s** and **$72.6 / 1M matches** at $0.35/h, the low end
+  of the roadmap's 6–8-process row. The recorded 6-vCPU box is **GPU-bound**:
+  the card saturates at ~4.1 processes.
+- **A live 6-vCPU A6000 lands on the same GPU ceiling from a faster CPU.**
+  Thunder `base`, 2026-11-16: `T = 0.4287 s`, median forward **158.4 ms**,
+  `g = 0.3695`, so `G × E / g = 2.71` processes; CPU ceiling 2.95, **GPU ceiling
+  1.331** matches/s. One process is 0.492; six concurrent producers measured
+  **1.215** (0.91× the ceiling), and the sweep's rate check confirms the
+  equation. The recorded box was slower (`T = 0.6468`, 4.11 processes) but its
+  GPU ceiling was **1.339**: the rate ceiling is the forward's, not the CPU's.
+  Only the process count moves with `T`. $73.0/M at 6 vCPU predicted,
+  **$80.0/M measured** (1,214 convention).
+- **8 vCPU is dominated on the A6000 at this packet.** The same card cannot
+  exceed the 1.331 ceiling; at $0.43/h (+23 %) its best case is **$89.7/M**,
+  above the 6-vCPU measured **$80.0/M**. Break-even would need **1.493
+  matches/s**, above the ceiling. Rent 6, not 8, until `g` falls.
+- **`tools/crforge/cloud_capacity.py` runs the comparison per provider.** It
+  measures `T` and `g` from the producer (`--run`), scores a recorded artifact
+  (`--artifact`, with `--cpus`/`--gpus`), and validates the ceiling with
+  concurrent producers (`--sweep-procs 1 2 4 6`): it checks the process
+  crossover **and** the measured aggregate against the GPU rate ceiling
+  (0.8–1.2×), and separates a forward slowdown (GPU) from a CPU-half slowdown
+  (cores). It prints the equation term by term, both rate conventions (1,214
+  and 2,428), $/1M at both predicted and measured throughput, and the provider
+  adjustment.
+- **The steady state is the default, not an option.** A run is 128 lanes × 3
+  segments × 32 decisions with the producer's warmup, so the first decision's
+  5 s setup cannot be read as GPU demand. The tool warns when an artifact is
+  shorter than 16 decisions or was written with `--no-warmup-forward` (session
+  34's 65–82 % one-time cost), and it does not treat a non-zero producer *gate*
+  exit as a throughput failure: a shape that never acts still times the loop.
+- **The rule for the sweep:** rent vCPUs up to `G × E / g`, then GPUs. Below
+  that crossover the GPU is idle; above it, extra vCPUs queue. At the current
+  packet the A6000 crossover is ~4.1 processes, so a 4-vCPU + A6000 box is
+  balanced, a 6-vCPU box is GPU-bound, and an 8-vCPU box needs MPS or a batched
+  decision server (or a lower `g`) before its last cores can pay.
+
+See the session-35 section below and `ROADMAP_CRFORGE.md` §4.
+
+### 2026-11-16 — the 157 ms is one forward field; "port ever_server" is four inference tricks
+
+Two different things, separated so the next session does not conflate them:
+
+- **157 ms is `ms.inference_ms`, not the packet.** In the recorded A6000
+  128-lane × 2-seat run the per-decision buckets are tensorize 81, **inference
+  157**, decode 97, step 75, facts 9 and ~228 unattributed (the mean-median
+  residual, §3.67) = 647 ms. The field is the model forward **plus its per-call
+  overhead**, measured per decision round.
+- **157 → 21.5 ms is 7.3× and it is the physical $20/1M target.** At $0.35/h,
+  $20 per 1M **physical** matches (the 2,428 convention) needs a 21.7 ms
+  forward; 21.5 ms is the rounded 7.3× target. Under the 1,214 convention the
+  same $20 is **43.4 ms (3.6×)**. Quote the convention or the target moves 2×.
+- **The other ~490 ms is separate CPU work and a second gate.** tensorize 81 +
+  decode 97 + engine steps 75 + facts 9 + ~228 residual. A 21.5 ms forward
+  gives a ~9.7 matches/s (1,214) GPU ceiling, but at 6 vCPU the CPU half caps
+  it at **~2.5 matches/s** on the recorded box (~4.3 on the live faster CPU).
+  Six vCPUs feed the faster card only if the CPU half falls to **~108 ms**
+  (`T = N_proc × F`) or `N_proc` rises to ~14 on the live half (~24 on the
+  recorded one). The forward port is necessary, not sufficient.
+- **The port is four inference tricks, not the server.** Source
+  `.resource/RoyaleFish/royalefish/ever_server.py` (with `ever_packed.py` and
+  `net.py`); target `tools/crforge/self_play.py` → `bridge_session.py` →
+  `PolicySessionV4`, the in-process forward. Take: **fp16 with an fp32
+  action-equality check**, **CUDA graphs at several batch sizes**, **one
+  GPU-side LSTM state table**, and **layout/pack computed once and reused**.
+  Discard `net.py`'s TCP/pickle wire protocol: crforge has no separate GPU
+  process. Sparse trajectories, row-packed updates and the loader are the
+  separate training-side `ever_*` item.
+- **Gate:** fp16/graph replay reproduces the fp32 sampled actions and log-probs
+  on the same batch, and the artifact reports `ms.inference_ms` at 128 lanes
+  **with the CPU half beside it**. A lower forward with a flat CPU half is not a
+  throughput win.
+
+See `ROADMAP_CRFORGE.md` §4 for the bucket table and the `T = N_proc × F`
+arithmetic.
+
 ### 2026-11-19 — the horizon's return is a value fit, not a score; the A6000's 228 ms was a statistic
 
 Session 33 asked for the reward share before any cadence is ranked on the
@@ -736,6 +826,228 @@ do not start another R0 run.
 
 ---
 
+## Session 35 results (2026-11-16) — the provider decision is one comparison: `N_proc` vs `G × E / g`
+
+**Read first:** the decision entry above, this section,
+`FINDINGS.md` §3.68, and `ROADMAP_CRFORGE.md` §4.
+
+### What landed
+
+- **`tools/crforge/cloud_capacity.py`** — the provider probe. It reads a
+  producer artifact (or runs the producer itself) and applies
+  `matches/s ≈ 0.211 × min(N_proc, G × E / g) / T` term by term. `--run`
+  measures 128 lanes × 3 segments × 32 decisions with the warmup on; `--lanes`
+  sweeps the shape; `--sweep-procs 1 2 4 6` launches that many producers
+  concurrently to validate the crossover; `--compare` scores the saved
+  provider reports. `--artifact` scores a recorded run and requires `--cpus`
+  and `--gpus`, because an artifact does not carry the host's vCPU/GPU count.
+- **The rates are reported in both repo conventions.** The equation and
+  `ROADMAP_CRFORGE.md` use **1,214 lane-decisions per match** (both seats); the
+  producer artifact's own `matches_per_s` divides by two seats (2,428). The
+  report carries both and the $/1M for both, so a provider quote cannot move
+  2× on an unstated convention.
+- **Cold-state guards.** The tool warns when an artifact has fewer than 16
+  decisions, was written with `--no-warmup-forward`, or records a first forward
+  more than 2× its median. It uses the last segment as the steady state and the
+  **median** forward (not the mean, which contains the cold decision) for `g`.
+- **A non-zero producer gate is not a throughput failure.** A short shape that
+  never acts exits 1 because `eligible_act_rate == 0`; the probe still reads its
+  artifact. Only a missing artifact aborts a measurement.
+- **Tests:** `crforge_bridge/tests/test_cloud_capacity.py` (18) pins the
+  recorded A6000 arithmetic, the CPU-only and partitioned-card cases, the
+  balance band, the last-segment/median rules, the cold warnings, both rate
+  conventions and the sweep saturation verdict. Ruff clean.
+- **Recorded:** `runs/crforge-c4/cloud-capacity-a6000.json` (scored from
+  `gpu-forward-scaling-128-long.json` with 6 vCPU / 1 A6000 / $0.35/h) and
+  `runs/crforge-c4/cloud-thunder-a6000-6vcpu.json` (live Thunder 6-vCPU A6000,
+  with the raw producers under `-6vcpu/raw/`).
+
+### Measured — the A6000 terms reproduce the recorded 0.33
+
+`runs/crforge-c4/gpu-forward-scaling-128-long.json`, 128 lanes × 32 decisions,
+steady last segment:
+
+| term | value |
+| --- | ---: |
+| `T` (decision wall) | 0.6468 s |
+| median forward | 157.4 ms |
+| `g` (forward share) | 0.2434 |
+| `1/g` (processes per A6000) | **4.11** |
+| one-process matches/s (1,214) | **0.326** (ROADMAP 0.33) |
+| one-process matches/s (2,428) | 0.163 (artifact field 0.163) |
+| 6 vCPU: CPU ceiling | 1.956 matches/s |
+| 6 vCPU: GPU ceiling | **1.339 matches/s** |
+| 6 vCPU: verdict | **GPU-bound** |
+| $/1M at $0.35/h (1,214 / 2,428) | **$72.6 / $145.2** |
+
+The GPU ceiling is the equation at `min(6, 4.11) = 4.11`; the CPU ceiling is
+the same rate at `N_proc = 6`. The card is the smaller side, so two of the six
+vCPUs are the price of oversubscription, not extra throughput. This is the
+roadmap's 6–8-process row (1.3–1.6 matches/s, $75–92) at its low end, now with
+the terms that produce it.
+
+### Measured — a live 6-vCPU A6000, and the GPU ceiling is the invariant
+
+`runs/crforge-c4/cloud-thunder-a6000-6vcpu.json` (raw producer artifacts under
+`-6vcpu/raw/`): Thunder `base`, 6 vCPU, 1×A6000 48 GB, $0.35/h, Python 3.12,
+torch 2.12.1+cu130, 128 lanes × 3 × 32, `OMP_NUM_THREADS=1`.
+
+| term | value |
+| --- | ---: |
+| `T` (decision wall) | 0.4287 s |
+| median forward | 158.4 ms |
+| CPU half of `T` | 270.3 ms |
+| `g` (forward share) | 0.3695 |
+| `G × E / g` | **2.71 processes** |
+| CPU ceiling at 6 vCPU | 2.952 matches/s |
+| **GPU ceiling** | **1.331 matches/s** |
+| one process | 0.492 matches/s |
+| predicted / measured at 6 | 1.331 / **1.215** (0.91×) |
+| $/1M predicted / measured (1,214) | **$73.0 / $80.0** |
+| $/1M physical (2,428) | $146.1 / $160.0 |
+
+The concurrent sweep:
+
+| producers | `T` mean | per-process | aggregate | retention | forward × | CPU × |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.4488 s | 0.470 | 0.470 | 0.96 | 1.01 | 1.07 |
+| 4 | 0.8279 s | 0.255 | 1.020 | 0.52 | 1.90 | 1.95 |
+| 6 | 1.0418 s | 0.202 | **1.215** | 0.41 | 2.37 | 2.47 |
+
+Three results matter:
+
+1. **The GPU rate ceiling is the invariant.** The recorded box and this one have
+   different CPUs (`T` 0.6468 vs 0.4287) and therefore different process
+   capacities (4.11 vs 2.71), but the same forward (157.4 vs 158.4 ms) and the
+   same ceiling (1.339 vs **1.331** matches/s). A provider comparison should
+   quote the ceiling, not the process count; a faster CPU raises `N_proc`'s side
+   of the `min` until the card binds, then buys nothing.
+2. **The process bound is soft; the rate bound is not.** At 6 producers both
+   halves slow together (forward 2.37×, CPU 2.47×), so the sweep calls the
+   binding **shared**, not clean GPU serialization. The aggregate nevertheless
+   reaches **0.91×** the GPU ceiling, so `min()` is a useful conservative bound
+   and the *rate* is the decision quantity. The sweep verdict now checks both:
+   process saturation and `measured aggregate / GPU ceiling` in 0.8–1.2.
+3. **8 vCPU cannot pay on this card.** Break-even against the 6-vCPU measured
+   $80.0/M at $0.43/h needs **1.493 matches/s**, above the 1.331 ceiling. The
+   `tnr modify` path also refuses "A6000 with 1 GPU(s)" at 8 vCPU, so the
+   dominance proof stands without a second rental. Revisit only when `g` falls
+   (batched forward/MPS) or the 228 ms CPU packet leaves.
+
+### Measured — the probe's live path ran on this laptop
+
+`--run --lanes 8 --segments 1 --decisions-per-segment 8 --device cpu --cpus 8
+--gpus 0 --omp-threads 4`: `T = 0.527 s`, median forward **506 ms (96 % of the
+decision)**, per-process 0.025 matches/s, **CPU-bound by construction**,
+0.200 matches/s ceiling at 8 processes. That is the CPU-only control the tool
+needs: with no GPU the forward is CPU work, the GPU term is absent, and the
+report says so instead of inventing a `g`. The forward's 96 % share is also the
+reason a GPU moves this workload at all on a box without one.
+
+The concurrent path ran too: 1 then 2 producers at 8 lanes × 1 × 4 on the same
+CPU host. Aggregate went 0.019 → 0.026 matches/s, retention **0.686**, with the
+forward half **1.46×** and the CPU half **1.53×** — both moved, so the report
+names **CPU contention** (`predicted capacity: no GPU term`,
+`confirms equation: n/a`), not a GPU cap. That is the distinction the sweep
+exists for: a GPU-bound provider moves the forward half and holds the CPU half.
+The shape is a smoke, not a provider result; the rented boxes get the default
+128-lane run.
+
+### The provider template
+
+```bash
+# on each rented box: measure, validate the process ceiling, save the report
+.venv/bin/python tools/crforge/cloud_capacity.py --run \
+    --provider <name> --price-per-hour <p/h> --sweep-procs 1 2 4 6 \
+    --output runs/crforge-c4/cloud-<name>.json
+
+# the corrected 8-128-lane steady-state table (session 34 item 1)
+.venv/bin/python tools/crforge/cloud_capacity.py --run \
+    --lanes 8 32 64 128 --provider <name> --price-per-hour <p/h>
+
+# compare every saved provider
+.venv/bin/python tools/crforge/cloud_capacity.py --compare \
+    runs/crforge-c4/cloud-*.json
+```
+
+The default 128-lane × 3 × 32 shape is ~90 s at the A6000 rate plus startup; the
+four-lane-count sweep is ~4× that. A provider comparison is only meaningful at
+the same `--lanes`, `--segments`, `--decisions-per-segment` and rate convention.
+
+**Setup notes for a fresh Thunder `base` box (verified 2026-11-16):** the template
+has Python 3.12 and torch 2.12.1+cu130, but **no Java** and none of the bridge's
+optional Python packages. The crforge jars are **class file 65**, so it needs
+**Java 21**, not 17 (`UnsupportedClassVersionError` otherwise); install
+`openjdk-21-jre-headless`, `jpype1`, `orjson`, `pyarrow`, `gymnasium` and
+`pettingzoo`; put `native_runner/releases/16.635.1.json` in the bundle (without
+it the loader says "known releases: []") and the built tables at
+`~/.crforge/tables/16.635.8`. `PYTHONPATH=.resource/crforge/python` exposes
+`crforge_env`. The minimal transfer is code + `.resource/crforge/env` +
+`.resource/crforge/python` + the 16.635.8 tables + `B-general-v275.pt`; the
+795 MB `Clashback` tree and `data_16635/` are not on this path.
+
+### Found by running it
+
+1. **The equation's two terms explain both A6000 boxes, without a fit.** The
+   recorded box: `0.211 / 0.6468 = 0.326` (the 0.33) and `1/0.2434 = 4.11`.
+   The live box: `0.211 / 0.4287 = 0.492` and `1/0.3695 = 2.71`, with a
+   **1.331** ceiling and **1.215** measured at six producers (0.91×). The terms
+   are the producer's own median forward and mean wall, so a provider
+   measurement is one run, not a model.
+2. **The GPU ceiling is invariant to the CPU; the process count is not.** Both
+   A6000s have the same forward (157–158 ms) and the same **~1.33 matches/s**
+   ceiling, but the faster live CPU moved `G × E / g` from 4.11 to 2.71. Quote
+   the ceiling for a provider decision, not "processes per card": a faster CPU
+   raises `N_proc` until the card binds, then buys nothing.
+3. **The rate convention is a 2× decision variable.** 1.331 matches/s is
+   $73.0 / 1M under the 1,214 convention and $146.1 / 1M for physical matches
+   under 2,428; the measured 1.215 is $80.0 / $160.0. A provider quote that
+   compares one to the other is off by 2×; the tool prints both.
+4. **The process bound is soft; the rate bound is not.** At six producers both
+   halves slow together (forward 2.37×, CPU 2.47×) — the sweep names that
+   **shared**, not clean GPU serialization — but the aggregate still reaches
+   0.91× the GPU ceiling. The verdict checks the rate as well as the process
+   count, so a host that crosses `G × E / g` early does not read as a failed
+   equation.
+5. **6 vCPU beats 8 vCPU on the A6000 at this packet.** The 8-vCPU best case is
+   the same 1.331 ceiling; at $0.43/h it is **$89.7/M**, above the 6-vCPU
+   measured **$80.0/M**. Break-even needs 1.493 matches/s, which the card
+   cannot deliver at `g = 0.37`. (`tnr modify` also refused "A6000 with 1 GPU(s)"
+   at 8 vCPU, so the proof is arithmetic, not a second rental.)
+6. **The 8-decision scaling artifacts are not steady state.** Their one-time
+   cost is 65–82 % of the wall (session 34), and the probe now refuses to
+   present them silently: it warns on the short segment and the missing warmup.
+   The corrected table is produced by `--run --lanes 8 32 64 128`, not by
+   scoring the old artifacts.
+
+### Next session (session 36)
+
+1. **Run the probe on every candidate provider** at one shape and one rate
+   convention; save `runs/crforge-c4/cloud-<provider>.json` and the
+   `--sweep-procs` rows. Choose by $/1M at the equation's binding side, not by
+   GPU model or utilisation. **Thunder 6-vCPU A6000 is done** (1.331 ceiling,
+   1.215 measured, $80.0/M measured); **8 vCPU is dominated** and is not worth a
+   rental until `g` falls. Modal is not authenticated on this host yet
+   (`python3 -m modal setup`); it is the way to test a CPU-rich config
+   (`N_proc > G × E / g`) and a non-A6000 card.
+2. **Re-measure the A6000 at 8/32/64/128 lanes with `--warmup-forward`** (session
+   34 item 1). The probe is the harness; the 128-lane row is already the verdict
+   shape.
+3. **Then the overlapped loop on the A6000** (session 32 item 1, still open) at
+   128 lanes, using the same probe to check whether the update is hidden. The
+   2,048-frame OOM in §3.62 still has to be solved first.
+4. **Port the four `ever_server` inference tricks into the in-process forward**
+   (`self_play.py` → `bridge_session.py` → `PolicySessionV4`): fp16 + fp32
+   action equality, multi-size CUDA graphs, one GPU-side LSTM state table, and
+   layout/pack once. Do **not** port `net.py`'s TCP/pickle wire protocol. The
+   target is 157 → 21.5–22 ms `ms.inference_ms` for ~$20/1M **physical** at
+   $0.35/h; under 1,214 the same $20 is 43.4 ms. The port is not a win by
+   itself: the CPU half must fall to ~108 ms at 6 vCPU (or `N_proc` rise) before
+   the faster forward can be fed. Gate on action/log-prob equality and report
+   the CPU half beside the forward.
+5. **Native parity cadence, unchanged:** 50–150 native matches every N updates
+   and after every adapter change; crforge is never a promotion gate.
+
 ## Session 34 results (2026-11-19) — the return is a value fit; the A6000's 228 ms was a statistic
 
 **Read first:** this section, `FINDINGS.md` §3.67, and the session-33 section
@@ -848,6 +1160,10 @@ inference no longer the max).  `runs/crforge-c4/timing-accounting-{gpu,cpu}.json
    was measured.
 
 ### Next session (session 35)
+
+> **Updated 2026-11-16 (session 35):** item 1 is now the first live use of
+> `tools/crforge/cloud_capacity.py --run --lanes 8 32 64 128`; the provider
+> sweep is the new item 0 in the session-35 section. Items 2–4 are unchanged.
 
 1. **Re-measure the A6000 with `--warmup-forward`** at 8–128 lanes and record
    `ms_mean`/`ms_first`: the 8-decision scaling table is 65–82 % one-time cost,

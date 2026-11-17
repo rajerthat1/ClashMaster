@@ -294,7 +294,7 @@ become a training data path; the gate is `libg.so` + our probe + our
 | --- | --- |
 | `data_16635/` | **Already adopted** as `native_runner/data/competitive-16.635/` (verified release, all 5 catalog ids match `B-general-v275`). |
 | `models/B-general-v275.pt`, `A-hog26-v738.pt` | **The league seed and the gate's reference opponents.** v275 = 17.5M generalist; v738 = 71.9 % ±2.6 over 1,147 games. The 15.535 v49/v98 pair stays as legacy references. |
-| `royalefish/ever_{server,collector,learner,loader,packed,node_fork}.py`, `net.py`, `reward.py` | **C4's throughput recipe.** fp16 + action-equality check, CUDA graphs at several batch sizes, central LSTM state table, sparse trajectories, row-packed updates, loader process. This was optional when the engine was the bottleneck; with crforge the GPU is the limiter, so it is now a C4 deliverable. |
+| `royalefish/ever_{server,collector,learner,loader,packed,node_fork}.py`, `net.py`, `reward.py` | **C4's throughput recipe.** The **inference port** is four tricks: fp16 + fp32 action equality, CUDA graphs at several batch sizes, one GPU-side LSTM state table, layout/pack once. The server's TCP/pickle wire protocol (`net.py`) is **discarded** — crforge is in-process. Sparse trajectories, row-packed updates and the loader process are the separate training-side items. `ms.inference_ms` 157 → 21.5 ms is the forward target for ~$20/1M **physical** at $0.35/h; the ~490 ms CPU half is a separate gate (`ROADMAP_CRFORGE.md` §4). |
 | `patches/native_runner_16635.diff`, `probe_x86_64_16635.diff` | **Reference only.** Different base tree; our catalogs are a first-class release and our x86 probe is already ported. Do not apply as-is. |
 | `logical_{funcs,offsets,vtables}.inc` | **Already used** for the relocation cross-check (0 AMBIGUOUS, §3.33). Keep for re-checks on a version bump. |
 
@@ -709,7 +709,7 @@ Full table with effort and step mapping: `HANDOFF.md` → "Adopt from the field"
 | x86_64 16.635.1 engine | RoyaleFish `probe_x86_64_16635.diff` + Clashback `game/engine/libg.so` + `vendor/crx` | probe port + ELF loader (game binary local-only) | Apache-2.0 / unknown | **the gate**; pin `c4721bd9…`, build `160635001` |
 | Missing anchors | RoyaleFish `logical_*.inc` | second relocation table | Apache-2.0 | **done** — 0 AMBIGUOUS (§3.33) |
 | 16.635 baselines | `B-general-v275`, `A-hog26-v738` | eval opponents + starting point | Apache-2.0 | **the league seed and the gate's reference opponents** |
-| Training throughput | RoyaleFish `ever_server/collector/learner/packed/loader` | fp16+action equality, multi-size CUDA graphs, LSTM state table, sparse + row-packed updates | Apache-2.0 | **C4 deliverable** — matters now that crforge makes the GPU the limiter |
+| Training throughput | RoyaleFish `ever_server/collector/learner/packed/loader` | inference: fp16+action equality, multi-size CUDA graphs, LSTM state table, layout/pack once; training: sparse + row-packed updates, loader | Apache-2.0 | **C4 deliverable** — forward port in-process; wire protocol discarded; CPU half is a separate gate |
 | Bulk backend | crforge `python/` | `VectorBattle` (needs V4 adapter) | Apache-2.0 | **C0–C4, plan of record** |
 | Snapshots / lookahead | Clashback `neo_replay/native_snapshots.py` | per-tick encode/load for search | unknown → local use only | optional; parity/replay lab only |
 | League / specialist recipe | daybreak-cr | PFSP, focus/hard decks, IL anchor, 55% gate, rollback loop | unknown → reimplement | after C4 |
