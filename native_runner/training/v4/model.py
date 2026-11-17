@@ -224,7 +224,80 @@ class UniversalCardPolicyV4(nn.Module):
         )
         self._ppo_rollout_sampling = True
         self._ppo_location_head_fp32 = False
+        # Inference-only cache of the static effect/profile tables; see
+        # ``static_effect_memory``.  Not a buffer, so it is never checkpointed.
+        self._static_effect_memory: Tensor | None = None
+        self._static_profile_memory: Tensor | None = None
+        self._static_memory_key: tuple[int, ...] | None = None
         self._initialize_action_priors()
+
+    def static_effect_memory(self) -> tuple[Tensor, Tensor]:
+        """Encode the effect vocabulary and its mechanic profiles once per weight version.
+
+        Both tables are a function of the weights and the catalogs, not of the
+        observation, but they used to be rebuilt on every forward: on this CPU
+        the profile pass alone is 65-76 ms, independent of batch size, and it is
+        the forward's fixed cost.  The producer's ``FastForwardV4`` warms this
+        cache before capturing a CUDA Graph and refreshes it in place after a
+        weight change, so replay keeps reading the same storage.
+
+        Grad-enabled callers (the PPO update) always recompute.  The tables feed
+        trainable embeddings; a detached cache would silently remove their
+        gradient.  The cache is keyed by tensor identity and version, so an
+        in-place optimizer step or ``copy_`` invalidates it.
+        """
+
+        if torch.is_grad_enabled():
+            effect_memory = self.effect_encoder.all_effects()
+            return effect_memory, self.mechanic_profile_encoder(effect_memory)
+        key = self._static_memory_version()
+        if self._static_memory_key == key and self._static_effect_memory is not None:
+            assert self._static_profile_memory is not None
+            return self._static_effect_memory, self._static_profile_memory
+        # The half-precision path casts these inputs per operator; keeping the
+        # cache fp32 makes it independent of the autocast context of the first
+        # call and makes an in-place refresh dtype-stable.  The tables are also
+        # created as ordinary tensors, so a later refresh can copy into them
+        # from either an inference-mode or a no-grad caller.
+        with torch.inference_mode(False), torch.autocast(
+            device_type=next(self.parameters()).device.type, enabled=False
+        ):
+            effect_memory = self.effect_encoder.all_effects()
+            profile_memory = self.mechanic_profile_encoder(effect_memory)
+        cached_effect = self._static_effect_memory
+        if (
+            cached_effect is not None
+            and cached_effect.shape == effect_memory.shape
+            and cached_effect.device == effect_memory.device
+            and cached_effect.dtype == effect_memory.dtype
+        ):
+            assert self._static_profile_memory is not None
+            self._static_effect_memory.copy_(effect_memory)
+            self._static_profile_memory.copy_(profile_memory)
+        else:
+            self._static_effect_memory = effect_memory
+            self._static_profile_memory = profile_memory
+        self._static_memory_key = key
+        return self._static_effect_memory, self._static_profile_memory
+
+    def _static_memory_version(self) -> tuple[int, ...]:
+        modules = (self.effect_encoder, self.mechanic_profile_encoder)
+        return tuple(
+            value
+            for module in modules
+            for tensor in (*module.parameters(), *module.buffers())
+            for value in (id(tensor), tensor._version)
+        )
+
+    def ensure_static_memory(self) -> None:
+        """Refresh the inference cache if a weight moved since it was built.
+
+        A CUDA Graph replays captured kernels, so it never re-runs
+        ``encode_observation``'s Python check; the forward wrapper calls this
+        before replay to keep the captured graph reading current tables.
+        """
+
+        self.static_effect_memory()
 
     def _initialize_action_priors(self) -> None:
         gate = self.gate_head[-1]
@@ -350,8 +423,7 @@ class UniversalCardPolicyV4(nn.Module):
                 entity_archetype_vocab_size=(self.entity_archetype_catalog.vocab_size),
                 effect_vocab_size=self.effect_catalog.vocab_size,
             )
-        effect_memory = self.effect_encoder.all_effects()
-        profile_memory = self.mechanic_profile_encoder(effect_memory)
+        effect_memory, profile_memory = self.static_effect_memory()
         child_effects, tower_effects = self.active_effect_encoder(
             batch.active_effects,
             effect_memory=effect_memory,

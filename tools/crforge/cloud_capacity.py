@@ -476,6 +476,12 @@ def producer_command(args: argparse.Namespace, *, output: Path, lanes: int, segm
         command.append("--no-validate")
     if args.no_warmup_forward:
         command.append("--no-warmup-forward")
+    if args.fast_forward:
+        command.append("--fast-forward")
+        if args.inference_precision is not None:
+            command.extend(("--inference-precision", str(args.inference_precision)))
+        if args.no_cuda_graphs:
+            command.append("--no-cuda-graphs")
     return command
 
 
@@ -913,6 +919,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--omp-threads", type=int, default=1, help="OMP_NUM_THREADS for producer runs")
     parser.add_argument("--validate", action="store_true", help="keep per-decision record validation")
     parser.add_argument("--no-warmup-forward", action="store_true", help="reproduce the old cold timings")
+    parser.add_argument(
+        "--fast-forward",
+        action="store_true",
+        help=(
+            "run the producer's in-process forward port (fp16 autocast, one graph per row count, "
+            "state table, padded staging); score the forwarded packet instead of the eager one"
+        ),
+    )
+    parser.add_argument(
+        "--inference-precision",
+        choices=("auto", "fp32", "fp16", "bf16"),
+        default=None,
+        help="--fast-forward precision (default: the producer's 'auto')",
+    )
+    parser.add_argument(
+        "--no-cuda-graphs",
+        action="store_true",
+        help="with --fast-forward: isolate the precision gain from the graph gain",
+    )
     parser.add_argument("--timeout", type=float, default=1800.0, help="per-producer timeout in seconds")
     parser.add_argument("--sweep-procs", type=int, nargs="+", default=None, help="concurrent process counts to test")
     parser.add_argument("--sweep-lanes", type=int, default=None, help="lanes for the process sweep (default: primary)")
@@ -936,6 +961,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--sweep-procs needs --run")
     if any(lanes < 1 for lanes in args.lanes):
         raise SystemExit("--lanes must be positive")
+    if args.no_warmup_forward and args.fast_forward:
+        raise SystemExit("--fast-forward needs the warmup that keeps the first decision out of the rate")
+    if args.no_cuda_graphs and not args.fast_forward:
+        raise SystemExit("--no-cuda-graphs is a --fast-forward setting")
+    if args.inference_precision is not None and not args.fast_forward:
+        raise SystemExit("--inference-precision is a --fast-forward setting")
     if args.gpu_efficiency <= 0.0 or args.gpu_efficiency > 1.0:
         raise SystemExit("--gpu-efficiency must be in (0, 1]")
     if args.omp_threads < 1:

@@ -5,15 +5,34 @@ from dataclasses import fields, replace
 import pytest
 import torch
 
-from native_runner.training.v4.tensors import ActiveEffectSetV4, ActionCandidatesV4, ActionSequenceV4, BattleGroupSetV4, CardSetV4, EventSetV4, GATE_ACT, PreviousActionV4, RelationEdgesV4, TARGET_GRID, TARGET_NONE, TowerSetV4, UniversalSemanticBatchV4, target_cell_from_xy, target_xy_from_cell
-from native_runner.training.v4.mechanics import ACTIVE_EFFECT_RUNTIME_FEATURE_NAMES, EffectSemanticCatalogV1, MechanicProfileCatalogV1
 from native_runner.training.v4.catalog import AbilityCatalogV1, CardCatalogV1, EntityArchetypeCatalogV1
-from native_runner.training.v4.config import ModelConfigV4
-from native_runner.training.v4.model import UniversalCardPolicyV4
-from native_runner.training.v4.decoding import delay_offset_ms, wait_ticks
 from native_runner.training.v4.components import SpatialScatterEncoder
-from native_runner.training.v4.decoding import ShadowCandidateLegality
+from native_runner.training.v4.config import ModelConfigV4
+from native_runner.training.v4.decoding import ShadowCandidateLegality, delay_offset_ms, wait_ticks
 from native_runner.training.v4.factory import build_production_model_v4
+from native_runner.training.v4.mechanics import (
+    ACTIVE_EFFECT_RUNTIME_FEATURE_NAMES,
+    EffectSemanticCatalogV1,
+    MechanicProfileCatalogV1,
+)
+from native_runner.training.v4.model import UniversalCardPolicyV4
+from native_runner.training.v4.tensors import (
+    GATE_ACT,
+    TARGET_GRID,
+    TARGET_NONE,
+    ActionCandidatesV4,
+    ActionSequenceV4,
+    ActiveEffectSetV4,
+    BattleGroupSetV4,
+    CardSetV4,
+    EventSetV4,
+    PreviousActionV4,
+    RelationEdgesV4,
+    TowerSetV4,
+    UniversalSemanticBatchV4,
+    target_cell_from_xy,
+    target_xy_from_cell,
+)
 
 
 def _catalog() -> CardCatalogV1:
@@ -994,3 +1013,57 @@ def test_child_archetype_identity_is_a_gated_residual() -> None:
         )
 
     torch.testing.assert_close(before, after)
+
+
+def test_static_effect_memory_is_cached_in_inference_and_refreshes_in_place() -> None:
+    model = _model().eval()
+    with torch.inference_mode():
+        first_effect, first_profile = model.static_effect_memory()
+        again_effect, again_profile = model.static_effect_memory()
+        assert again_effect is first_effect
+        assert again_profile is first_profile
+        before_effect = first_effect.clone()
+        before_profile = first_profile.clone()
+
+    with torch.no_grad():
+        model.effect_encoder.norm.weight.add_(0.5)
+
+    with torch.inference_mode():
+        refreshed_effect, refreshed_profile = model.static_effect_memory()
+    # The buffer identity is preserved for a captured graph, the values are not.
+    assert refreshed_effect is first_effect
+    assert refreshed_profile is first_profile
+    assert not torch.equal(refreshed_effect, before_effect)
+    # The fixture catalog has no mechanic profiles, so that table is a zero
+    # constant here; the production catalog's is refreshed by the same copy.
+    assert not before_profile.any() and not refreshed_profile.any()
+
+
+def test_static_effect_memory_keeps_the_gradient_path_uncached() -> None:
+    model = _model().train()
+    with torch.enable_grad():
+        first_effect, first_profile = model.static_effect_memory()
+        second_effect, second_profile = model.static_effect_memory()
+        assert first_effect is not second_effect
+        assert first_profile is not second_profile
+        (first_effect.sum() + first_profile.sum()).backward()
+    effect_grads = [p.grad for p in model.effect_encoder.parameters() if p.grad is not None]
+    assert effect_grads
+    assert any(bool(grad.abs().sum() > 0) for grad in effect_grads)
+    # The fixture's profile catalog has no operations, so that encoder is on no
+    # gradient path; the production catalog's profiles are covered by the
+    # producer smoke, where the cache is refreshed between segments.
+    assert all(p.grad is None for p in model.mechanic_profile_encoder.parameters())
+
+
+def test_encode_observation_matches_with_and_without_the_static_cache() -> None:
+    model = _model().eval()
+    batch = _batch(2)
+    with torch.inference_mode():
+        uncached = model.encode_observation(batch)
+        cached = model.encode_observation(batch)
+        model.ensure_static_memory()
+        refreshed = model.encode_observation(batch)
+    for field in ("scene_state", "spatial_summary", "scalar_summary", "event_summary"):
+        torch.testing.assert_close(getattr(cached, field), getattr(uncached, field))
+        torch.testing.assert_close(getattr(refreshed, field), getattr(uncached, field))

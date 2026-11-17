@@ -272,7 +272,14 @@ def test_a_gpu_sweep_separates_a_forward_slowdown_from_a_cpu_one() -> None:
 
 def test_the_probe_is_throughput_only_and_validates_only_on_request() -> None:
     args = argparse.Namespace(
-        device="cuda", seed=1, checkpoint=Path("checkpoint.pt"), validate=False, no_warmup_forward=False
+        device="cuda",
+        seed=1,
+        checkpoint=Path("checkpoint.pt"),
+        validate=False,
+        no_warmup_forward=False,
+        fast_forward=False,
+        inference_precision=None,
+        no_cuda_graphs=False,
     )
 
     command = cloud_capacity.producer_command(args, output=Path("out.json"), lanes=128, segments=3, decisions=32)
@@ -281,3 +288,27 @@ def test_the_probe_is_throughput_only_and_validates_only_on_request() -> None:
     assert "--no-validate" in command
     assert "--no-warmup-forward" not in command
     assert command[command.index("--count") + 1] == "128"
+
+
+def test_the_probe_forwards_the_in_process_forward_flags() -> None:
+    args = argparse.Namespace(
+        device="cuda",
+        seed=1,
+        checkpoint=Path("checkpoint.pt"),
+        validate=False,
+        no_warmup_forward=False,
+        fast_forward=True,
+        inference_precision="fp32",
+        no_cuda_graphs=True,
+    )
+
+    command = cloud_capacity.producer_command(args, output=Path("out.json"), lanes=128, segments=3, decisions=32)
+
+    assert "--fast-forward" in command
+    assert command[command.index("--inference-precision") + 1] == "fp32"
+    assert "--no-cuda-graphs" in command
+    # Without --fast-forward the precision flags are not meaningful and are not sent.
+    args.fast_forward = False
+    plain = cloud_capacity.producer_command(args, output=Path("out.json"), lanes=128, segments=3, decisions=32)
+    assert "--fast-forward" not in plain
+    assert "--inference-precision" not in plain

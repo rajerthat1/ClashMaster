@@ -327,6 +327,9 @@ class FastForwardV4:
         starts = self._episode_start(episode_start, batch, state)
         with torch.inference_mode():
             if self.cuda_graphs:
+                # A capture freezes the cache-hit branch: refresh the static
+                # tables in place before replay so the graph reads current ones.
+                self.model.ensure_static_memory()
                 return self._slot(batch).run(batch, state, starts)
             model_batch = batch.to_model_input(self.device)
             with self._autocast():
@@ -457,6 +460,7 @@ class FastForwardV4:
         starts = self._episode_start(episode_start, batch, state)
         with torch.inference_mode():
             if self.cuda_graphs:
+                self.model.ensure_static_memory()
                 slot = self._slot(batch)
                 context = slot.run(batch, state, starts)
                 output = self._decode(slot.stage.batch, context, sample=sample)
