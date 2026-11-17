@@ -472,6 +472,18 @@ predicted ceiling — while the sweep saturates at four producers. Measure it on
 after a bounded pilot shows a native win-rate signal; a bigger box does not
 change the policy.
 
+**Status (2026-11-17, session 40).** The bounded pilot's native gate came back
+negative. On 50 mirror-X-Bow games (seeds 101–150, sampled actions, both seats)
+the pilot lost **19–30** with one draw and 0 illegal/rejected/truncated —
+38.8 %, Wilson 95 % 26.4–52.8 %, p = 0.15 — to the seed it started from, so 16
+on-policy updates at 1e-5 did not improve the policy. The session-39 4–0 smoke
+was the deck matchup: `evaluate` keeps each policy on its own deck, so it was
+pilot-on-X-Bow against seed-on-Hog. The 50-game baseline also showed
+`A-hog26-v738` is not a bar in this rig (**49–1** for the seed), so the seed
+mirror is the policy gate and the 8-vCPU measurement stays deferred: the next
+spend is a training run with enough updates and seeds to move the policy.
+See `FINDINGS.md` §3.74.
+
 ---
 
 ## 5. CI and parity role (always on)

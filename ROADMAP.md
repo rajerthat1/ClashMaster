@@ -83,7 +83,11 @@ adapter run.
 - a **learning generalist** (co-trained, or refreshed from `B-general-v275` every N
   updates) plus a frozen `B-general-v275` copy as the anchor; both sample decks
   from the 7,089-deck pool;
-- `A-hog26-v738` (71.9 % ±2.6 / 1,147 games) as the strength bar;
+- `A-hog26-v738` (71.9 % ±2.6 / 1,147 games **vs its own start**) as the
+  strength bar — **not a bar on the learner deck**: session 40 measured
+  `B-general-v275` beating it **49–1** on the fixed X-Bow/Hog pairing
+  (`FINDINGS.md` §3.74). Keep it as an opponent and a canary; the seed mirror is
+  the policy gate;
 - mirror X-Bow (10 %);
 - 2–3 historical learner checkpoints, PFSP-weighted;
 - hard decks: Mortar, Evo Witch, Minion Giant, Golem/beatdown, Log Bait, Graveyard;
@@ -406,7 +410,9 @@ catalogs at step 460. The community's 16.635 generalist
 the primary baseline once the 16.635 catalogs are adopted; keep General only as
 a regression reference. Do the same paired runs against
 `A-hog26-v738.pt` — it is the published specialist that already reports
-71.9% over 1,147 paired games.
+71.9% over 1,147 paired games **against its own start**; on the learner deck it
+loses **49–1** to the seed in session 40's 50-game block, so it is a canary, not
+the bar (`FINDINGS.md` §3.74).
 
 ---
 

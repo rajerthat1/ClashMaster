@@ -4,33 +4,81 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 39)
+## Bottom line (2026-11-17, session 40)
 
-Do both tracks in parallel, and do **not** rent a large multi-box run until the
-pilot shows a native win-rate signal.
+The native gate session 39 asked for is answered, and it is **negative**.
 
-1. **Now: one bounded crforge pilot + a native-parity baseline.** The pilot is
-   16 on-policy updates at 4 lanes × 24 decisions on CPU — it trains, saves a
-   reload-verified checkpoint and passes the training gate; it is a mechanics
-   run, not a learning claim. The native baseline is the only promotion source:
-   `B-general-v275` vs `A-hog26-v738` on the locked X-Bow deck, paired seeds —
-   2 games, 1–1, 0 illegal, 0 rejected. The pilot checkpoint's own native smoke
-   is 4–0 against the seed (0 rejects, both decks) — a direction to test, not a
-   win-rate signal at n = 4; widen it to a 50-game paired block before ranking
-   or renting anything.
-2. **Meanwhile: the CPU half.** Groups now assemble only the live slots and pad
-   once: **7.57 → 2.68 ms** in a one-process A/B (128 lanes, 6 live entities),
-   **13.18 → 6.01 ms/seat** in the producer's section mean, with
-   **3,008/3,008** digest-identical rows. The gather-by-dtype rewrite is
-   unnecessary; `_entity_rows` is the next term if the half has to move again.
-3. **Only then the provider/8-vCPU question.** At the recorded full-graph terms
-   ($43.8/M at 6 vCPU, 2.221 matches/s measured) an 8-vCPU box at $0.43/h needs
-   **2.73 matches/s** to break even: 1.23× the measured rate and above the
-   1.842 predicted ceiling, with the sweep already saturated at four producers.
-   It remains a measurement, not a purchase, and it waits for the pilot's
-   native signal.
+1. **The pilot is not a promotion.** On 50 mirror-X-Bow games (seeds 101–150,
+   sampled actions, both seats) the s39 checkpoint lost **19–30** to the seed it
+   started from, with 1 draw, 0 illegal, 0 rejected, 0 truncated. Point estimate
+   **38.8 %**, Wilson 95 % **26.4–52.8 %**, p = 0.15. The upper bound rules out a
+   gain larger than ~3 points: 16 updates at 1e-5 with |KL| ≤ 8.6e-5 did not
+   improve the policy, and may have cost a little.
+2. **The 4–0 smoke was the deck matchup, not the policy.** `evaluate` keeps each
+   policy on its own deck (`deck0` follows policy A to either seat), so the smoke
+   was pilot-on-X-Bow against seed-on-Hog. The gate design is now a mirror deck
+   with only the policy differing; rows record `decks_by_owner` so this cannot be
+   misread again.
+3. **The baseline anchor is 49–1.** `B-general-v275` beat `A-hog26-v738` 49–1 on
+   the recorded fixed decks (25–0 / 24–1 by seat), 49 games ending at tick 3,601.
+   Hog acted more and was never refused, so it is a real result: hog26's
+   published 71.9 % is **vs its own start**, not vs the seed, and it is not a
+   usable bar for the learner deck. Use the seed mirror as the policy gate.
+4. **Nothing is rented.** The 8-vCPU question stays a measurement gated on a
+   native win-rate signal: at the recorded full-graph terms 2.221 matches/s and
+   $43.8/M, an 8-vCPU box needs 2.73 matches/s to break even. A negative pilot
+   does not open it.
+5. **The CPU half is unchanged this session.** Groups' live-width win stands
+   (**7.57 → 2.68 ms**, 3,008/3,008 digest-identical); `_entity_rows` is still
+   the next term after session 40 — and it stays a secondary item to a training
+   run that can actually move a policy.
+
+The rig itself is fine: **100/100 native games** across the two blocks, clean
+legality and transport, ~75–90 s/game. The gate failed on the policy, not the
+instrument. See `FINDINGS.md` §3.74.
 
 ## Decisions — what changed
+
+### 2026-11-17 (session 40) — the 50-game gate says no; the 4–0 was the matchup
+
+Session 39 left exactly one question — does the pilot beat the seed it started
+from, natively — plus an n = 2 baseline that could not answer it.  Both are now
+50-game blocks on the same rig, seeds 101–150, sampled actions, paired seats,
+0 illegal, 0 rejected, 0 truncated (`FINDINGS.md` §3.74).
+
+- **The pilot loses to its seed: 19–30, 1 draw.**  Mirror X-Bow (the learner
+  deck on both seats), so only the policy differs: **38.8 %** [26.4–52.8],
+  p = 0.15; seats 11–14 and 8–16.  A 16-update 1e-5 run with |KL| ≤ 8.6e-5
+  should not move a policy far, and it did not: the upper bound rules out a
+  gain larger than ~3 points.  The pilot is **not promoted**.
+- **The 4–0 smoke measured the deck matchup, not the policy.**  `evaluate`
+  swaps decks *with the policy*: A keeps `deck0` at either seat.  The smoke was
+  pilot-on-X-Bow against seed-on-Hog in all four games; the handoff's "A's deck"
+  column and "each policy won its home-deck game" reading were wrong.  Rows now
+  record `decks_by_owner`, an evaluator test pins the mapping, and the gate block
+  is a mirror.  The s39 table is corrected in place.
+- **The baseline is 49–1 for the seed, and it is a canary failure.**
+  `B-general-v275` beat `A-hog26-v738` 49–1 on the recorded fixed decks (25–0 at
+  seat 0, 24–1 at seat 1); 49 games ended at tick 3,601, the loss at 6,104.  Hog
+  made more actions (median 41.5 vs 31) and was never refused, so this is not a
+  stall.  It does not dispute hog26's published 71.9 % ±2.6 — that is **vs its
+  own start** — but it makes the checkpoint unusable as the learner's bar.  The
+  seed mirror is the policy gate now; hog26 stays a canary with that caveat.
+  Session 39's n = 2 1–1 was a 3.9 %-likely coin flip under 98 %; the §3.40
+  2–2 used the standard deck on *both* seats and never measured this matchup.
+- **The instrument is fine.**  **100/100 games** clean across the two blocks,
+  ~75–90 s/game, no retries in the pilot block; the one transient was a machine
+  restart that killed the chunk (resumed by seed) — lifecycle, not the rig.
+- **Tooling.**  `tools/native_analysis/native_block.py` merges evaluator chunks
+  and reports the decisive-game win rate with a Wilson interval, an exact
+  two-sided p-value, the per-seat split and consistency warnings (checkpoint,
+  ruleset, native build, match shape, duplicate (seed, a_owner), contiguous
+  seeds).  `native_block_run.sh` runs a block in chunks behind a fresh engine
+  host with one retry and a resume seed.  `--sample` stays required for these
+  sparse-action checkpoints.
+- **Gate:** `test_native_block.py` (3) + `test_evaluate_and_serve.py` (2) pass;
+  ruff clean on the touched files (E,F).  100 native games with 0 illegal, 0
+  rejected, 0 truncated.
 
 ### 2026-11-17 (session 39) — both tracks run now; the box waits for a native signal
 
@@ -62,16 +110,18 @@ shows a native win-rate signal.
   `B-general-v275` played `A-hog26-v738` on the locked X-Bow deck (seat 0
   X-Bow, seat 1 Hog 2.6; paired seeds, sampled actions) through the x86_64
   native probe: **2 games, 1–1, 0 illegal, 0 rejected, 0 truncated, both
-  terminals**, 182 s.  The evaluator swaps decks with seats, so each policy won
-  its home-deck game; n = 2 is a mechanics baseline, not a ranking.  A 50-game
-  block is ~75 min and is session 40's first item.  crforge is never a
-  promotion source.
+  terminals**, 182 s.  *(Corrected in session 40: the evaluator swaps decks
+  with the **policy**, so each policy kept its own deck in both games; the
+  session-40 50-game block is 49–1.)*  n = 2 is a mechanics baseline, not a
+  ranking.  A 50-game block is ~75 min and is session 40's first item.  crforge
+  is never a promotion source.
 - **The pilot passed its first native smoke, and it is not a promotion.** The
   saved checkpoint beat the seed it started from **4–0** (seeds 11–14, both
-  decks, 0 illegal, 0 rejected; `runs/native-parity-s39/pilot-vs-seed-4games/`).
+  seats, 0 illegal, 0 rejected; `runs/native-parity-s39/pilot-vs-seed-4games/`).
   At n = 4 with sampled actions and 16 updates at 1e-5, that is a direction, not
   a win-rate signal (1-in-8 two-sided tail under an even prior).  The 50-game
-  paired block is the gate; no rental follows from this.
+  paired block is the gate; no rental follows from this.  *(Session 40: the
+  block is **19–30**; the 4–0 was the deck matchup.)*
 - **Provider/8-vCPU is still arithmetic.** At the recorded full-graph terms
   ($43.8/M measured, 2.221 matches/s at 6 vCPU) an 8-vCPU box at $0.43/h needs
   **2.73 matches/s** to break even — 1.23× the measured rate, above the 1.842
@@ -1146,20 +1196,21 @@ Decks: seat 0 the locked X-Bow
 27000008`, forms `1,0,0,2,0,1,0,0`), seat 1 Hog 2.6 (`27000000, 28000000,
 26000021, 26000038, 26000030, 26000014, 26000010, 28000011`, base forms).
 
-| game | a_owner | A's deck | winner | tick | actions | illegal | rejected |
-| ---: | ---: | --- | --- | ---: | --- | ---: | ---: |
-| 1 | 0 | X-Bow | **A** | 3,601 | 33 / 41 | 0 | 0 |
-| 2 | 1 | Hog 2.6 | **B** | 6,124 | 85 / 80 | 0 | 0 |
+| game | a_owner | A's deck | B's deck | winner | tick | actions | illegal | rejected |
+| ---: | ---: | --- | --- | --- | ---: | --- | ---: | ---: |
+| 1 | 0 | X-Bow | Hog 2.6 | **A** | 3,601 | 33 / 41 | 0 | 0 |
+| 2 | 1 | X-Bow | Hog 2.6 | **B** | 6,124 | 85 / 80 | 0 | 0 |
 
 **1–1, 0 illegal, 0 rejected, 0 truncated, both terminals.**  The mechanics
 question is answered: the locked deck plays natively through the extracted
-engine, with no refuses and a real terminal.  It does **not** rank the policies:
-the evaluator swaps decks with seats, so each game is a different policy-deck
-pairing and each policy won the game where it played its home deck.  A 1–1 at
-n = 2 is the expected shape of that pairing, not a measurement of skill.  The
-first 8-game attempt had the probe's transport die mid-match after game 1; that
-was under concurrent CPU work, and this clean run is the recorded baseline.  At
-182 s for two games, a 50-game paired block is ~75 min — the next session's
+engine, with no refuses and a real terminal.  It does **not** rank the policies,
+and the deck column is the correction session 40 made: the evaluator swaps decks
+*with* the policy, so A kept the locked X-Bow at seat 1 too and each policy
+played its own deck in both games.  A 1–1 at n = 2 was a coin flip, not a
+measurement of skill (the 50-game baseline in session 40 is 49–1).
+The first 8-game attempt had the probe's transport die mid-match after game 1;
+that was under concurrent CPU work, and this clean run is the recorded baseline.
+At 182 s for two games, a 50-game paired block is ~75 min — the next session's
 first item, not a multi-box spend.
 
 ### Measured — pilot vs seed on native (exploratory)
@@ -1168,20 +1219,21 @@ first item, not a multi-box spend.
 against the seed it started from (policy B), same rig, same match config,
 `--sample`, seeds 11–14, 4 games.
 
-| game | a_owner | A's deck | winner | tick | actions | illegal | rejected |
-| ---: | ---: | --- | --- | ---: | --- | ---: | ---: |
-| 1 | 0 | X-Bow | **A** | 3,601 | 32 / 37 | 0 | 0 |
-| 2 | 1 | Hog 2.6 | **A** | 3,601 | 39 / 33 | 0 | 0 |
-| 3 | 0 | X-Bow | **A** | 3,601 | 31 / 40 | 0 | 0 |
-| 4 | 1 | Hog 2.6 | **A** | 6,109 | 81 / 74 | 0 | 0 |
+| game | a_owner | A's deck | B's deck | winner | tick | actions | illegal | rejected |
+| ---: | ---: | --- | --- | --- | ---: | --- | ---: | ---: |
+| 1 | 0 | X-Bow | Hog 2.6 | **A** | 3,601 | 32 / 37 | 0 | 0 |
+| 2 | 1 | X-Bow | Hog 2.6 | **A** | 3,601 | 39 / 33 | 0 | 0 |
+| 3 | 0 | X-Bow | Hog 2.6 | **A** | 3,601 | 31 / 40 | 0 | 0 |
+| 4 | 1 | X-Bow | Hog 2.6 | **A** | 6,109 | 81 / 74 | 0 | 0 |
 
-**4–0 for the pilot, 0 illegal, 0 rejected, 0 truncated.**  It won on both
-decks, so this is not the seat/deck pairing that produced the baseline's 1–1.
-It is still **not a win-rate signal**: n = 4, sampled actions, and a 16-update
-run at the native 1e-5 learning rate should not move a policy this far.  Under
-an even prior, 4–0 has a 1-in-8 two-sided tail; the honest reading is "the
-checkpoint is not degraded and the direction is worth testing", and the 50-game
-paired block is what decides it.  Nothing is rented on this.
+**4–0 for the pilot, 0 illegal, 0 rejected, 0 truncated.**  It won at both
+seats, but it played the locked X-Bow in all four games while the seed played
+Hog 2.6, so the smoke compared a policy **and** a matchup.  It is still **not a
+win-rate signal**: n = 4, sampled actions, and a 16-update run at the native
+1e-5 learning rate should not move a policy this far.  Under an even prior,
+4–0 has a 1-in-8 two-sided tail.  Session 40's mirror-X-Bow block is the gate,
+and the pilot is **19–30** there — the 4–0 was the deck matchup.  Nothing is
+rented on this.
 
 ### Still open
 
@@ -1195,7 +1247,7 @@ paired block is what decides it.  Nothing is rented on this.
 - **Native parity cadence**, unchanged: 50–150 matches per N updates and after
   every adapter change.
 
-### Next session (session 40)
+### Next session (session 40) — executed; see the session-40 section above
 
 1. **Widen the native comparison to a paired 50-game block** before ranking
    anything: seed vs A-hog26 (the baseline) and seed vs the pilot checkpoint
@@ -1207,6 +1259,82 @@ paired block is what decides it.  Nothing is rented on this.
    `cloud_capacity.py` sweep; no multi-box run before a native win-rate signal.
 4. Keep the group live-width change; do not add a second gather form.  The next
    CPU term is `_entity_rows`.
+
+## Session 40 results (2026-11-17) — the 50-game gate, and it is negative
+
+**Read first:** the decision entry above and `FINDINGS.md` §3.74.
+
+Session 40 did the handoff's item 1 and nothing else that touches the native
+host: two 50-game blocks on the x86_64 16.635.1 rig, seeds 101–150, sampled
+actions, paired seats.  The pilot block is the gate; the baseline block is the
+anchor.
+
+### What landed
+
+- **`tools/native_analysis/native_block.py`** — merges evaluator chunk
+  directories into one block.  It reports the decisive-game A win rate with a
+  Wilson 95 % interval, an exact two-sided binomial test against even, the split
+  by A's seat, and warnings for a mixed checkpoint/ruleset/native build/match
+  shape, a duplicated `(seed, a_owner)` schedule or a non-contiguous seed range.
+  The artifact is `native-match-block.v1`.
+- **`tools/native_analysis/native_block_run.sh`** — runs a block in chunks, each
+  behind a fresh engine host, with one retry and a stop-at-this-seed on failure
+  so a resumed block never invents a game.
+- **`evaluate` rows record `decks_by_owner`**, and a test pins the deck/seat
+  mapping.  The evaluator swaps decks *with the policy* (`deck0` stays with A),
+  which the session-39 write-up had read backwards.
+- **`tools/native_analysis/match-configs/mirror-xbow.json`** — the locked X-Bow
+  deck on both seats, forms `1,0,0,2,0,1,0,0`, so a pilot-vs-seed block differs
+  only by policy.
+
+### Measured — the gate
+
+`runs/native-parity-s40/pilot-vs-seed-mirror.json` (five chunks, seeds 101–150):
+
+| term | value |
+| --- | ---: |
+| result (A = pilot) | **19–30**, 1 draw |
+| A win rate | **38.8 %** (95 % CI 26.4–52.8), p = 0.15 |
+| by A seat | 11–14 (seat 0), 8–16 (seat 1) |
+| illegal / rejected / truncated | 0 / 0 / 0 |
+| draw | seed 108, tick 6,068, `draw_or_unexposed_tiebreak` |
+
+The pilot is not better than its seed, and the CI says it is not better by more
+than ~3 points.  This is the intended reading of a small pilot, and it closes
+session 39's 4–0 as a matchup effect.
+
+### Measured — the baseline anchor
+
+`runs/native-parity-s40/seed-vs-hog26.json` (seeds 101–150, the recorded fixed
+decks: seed on the locked X-Bow, `A-hog26-v738` on Hog 2.6):
+
+| term | value |
+| --- | ---: |
+| result (A = seed) | **49–1** |
+| A win rate | **98.0 %** (95 % CI 89.5–99.6), p = 9e-14 |
+| by A seat | 25–0 (seat 0), 24–1 (seat 1) |
+| terminal ticks | 49 at 3,601, the loss at 6,104 |
+| illegal / rejected / truncated | 0 / 0 / 0 |
+
+Hog acted *more* than the seed (median 41.5 vs 31 actions) and was never refused,
+so the result is not a stall.  It is not a contradiction of hog26's published
+71.9 % ±2.6 — that figure is against its own start — but it does mean that
+checkpoint is not a bar for the learner deck in this rig.  Session 39's 2-game
+1–1 was a 3.9 %-likely coin flip under 98 %.
+
+### Still open
+
+- **A training run that can actually move the policy.** More updates at the
+  native 1e-5, ≥3 seeds, `reset`; the pilot's 16 updates are below the
+  resolution of a 50-game block, so it cannot be the promotion vehicle.
+- **Replace hog26 as the bar.**  The seed mirror is the policy gate; keep hog26
+  as a canary, and find a reference that is competitive with the seed on its own
+  deck before calling a 50-game block a bar reading.
+- **The 8-vCPU measurement** stays deferred until a native win rate exists.
+- **`_entity_rows`** is still the next CPU term (1.16 ms at six live entities);
+  untouched this session.
+- **Native parity cadence**, unchanged: 50–150 matches per N updates and after
+  every adapter change.
 
 ## Session 38 results (2026-11-17) — the box re-measure and the full-call graph
 
