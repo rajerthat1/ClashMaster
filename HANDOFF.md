@@ -4,61 +4,100 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 41)
+## Bottom line (2026-11-17, session 42)
 
-The CPU half's last named term fell, and the native gate is unchanged: **still
-negative**. Nothing is rented.
+The group section's remaining dense passes are gone, and the CPU fixture that
+was measuring them was wrong.
 
-1. **`_entity_rows` now builds at live width: 1.10 → 0.30 ms** at 128 lanes with
-   6 live entities (3.65×, one process, both forms on the same batch), and the
-   group section with it: **2.68 → 1.98 ms** per seat.  The cost was three
-   dense passes over the 200-row entity axis: the nine per-vocabulary gathers
-   (each re-converting the int32 row map to `intp`; six gathers alone 0.42 →
-   0.19 ms), the `where` masks, and the float64 velocity copy.  The fields are
-   now assembled at the live rows and scattered into one zero row per field —
-   the dense zero-filled slots are exactly what the masks produced.
-2. **The gate is bit-exact.**  `batched_tensorize.py` **3,008/3,008**
+1. **`_targeted_mask` and both sort keys now run at the live width.**  On a live
+   board (128 lanes, 11.5 live entities mean) `_targeted_mask` falls **0.356 →
+   0.083 ms** (4.3×), `_orders` **0.114 → 0.065** and `_child_order` **0.170 →
+   0.079 ms**; the three together are **0.64 → 0.23 ms** per seat.  The order
+   only has to cover the lane's retained width — `build` never reads past it —
+   so the sort is over the live slots and the padded tail repeats row 0, which
+   `build` masks off exactly as it masked the invalid tail before.
+2. **The micro fixture never had a live board.**  `cpu_half_micro.py` played at
+   tick 61 while `FIRST_PLAYABLE_TICK` is 90, so every play was refused and the
+   "settled board" was its six towers: zero non-tower entities.  It now waits
+   past the cooldown and settles, giving **11.5 live entities (max 17)**.  Every
+   micro number recorded in sessions 37–41 was measured at `live_g = 1`; the
+   wins recorded there were padding/width wins, not live-width wins.  The
+   session-39 group change still holds and is larger on a real board (**6.99 →
+   2.18 ms**, 3.2×), and session 41's `_entity_rows` is **1.70×** here (3.3× on
+   the empty fixture).  The producer's own `cpu_half` sections were always on
+   real boards, so the throughput arithmetic is unaffected.
+3. **The gate is bit-exact.**  `batched_tensorize.py` **3,008/3,008**
    lane-decisions, both seats, 0 mismatches, 5,196 micro-actions (seed 2:
-   3,008/3,008, 5,361); bridge suite **145 passed**; ruff clean.  A 2-update
-   producer probe is **2/2 on-policy**, |KL| 7.46e-5 — the same first update as
-   session 39 — 0 illegal, gate pass.
-3. **The pilot is not a promotion.** On 50 mirror-X-Bow games (seeds 101–150,
-   sampled actions, both seats) the s39 checkpoint lost **19–30** to the seed it
-   started from, with 1 draw, 0 illegal, 0 rejected, 0 truncated. Point estimate
-   **38.8 %**, Wilson 95 % **26.4–52.8 %**, p = 0.15. The upper bound rules out a
-   gain larger than ~3 points: 16 updates at 1e-5 with |KL| ≤ 8.6e-5 did not
-   improve the policy, and may have cost a little.
-4. **The 4–0 smoke was the deck matchup, not the policy.** `evaluate` keeps each
-   policy on its own deck (`deck0` follows policy A to either seat), so the smoke
-   was pilot-on-X-Bow against seed-on-Hog. The gate design is now a mirror deck
-   with only the policy differing; rows record `decks_by_owner` so this cannot be
-   misread again.
-5. **The baseline anchor is 49–1.** `B-general-v275` beat `A-hog26-v738` 49–1 on
-   the recorded fixed decks (25–0 / 24–1 by seat), 49 games ending at tick 3,601.
-   Hog acted more and was never refused, so it is a real result: hog26's
-   published 71.9 % is **vs its own start**, not vs the seed, and it is not a
-   usable bar for the learner deck. Use the seed mirror as the policy gate.
-6. **Nothing is rented.** The 8-vCPU question stays a measurement gated on a
-   native win-rate signal: at the recorded full-graph terms 2.221 matches/s and
-   $43.8/M, an 8-vCPU box needs 2.73 matches/s to break even. A negative pilot
-   does not open it.
+   3,008/3,008, 5,361); **0.0660 / 0.0634 ms/lane-decision** (11.2× / 11.8×);
+   bridge suite **145 passed**; ruff clean; a 2-update producer probe is **2/2
+   on-policy** with |KL| 7.46e-5, 0 illegal, gate pass.
+4. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
+   lost 19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %,
+   p = 0.15); the 4–0 smoke was the deck matchup; `A-hog26-v738` is 49–1
+   against the seed and is a canary, not the learner's bar.  The 8-vCPU
+   measurement stays deferred until a training run shows a native win rate.
 
-The rig itself is fine: **100/100 native games** across the two blocks, clean
-legality and transport, ~75–90 s/game. The gate failed on the policy, not the
-instrument. See `FINDINGS.md` §3.74 (native gate) and §3.75 (this CPU term).
+The rig itself is fine: **100/100 native games** across the session-40 blocks,
+clean legality and transport. See `FINDINGS.md` §3.74 (native gate), §3.75
+(session 41) and §3.76 (this session, including the fixture correction).
 
 ## Decisions — what changed
+
+### 2026-11-17 (session 42) — the group sort keys at live width, and the fixture that hid the board
+
+Session 41 closed `_entity_rows`; session 40's list left the two sort keys and
+`_targeted_mask` as the remaining dense passes over the 200-row entity axis.
+They are done — and measuring them exposed a fixture defect that changes how
+every micro number since session 37 should be read.
+
+- **`_targeted_mask`: 0.356 → 0.083 ms** (4.3×).  The lane-tagged key array and
+  the `searchsorted` are built from the live rows only.  Every invalid or tower
+  slot carries `entity_id == -1`, which tags as `0xFFFFFFFF` and cannot equal a
+  non-negative target id, so those slots are false in both forms — the dense
+  batch-wide key arrays were ~33× the work for the same answer.
+- **`_orders` 0.114 → 0.065 ms, `_child_order` 0.170 → 0.079 ms.**  `build`
+  reads at most the lane's retained width from each order, so `_slot_order`
+  sorts only the included slots (live entities, or child candidates) and returns
+  them as entity indices; the padded tail repeats row 0 and is masked off, which
+  is exactly what the invalid tail was.  `build(live_slots=False)` pads the axis
+  to 48/160 so the session-39 A/B still measures the wide assembly.
+- **The fixture bug: there was never a live board.**  `cpu_half_micro.py`
+  stepped 60 ticks, then played for 15, while `FIRST_PLAYABLE_TICK` is **90** —
+  so every play was refused and the "settled board" was its six towers.  The
+  recorded `live_entities_mean: 6.0` was `entity_valid`, i.e. towers; the
+  non-tower width was **0**, so `live_g` was 1.  It now waits 95 ticks, plays 15,
+  settles 40: **11.5 live entities mean, 17 max**.  Consequences are recorded in
+  `FINDINGS.md` §3.76; the key one is that sessions 37–41's micro section numbers
+  are empty-board numbers, and their wins were width/padding wins.
+- **The session-39 and -41 changes survive the correction.**  On the live board
+  the group `build` is **6.99 → 2.18 ms** (3.2×; the empty fixture said 2.82×),
+  and `_entity_rows` is **1.297 → 0.762 ms** (1.70×; the empty fixture said
+  3.65×).  Both are same-process A/Bs, so both statements are true of their own
+  batch — the fixture, not the change, was the problem.
+- **Gate:** `batched_tensorize.py` **3,008/3,008** lane-decisions, both seats, 0
+  mismatches, 5,196 micro-actions, **0.0660 ms/lane-decision** (11.2×) and seed 2
+  at **3,008/3,008** / 5,361 / 0.0634 ms (11.8×); bridge suite **145 passed**;
+  ruff clean; a 2-update producer probe is 2/2 on-policy, |KL| 7.46e-5, 0
+  illegal.
+- **Next CPU term:** on the corrected fixture `build` is 2.18 ms, of which the
+  three functions above are 0.23, `_entity_rows` 0.76, and the rest is the
+  gather/feature assembly plus the fixed-capacity pad to 48 group / 160 child
+  slots (~3 MB of fresh zeroed arrays per build).  The padding is the next
+  candidate; measure it before rewriting it.
 
 ### 2026-11-17 (session 41) — `_entity_rows` builds at live width, and the group section follows
 
 Session 40 left one CPU term named (`_entity_rows`) and no native question to
 open.  The term was **dense over the reserved entity axis**: 128 lanes × 200
-slots, with ~6 live entities per lane.  It is now assembled at the live rows and
-scattered into one zero row per field.
+slots.  *(Session 42 found the fixture claimed ~6 live entities but had towers
+only; the live width is real on a real board, just not on that fixture.)*  It is
+now assembled at the live rows and scattered into one zero row per field.
 
 - **1.10 → 0.30 ms** at 128 lanes with 6 live entities (3.65×), both forms run
   back to back on the same batch in one process (`runs/crforge-c4/
-  cpu-half-micro-s41.json`).  The group section falls with it, **2.68 → 1.98
+  cpu-half-micro-s41.json`).  *(Corrected in session 42: that fixture had zero
+  non-tower entities.  On a live board the same change is **1.297 → 0.762 ms**,
+  1.70×.)*  The group section falls with it, **2.68 → 1.98
   ms** per seat; the same tool's `groups` section mean is **6.38 → 5.50
   ms/seat** across runs (same shape, different process, so the host is in that
   half).
@@ -1285,9 +1324,12 @@ rented on this.
 
 ### Still open
 
-- **The group sort keys and `_targeted_mask` are still dense over the 200-row
-  axis** (`_entity_rows` left this list in session 41: 1.10 → 0.30 ms).
-  Offline, `_targeted_mask` is the largest of the three at 0.27 ms.
+- **The group section's fixed-capacity pad** is the next CPU term (session 42
+  closed `_entity_rows`, `_targeted_mask` and both sort keys).  `build` is
+  2.18 ms on a live board; the pad to 48 group / 160 child slots is the largest
+  remaining piece of it.  Measure first.
+- **The micro fixture measured a towers-only board until session 42** — do not
+  cite a pre-session-42 `cpu_half_micro.py` section mean as a live-board number.
 - **The overlapped loop** still needs a separate card or a batched decision
   server; it is not a default on one A6000.
 - **The 8-vCPU question** is a measurement gated on a native signal: 2.73
@@ -1381,10 +1423,92 @@ checkpoint is not a bar for the learner deck in this rig.  Session 39's 2-game
   deck before calling a 50-game block a bar reading.
 - **The 8-vCPU measurement** stays deferred until a native win rate exists.
 - **`_entity_rows`** was the next CPU term and is done in session 41
-  (**1.10 → 0.30 ms**); the group sort keys and `_targeted_mask` are what is
-  left dense over the entity axis.
+  (1.297 → 0.762 ms on a live board); `_targeted_mask` and both sort keys are
+  done in session 42 (0.64 → 0.23 ms).  The fixed-capacity pad is next.
 - **Native parity cadence**, unchanged: 50–150 matches per N updates and after
   every adapter change.
+
+## Session 42 results (2026-11-17) — the group sort keys at live width, and a fixture that had no board
+
+**Read first:** the decision entry above and `FINDINGS.md` §3.76.
+
+Session 41's plan was one line: `_targeted_mask`, then the two sort keys.  Doing
+it exposed a defect in the micro fixture that had been understating (and
+mis-describing) the CPU half since session 37.
+
+### What landed
+
+- **`VectorGroupBuilder._targeted_mask`** builds its lane-tagged key arrays and
+  `searchsorted` from the live rows.  Invalid and tower slots all carry
+  `entity_id == -1` (`0xFFFFFFFF` after the tag), which can never equal a
+  non-negative target id, so they are false in both forms.
+- **`_slot_order`, used by `_orders` and `_child_order`**, sorts only the
+  included slots and returns them as entity indices in a `(lanes, live width)`
+  array.  `build` reads at most that width from each order; the padded tail
+  repeats row 0 and is masked off, exactly as the invalid tail was.
+  `build(live_slots=False)` still pads the order axis to 48/160 so the
+  session-39 wide/live A/B keeps measuring the wide assembly.
+- **`cpu_half_micro.py` now waits past the playable cooldown** — it played at
+  tick 61 with `FIRST_PLAYABLE_TICK == 90`, so every play was refused and the
+  "settled board" was six towers with zero live entities.  It waits 95 ticks,
+  plays 15, settles 40: **11.5 live entities mean, 17 max**.
+- **`cpu_half_micro.py` gates all three new forms** against their pre-session-42
+  implementations (`_dense_targeted_mask`, `_dense_orders`, `_dense_child_order`)
+  on the per-lane retained prefix, and records every timing in `group_sort` /
+  `group_build`.
+
+### Measured — the same-process A/B
+
+`runs/crforge-c4/cpu-half-micro-s42.json`, 128 lanes × 2 seats, live board
+(11.5 entities mean), 20 repeats, `OMP_NUM_THREADS=4`:
+
+| term | dense | live | speed |
+| --- | ---: | ---: | ---: |
+| `_targeted_mask` | 0.356 ms | **0.083 ms** | 4.3× |
+| `_orders` | 0.114 ms | **0.065 ms** | 1.76× |
+| `_child_order` | 0.170 ms | **0.079 ms** | 2.15× |
+| `build` (live slots) | 6.987 ms wide | **2.183 ms** | 3.2× |
+| `build` full capacity | 6.987 ms | — | oracle |
+| `_entity_rows` (session 41) | 1.297 ms | **0.762 ms** | 1.70× |
+
+The three session-42 terms are **0.64 → 0.23 ms** per seat.
+
+### Measured — the gates
+
+- `runs/crforge-c4/batched-tensorize-s42.json`: **3,008/3,008** lane-decisions,
+  both seats, **0 mismatches**, 5,196 micro-actions, **0.0660
+  ms/lane-decision** (11.2× the 0.739 oracle), gate pass.
+- `-s42-seed2.json`: **3,008/3,008**, 5,361 actions, 0.0634 ms (11.8×).
+- `runs/crforge-c4/self-play-s42-probe.json`: 4 lanes × 2 seats × 2 segments ×
+  24 decisions with `--ppo-update`, **2/2 on-policy**, |KL| 7.46e-5 (the same
+  first update as sessions 39 and 41), 0 illegal, training gate pass.
+- Bridge suite **145 passed**; ruff clean on the touched files.
+
+### Corrected record
+
+The micro tool's section means from sessions 37–41 were measured on a
+towers-only board (`live_g = 1`).  On the corrected fixture the same sections
+are groups 8.75, relations 5.83, planes 2.90, candidates 2.13, cards 1.80,
+towers 1.44 ms/seat — so **the old section ranking was measured on the wrong
+board**, though `groups` was and remains the largest.  The producer's own
+`cpu_half` blocks were always on real matches (128-lane runs recorded groups
+22–33 ms/seat), so `T = N_proc × F` and the provider arithmetic are unaffected;
+it is the micro tool that was wrong.  `cpu_half_micro.py` is also now the only
+place these shims are compared, and it compares both forms on the same batch.
+
+### Next session (session 43)
+
+1. **The fixed-capacity pad in `VectorGroupBuilder.build`** is the next term:
+   `build` is 2.18 ms, the three native-row functions are 0.23, `_entity_rows`
+   0.76, and the rest is gather/feature assembly plus zero-filling 48 group and
+   160 child slots (~3 MB of fresh arrays per build).  Measure the pad before
+   rewriting it; gate on `cpu_half_micro.py` + the `batched_tensorize.py` digest.
+2. **Re-take the section ranking on the corrected fixture** before choosing a
+   second section — every pre-session-42 micro section number is an empty-board
+   number.
+3. **The training run that can move the policy** is still the real open item
+   (more updates at 1e-5, ≥3 seeds, `reset`, native eval every N updates).
+4. **Do not rent** for the 8-vCPU measurement before a native win-rate signal.
 
 ## Session 41 results (2026-11-17) — `_entity_rows` builds at live width
 
@@ -1435,7 +1559,7 @@ claimed.
   first update as session 39), 0 illegal, training gate pass.
 - Bridge suite **145 passed**; ruff clean on the touched files.
 
-### Next session (session 42)
+### Next session (session 42) — executed; see the session-42 section above
 
 1. **`_targeted_mask` at live width** — the largest of the three remaining dense
    passes over the 200-row entity axis (offline 0.27 ms at 128 lanes), then the

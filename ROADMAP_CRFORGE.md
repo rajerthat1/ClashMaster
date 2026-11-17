@@ -485,18 +485,34 @@ spend is a training run with enough updates and seeds to move the policy.
 See `FINDINGS.md` §3.74.
 
 **Status (2026-11-17, session 41).** The last named CPU term is closed.
-`_entity_rows` built every field over the reserved 200-row entity axis with
-~6 live entities: nine `np.where(valid, table[rv], 0)` gathers (NumPy
-re-converts the int32 row map to `intp` on each call — six gathers alone were
-0.42 ms), plus the masks and a float64 velocity copy.  It now assembles at the
-live rows and scatters into one zero row per field, which is exactly what the
-masks produced for the invalid slots.  Same-process A/B at 128 lanes:
-**1.098 → 0.301 ms** (3.65×), group `build` **2.684 → 1.976 ms** per seat
+`_entity_rows` built every field over the reserved 200-row entity axis: nine
+`np.where(valid, table[rv], 0)` gathers (NumPy re-converts the int32 row map to
+`intp` on each call — six gathers alone were 0.42 ms), plus the masks and a
+float64 velocity copy.  It now assembles at the live rows and scatters into one
+zero row per field, which is exactly what the masks produced for the invalid
+slots.  Same-process A/B at 128 lanes: **1.098 → 0.301 ms** (3.65×), group
+`build` **2.684 → 1.976 ms** per seat
 (`runs/crforge-c4/cpu-half-micro-s41.json`).  The digest gate is still
 **3,008/3,008** lane-decisions, both seats, 0 mismatches on seeds 1 and 2, and
-the bridge suite is 145 passed.  What is left dense over the entity axis is the
-group sort keys and `_targeted_mask` (offline 0.11 / 0.18 / 0.27 ms); the
-gathers are still not worth a rewrite.  See `FINDINGS.md` §3.75.
+the bridge suite is 145 passed.  *(Session 42 corrected the fixture behind those
+numbers — it had zero live entities; on a live board the same change is 1.297 →
+0.762 ms.)*  See `FINDINGS.md` §3.75.
+
+**Status (2026-11-17, session 42).** The group section's remaining dense passes
+are gone, and the fixture that measured them was wrong.  `_targeted_mask` builds
+its lane-tagged keys and `searchsorted` from the live rows (**0.356 → 0.083 ms**,
+4.3×), and `_orders` / `_child_order` sort only the slots `build` reads
+(**0.114 → 0.065**, **0.170 → 0.079 ms**); the padded tail repeats row 0 and is
+masked off as the invalid tail was.  The three terms are **0.64 → 0.23 ms** per
+seat.  `cpu_half_micro.py` had played at tick 61 while `FIRST_PLAYABLE_TICK` is
+90, so every play was refused and its "settled board" was six towers: every
+micro section number from sessions 37–41 is an empty-board number.  It now waits
+past the cooldown (**11.5 live entities, max 17**); on that board group `build`
+is **6.99 → 2.18 ms** (3.2×) and `_entity_rows` 1.297 → 0.762 ms (1.70×), so the
+session-39/41 changes hold.  Digest **3,008/3,008** both seeds (11.2× / 11.8×),
+bridge suite 145, producer probe 2/2 on-policy at |KL| 7.46e-5.  Next: the
+fixed-capacity pad to 48/160 slots inside `build` — measure it before rewriting.
+See `FINDINGS.md` §3.76.
 
 ---
 

@@ -6171,3 +6171,79 @@ Evidence: `runs/crforge-c4/cpu-half-micro-s41.json`,
 `runs/crforge-c4/batched-tensorize-s41.json`,
 `runs/crforge-c4/batched-tensorize-s41-seed2.json`,
 `runs/crforge-c4/self-play-s41-probe.json`.
+
+---
+
+### 3.76 The group sort keys at live width, and a fixture that never had a board (2026-11-17)
+
+Session 41 left three passes in the group section still dense over the 200-row
+entity axis: the targeted-entity mask and the two sort keys.  All three are now
+built at the width they are read at — and measuring them found that the tool
+doing the measuring had never had a live board.
+
+**The sort keys only have to cover the lane's retained width.**  `build` reads
+`group_order[:, :live_g]` and `child_order[:, :live_c]`, where those widths are
+the lane's live entity / child candidate counts; nothing reads the tail.  The
+dense form sorted all 200 rows per lane with the invalid rows parked at
+`INT64_MAX`, so the tail was always the invalid slot indices in ascending order.
+`_slot_order` now sorts only the included slots and returns them as entity
+indices in a `(lanes, live width)` array, with the padded tail repeating row 0 —
+which `build` masks off exactly as it masked the invalid tail.  Key construction
+also moved to the live rows, so `relation` / `hero_building` / `hp` / `entity_id`
+are no longer materialized at full width.  `build(live_slots=False)` passes a
+fixed width of 48/160 so the session-39 wide/live A/B still measures the wide
+assembly.
+
+**`_targeted_mask` only has to key the live rows.**  The mask answers "is some
+other entity's visible target this entity?" over lane-tagged int64 keys.  Every
+invalid or tower slot carries `entity_id == -1` (`0xFFFFFFFF` after the tag),
+which can never equal a non-negative target id, so those slots are false in both
+forms.  The dense form built two 25,600-entry key arrays and searched 25,600
+positions per batch; the live form keys 640-ish rows.
+
+**The fixture bug.**  `cpu_half_micro.py` stepped 60 ticks, played for 15, and
+settled for 200.  `FIRST_PLAYABLE_TICK` is **90**, so every play was refused:
+the "settled board" was its six towers (`entity_valid == 6`) and the non-tower
+width `live_g` was **0**.  The recorded `live_entities_mean: 6.0` was towers,
+and the section numbers in sessions 37–41 are empty-board numbers.  The fixture
+now waits 95 ticks, plays 15, settles 40: **11.5 live entities mean, 17 max**.
+The producer's own `cpu_half` blocks were always real matches (the 128-lane
+records show groups 22–33 ms/seat), so `T = N_proc × F` and the provider
+arithmetic are unaffected; what was wrong is the micro tool.
+
+**Same-process A/B on the corrected fixture** (128 lanes × 2 seats, 20 repeats,
+`OMP_NUM_THREADS=4`, `runs/crforge-c4/cpu-half-micro-s42.json`):
+
+| term | dense | live | speed |
+| --- | ---: | ---: | ---: |
+| `_targeted_mask` | 0.356 ms | **0.083 ms** | 4.3× |
+| `_orders` | 0.114 ms | **0.065 ms** | 1.76× |
+| `_child_order` | 0.170 ms | **0.079 ms** | 2.15× |
+| group `build` (live slots) | 6.987 ms (wide) | **2.183 ms** | 3.2× |
+| `_entity_rows` (§3.75 change) | 1.297 ms | **0.762 ms** | 1.70× |
+
+The three session-42 terms are **0.64 → 0.23 ms** per seat.  The session-39
+group change is *larger* on a real board than the empty fixture claimed (3.2×
+against 2.82×), and the session-41 `_entity_rows` change is smaller (1.70×
+against 3.65×) — both are true of their own batch, and the fixture was the
+problem.
+
+**The gates.**  `batched_tensorize.py --seats 0 1`: **3,008/3,008**
+lane-decisions, both seats, **0 mismatches**, 5,196 micro-actions, **0.0660
+ms/lane-decision** (11.2× the 0.739 oracle); seed 2 repeats **3,008/3,008** with
+5,361 actions and 0.0634 ms (11.8×).  Bridge suite 145 passed.  A 2-update
+producer probe is 2/2 on-policy with |KL| 7.46e-5 (the same first update as
+sessions 39 and 41) and 0 illegal.
+
+**What is left.**  `build` is 2.18 ms on the live snapshot: 0.23 for the three
+functions above, 0.76 for `_entity_rows`, and the rest is the gather/feature
+assembly plus the fixed-capacity pad to 48 group and 160 child slots (~3 MB of
+fresh zeroed arrays per build, which `torch.from_numpy` then wraps zero-copy).
+The pad is the next candidate, and it should be measured before it is rewritten.
+Every pre-session-42 micro section mean should be re-taken on the corrected
+fixture before a second section is chosen.
+
+Evidence: `runs/crforge-c4/cpu-half-micro-s42.json`,
+`runs/crforge-c4/batched-tensorize-s42.json`,
+`runs/crforge-c4/batched-tensorize-s42-seed2.json`,
+`runs/crforge-c4/self-play-s42-probe.json`.
