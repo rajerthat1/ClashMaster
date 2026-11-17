@@ -241,6 +241,11 @@ def evaluate(
                     "tick": observations[0].tick,
                     "terminal": terminal.to_dict(),
                     "actions_by_owner": actions,
+                    # The deck each owner actually played.  The seat swap is
+                    # invisible in ``identity.match`` (which records the
+                    # requested pairing), and a table that guesses it from
+                    # ``a_owner`` has already been wrong once.
+                    "decks_by_owner": [list(current.deck0), list(current.deck1)],
                     "illegal_by_owner": illegal_by_owner,
                     "illegal_total": sum(illegal_by_owner.values()),
                     "rejected_actions": len(rejected),

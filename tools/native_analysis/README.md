@@ -267,6 +267,45 @@ The recovery of the 16.635 Champion vtables and ability-data field shift is in
 FINDINGS §3.22. `champion-diag` is also available directly on the control
 socket for a read-only controller dump.
 
+## Native match blocks (`native_block.py`)
+
+`native_runner.training.v4.evaluate` writes one `matches.jsonl` per invocation.
+A promotion gate is a block of games, and a block is run in chunks because a
+native transport can die mid-match and a chunk is the unit that is cheap to
+lose. `native_block_run.sh` drives those chunks (one fresh engine host each,
+one retry, stop-and-name-the-seed on failure):
+
+```bash
+tools/native_analysis/native_block_run.sh pilot-vs-seed \
+    runs/crforge-c4/pilot-s39-checkpoint.pt \
+    .resource/RoyaleFish/models/B-general-v275.pt \
+    tools/native_analysis/match-configs/mirror-xbow.json \
+    101 50 10 runs/native-parity-s40
+```
+
+`native_block.py` merges the finished chunks and refuses to average over runs
+that are not the same experiment:
+
+```bash
+.venv/bin/python tools/native_analysis/native_block.py \
+    --name pilot-vs-seed \
+    --output runs/native-parity-s40/pilot-vs-seed.json \
+    runs/native-parity-s40/pilot-vs-seed-*
+```
+
+It reports the A win rate over decisive games with a Wilson interval, an exact
+two-sided binomial test against even, the split by A's seat, and warnings for a
+mixed checkpoint/ruleset/native build or a duplicated `(seed, a_owner)`
+schedule. Rows now record `decks_by_owner`, because the evaluator swaps the
+decks *with the policy*: A keeps `deck0` at either seat, so `identity.match`
+alone cannot say which deck a policy played.
+
+The committed gate configs are `match-configs/xbow-vs-hog26.json` (the locked
+X-Bow at seat 0, Hog 2.6 at seat 1) and `match-configs/mirror-xbow.json` (the
+locked X-Bow on both seats, the policy gate). A fixed-deck policy comparison
+confounds deck with policy — session 40's 4–0 smoke is the example — so compare
+two checkpoints on the mirror.
+
 ## Ghidra scripts
 
 `ghidra_scripts/ExportFunctions.java`, `DecompileAt.java` and

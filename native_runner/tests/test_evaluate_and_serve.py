@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -10,6 +11,7 @@ from native_runner.training.v4 import evaluate, serve_policy
 
 def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, tmp_path):
     assignments, seeds, ended = [], [], []
+    decks = []
     terminal = NS(winner=0, to_dict=lambda: {"winner": 0, "ended": True})
     observations = {
         owner: NS(tick=100, owner=owner, players=[NS(owner=owner, elixir_exact=5.0)], events=[], terminal=terminal)
@@ -22,6 +24,7 @@ def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, t
 
         def reset(self, *, match_config, options):
             seeds.append(match_config.seed)
+            decks.append((tuple(match_config.deck0), tuple(match_config.deck1)))
             assert options["render_mode"] == "headless"
             return observations, {}
 
@@ -51,9 +54,22 @@ def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, t
     monkeypatch.setattr(evaluate, "NativeClashEnv", lambda *a, **k: NS(close_transport=lambda: None))
     monkeypatch.setattr(evaluate, "BattleEnvV1", Environment)
     monkeypatch.setattr(evaluate, "build_policy_session_v4", session)
-    result = evaluate.evaluate("a.pt", "b.pt", games=3, match=MatchConfig(seed=7), output=tmp_path)
+    result = evaluate.evaluate(
+        "a.pt",
+        "b.pt",
+        games=3,
+        match=MatchConfig(seed=7, deck0=tuple(range(1, 9)), deck1=tuple(range(11, 19))),
+        output=tmp_path,
+    )
     assert seeds == [7, 8, 9]
     assert assignments == [("a.pt", 0), ("b.pt", 1), ("b.pt", 0), ("a.pt", 1), ("a.pt", 0), ("b.pt", 1)]
+    # The deck follows the *policy* (A keeps deck0 at either seat), so the seat
+    # swap is invisible in identity.match.  The artifact records it per game.
+    assert decks == [
+        (tuple(range(1, 9)), tuple(range(11, 19))),
+        (tuple(range(11, 19)), tuple(range(1, 9))),
+        (tuple(range(1, 9)), tuple(range(11, 19))),
+    ]
     assert result == {
         "requested": 3,
         "completed": 3,
@@ -68,7 +84,10 @@ def test_evaluation_counts_complete_matches_and_alternates_models(monkeypatch, t
         "games_with_rejections": 0,
         "rejected_reasons": {},
     }
-    assert len((tmp_path / "matches.jsonl").read_text().splitlines()) == 3
+    rows = [json.loads(line) for line in (tmp_path / "matches.jsonl").read_text().splitlines()]
+    assert len(rows) == 3
+    assert rows[0]["decks_by_owner"] == [list(range(1, 9)), list(range(11, 19))]
+    assert rows[1]["decks_by_owner"] == [list(range(11, 19)), list(range(1, 9))]
     assert len(ended) == 6
 
 
