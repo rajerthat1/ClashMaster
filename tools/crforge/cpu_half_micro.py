@@ -14,6 +14,9 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
   gather's own copy in place (nine fields per seat in ``_entity_rows``);
 * ``_entity_rows`` itself: the dense form (masks and gathers over the whole
   entity axis) vs the live-row form the producer uses now (session 41);
+* the group sort keys and ``_targeted_mask``: the same dense/local split.  An
+  order only has to cover the lane's live width, so the compact sort is
+  compared on the prefix ``build`` actually reads (session 42);
 * the group build at live width vs the previous full-capacity assembly
   (``VectorGroupBuilder.build(..., live_slots=False)`` is the oracle), which is
   where the padded 48/160 slots were being paid for;
@@ -23,6 +26,11 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
 
     OMP_NUM_THREADS=4 .venv/bin/python tools/crforge/cpu_half_micro.py \
         --count 128 --repeats 20 --output runs/crforge-c4/cpu-half-micro.json
+
+The batch is a **live** board: the fixture waits past ``FIRST_PLAYABLE_TICK``,
+plays for a few decisions and settles.  Until session 42 it played at tick 61,
+before the cooldown, so every play was refused and the "settled board" was its
+six towers — the section numbers in sessions 37–41 are empty-board numbers.
 """
 
 from __future__ import annotations
@@ -222,6 +230,48 @@ def _dense_entity_rows(groups: Any, batch: Any) -> dict[str, Any]:
     }
 
 
+def _dense_targeted_mask(rows: dict[str, Any]) -> np.ndarray:
+    """The pre-session-42 ``_targeted_mask``: keys over the whole entity axis."""
+
+    targeted = np.zeros(rows["valid"].shape, dtype=bool)
+    if not rows["target"].any():
+        return targeted
+    lanes = rows["entity_id"].shape[0]
+    lane_offsets = (np.arange(lanes, dtype=np.int64) << 32)[:, None]
+    keys = lane_offsets | (rows["entity_id"] & 0xFFFFFFFF)
+    target_keys = lane_offsets | (rows["target_id"].astype(np.int64) & 0xFFFFFFFF)
+    target_keys = np.sort(target_keys[rows["target"]])
+    flat = keys.ravel()
+    positions = np.searchsorted(target_keys, flat)
+    clipped = np.clip(positions, 0, target_keys.size - 1)
+    matched = (positions < target_keys.size) & (target_keys[clipped] == flat)
+    return matched.reshape(targeted.shape)
+
+
+def _dense_orders(rows: dict[str, Any]) -> np.ndarray:
+    """The pre-session-42 ``_orders``: keys and argsort over the entity axis."""
+
+    valid = rows["valid"]
+    relation = np.where(rows["target"], 0, 1)
+    hero_building = np.where(rows["is_hero_or_building"], 0, 1)
+    entity_id = np.clip(rows["entity_id"], 0, 2**31 - 1)
+    key = ((relation.astype(np.int64) * 2 + hero_building) << 52) | entity_id
+    key = np.where(valid, key, np.iinfo(np.int64).max)
+    return np.argsort(key, axis=1, kind="stable")
+
+
+def _dense_child_order(rows: dict[str, Any], candidate: np.ndarray, targeted: np.ndarray) -> np.ndarray:
+    """The pre-session-42 ``_child_order``: keys and argsort over the entity axis."""
+
+    relation = np.where(targeted, 0, 1)
+    hero_building = np.where(rows["is_hero_or_building"], 0, 1)
+    hp_key = np.minimum(np.maximum(rows["hp"], 0.0), 1_048_575.0).astype(np.int64)
+    entity_id = np.clip(rows["entity_id"], 0, 2**31 - 1)
+    key = ((relation.astype(np.int64) * 2 + hero_building) << 52) | ((1_048_576 - hp_key) << 31) | entity_id
+    key = np.where(candidate, key, np.iinfo(np.int64).max)
+    return np.argsort(key, axis=1, kind="stable")
+
+
 def _time(fn: Any, repeats: int) -> float:
     samples = []
     for _ in range(repeats):
@@ -281,9 +331,12 @@ def main(argv: list[str] | None = None) -> int:
         for item in rows.values():
             item.reset(batch)
 
-        # A decision that actually plays: open the game, then let it settle so
-        # candidates exist (otherwise the record and decode loops are empty).
-        for _ in range(60):
+        # A decision that actually plays: wait past the playable cooldown, play
+        # for a few decisions, then settle just long enough for the units to be
+        # on the board.  The old fixture played at tick 61 with
+        # ``FIRST_PLAYABLE_TICK == 90``, so every play was refused and the
+        # measured "settled board" was its six towers — zero live entities.
+        for _ in range(sp.FIRST_PLAYABLE_TICK + 5):
             vector.step()
         rng = np.random.default_rng(3)
         first_ability = int(vector.schema.first_ability)
@@ -296,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
                         if legal.size:
                             actions[lane, seat] = int(legal[rng.integers(legal.size)]) + 1
             vector.step(actions)
-        for _ in range(200):
+        for _ in range(40):
             vector.step()
         encoder.encode(batch)
         stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
@@ -317,9 +370,11 @@ def main(argv: list[str] | None = None) -> int:
         # ---- group gather --------------------------------------------------
         groups = rows[0].group_builder
         entity_rows = groups._entity_rows(batch)
-        order = groups._orders(entity_rows)
         g = groups.max_groups
-        slots = order[:, :g]
+        # A full-capacity slot matrix for the gather A/B: the producer's order is
+        # only the live width now, but this measures the gather *form* at the
+        # record's fixed width, so the number stays comparable across sessions.
+        slots = np.argsort(~entity_rows["valid"], axis=1, kind="stable")[:, :g]
         values = entity_rows["hp"]
         lane_index = np.arange(int(batch.count), dtype=np.int64)[:, None]
 
@@ -387,6 +442,49 @@ def main(argv: list[str] | None = None) -> int:
         }
         build["saved_ms"] = build["full_capacity_ms"] - build["live_slots_ms"]
         build["entity_rows_saved_ms"] = build["entity_rows_dense_ms"] - build["entity_rows_ms"]
+
+        # ---- targeted mask: live rows vs the dense key arrays ---------------
+        targeted_dense = _dense_targeted_mask(entity_rows)
+        targeted_live = groups._targeted_mask(entity_rows)
+        assert np.array_equal(targeted_dense, targeted_live)
+        build["targeted_mask_ms"] = _time(lambda: groups._targeted_mask(entity_rows), args.repeats)
+        build["targeted_mask_dense_ms"] = _time(lambda: _dense_targeted_mask(entity_rows), args.repeats)
+        build["targeted_mask_saved_ms"] = build["targeted_mask_dense_ms"] - build["targeted_mask_ms"]
+
+        # ---- sort keys: live slots vs the dense entity-axis sort -----------
+        # ``build`` reads at most the lane's live width from each order, so the
+        # producer sorts only the live (or candidate) slots.  The dense forms
+        # are the oracle; the compared prefix is each lane's own retained
+        # width (the tails are masked off by ``build`` and need not agree).
+        candidate = live_section.group_index >= 0
+        targeted = targeted_live
+        group_counts = entity_rows["valid"].sum(axis=1)
+        candidate_counts = candidate.sum(axis=1)
+        dense_order = _dense_orders(entity_rows)
+        live_order = groups._orders(entity_rows)
+        assert all(
+            np.array_equal(dense_order[lane, : group_counts[lane]], live_order[lane, : group_counts[lane]])
+            for lane in range(dense_order.shape[0])
+        )
+        dense_child = _dense_child_order(entity_rows, candidate, targeted)
+        live_child = groups._child_order(entity_rows, candidate, targeted)
+        assert all(
+            np.array_equal(dense_child[lane, : candidate_counts[lane]], live_child[lane, : candidate_counts[lane]])
+            for lane in range(dense_child.shape[0])
+        )
+        group_sort = {
+            "orders_ms": _time(lambda: groups._orders(entity_rows), args.repeats),
+            "orders_dense_ms": _time(lambda: _dense_orders(entity_rows), args.repeats),
+            "child_order_ms": _time(lambda: groups._child_order(entity_rows, candidate, targeted), args.repeats),
+            "child_order_dense_ms": _time(
+                lambda: _dense_child_order(entity_rows, candidate, targeted), args.repeats
+            ),
+            "group_slots_max": int(group_counts.max()),
+            "child_slots_max": int(candidate_counts.max()),
+            "equal_values": True,
+        }
+        group_sort["orders_saved_ms"] = group_sort["orders_dense_ms"] - group_sort["orders_ms"]
+        group_sort["child_order_saved_ms"] = group_sort["child_order_dense_ms"] - group_sort["child_order_ms"]
 
         # ---- table gather + mask ------------------------------------------
         # ``_entity_rows`` gathers nine per-vocabulary tables through the
@@ -472,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
             "interleave": interleave,
             "group_gather": gather,
             "group_build": build,
+            "group_sort": group_sort,
             "entity_mask": mask,
             "record_action": record,
             "sections_ms_mean": sections,

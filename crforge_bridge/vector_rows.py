@@ -546,7 +546,33 @@ class VectorGroupBuilder:
 
     # ---- sort keys ---------------------------------------------------------
 
-    def _orders(self, rows: dict[str, np.ndarray]) -> np.ndarray:
+    def _slot_order(self, include: np.ndarray, keys: np.ndarray, width: int | None = None) -> np.ndarray:
+        """Order a lane's ``include`` slots by ``keys``, as entity indices.
+
+        Only the included slots are sorted: ``build`` reads at most the lane's
+        live width from the result, and sorting (and keying) all ``max_entities``
+        entries was most of the sort's cost.  Padded slots repeat entity row 0;
+        ``build`` masks them off, exactly as it masked the invalid rows that
+        used to fill this tail.  ``width`` pads the axis out to a fixed capacity
+        for the ``live_slots=False`` oracle path.
+        """
+
+        lanes, entity_count = include.shape
+        count = include.sum(axis=1)
+        live_width = max(1, int(count.max()))
+        if width is not None:
+            live_width = max(live_width, int(width))
+        flat = np.flatnonzero(include.ravel())
+        lane_of = flat // entity_count
+        starts = np.concatenate(([0], np.cumsum(count)[:-1]))
+        rank = np.arange(flat.size, dtype=np.int64) - starts[lane_of]
+        keyed = np.full((lanes, live_width), np.iinfo(np.int64).max, dtype=np.int64)
+        keyed[lane_of, rank] = keys
+        index = np.zeros((lanes, live_width), dtype=np.int64)
+        index[lane_of, rank] = flat - lane_of * entity_count
+        return np.take_along_axis(index, np.argsort(keyed, axis=1, kind="stable"), axis=1)
+
+    def _orders(self, rows: dict[str, np.ndarray], *, width: int | None = None) -> np.ndarray:
         """Stable per-lane order for the group priority.
 
         ``_group_priority`` over singleton members reduces to
@@ -558,12 +584,12 @@ class VectorGroupBuilder:
         """
 
         valid = rows["valid"]
-        relation = np.where(rows["target"], 0, 1)
-        hero_building = np.where(rows["is_hero_or_building"], 0, 1)
-        entity_id = np.clip(rows["entity_id"], 0, 2**31 - 1)
+        flat = np.flatnonzero(valid.ravel())
+        relation = np.where(rows["target"].ravel()[flat], 0, 1)
+        hero_building = np.where(rows["is_hero_or_building"].ravel()[flat], 0, 1)
+        entity_id = np.clip(rows["entity_id"].ravel()[flat], 0, 2**31 - 1)
         key = ((relation.astype(np.int64) * 2 + hero_building) << 52) | entity_id
-        key = np.where(valid, key, np.iinfo(np.int64).max)
-        return np.argsort(key, axis=1, kind="stable")
+        return self._slot_order(valid, key, width)
 
     def _targeted_mask(self, rows: dict[str, np.ndarray]) -> np.ndarray:
         """Per-entity: is some other entity's visible target this entity?
@@ -572,25 +598,39 @@ class VectorGroupBuilder:
         ``relation_ids`` set, which is keyed by *target* id.  Lane-tagged int64
         keys reduce the membership test to one ``searchsorted`` over the whole
         batch, with no per-lane Python loop.
+
+        The keys are built at the **live rows** only.  Every invalid or tower
+        slot carries ``entity_id == -1``, which tags as ``0xFFFFFFFF`` and can
+        never equal a non-negative target id, so those slots are false in both
+        forms; the dense batch-wide key arrays were ~33x the work for the same
+        answer.
         """
 
         targeted = np.zeros(rows["valid"].shape, dtype=bool)
         if not rows["target"].any():
             return targeted
-        lanes = rows["entity_id"].shape[0]
-        lane_offsets = (np.arange(lanes, dtype=np.int64) << 32)[:, None]
-        keys = lane_offsets | (rows["entity_id"] & 0xFFFFFFFF)
+        shape = rows["valid"].shape
+        live = np.flatnonzero(rows["valid"].ravel())
+        lane_offsets = ((live // shape[1]).astype(np.int64) << 32)
         # The set the tensorizer builds is target ids, not the ids of the
         # entities that own a target.
-        target_keys = lane_offsets | (rows["target_id"].astype(np.int64) & 0xFFFFFFFF)
-        target_keys = np.sort(target_keys[rows["target"]])
-        flat = keys.ravel()
-        positions = np.searchsorted(target_keys, flat)
+        has_target = rows["target"].ravel()[live]
+        target_ids = rows["target_id"].ravel()[live][has_target].astype(np.int64)
+        target_keys = np.sort(lane_offsets[has_target] | (target_ids & 0xFFFFFFFF))
+        keys = lane_offsets | (rows["entity_id"].ravel()[live] & 0xFFFFFFFF)
+        positions = np.searchsorted(target_keys, keys)
         clipped = np.clip(positions, 0, target_keys.size - 1)
-        matched = (positions < target_keys.size) & (target_keys[clipped] == flat)
-        return matched.reshape(targeted.shape)
+        targeted.ravel()[live] = (positions < target_keys.size) & (target_keys[clipped] == keys)
+        return targeted
 
-    def _child_order(self, rows: dict[str, np.ndarray], candidate: np.ndarray, targeted: np.ndarray) -> np.ndarray:
+    def _child_order(
+        self,
+        rows: dict[str, np.ndarray],
+        candidate: np.ndarray,
+        targeted: np.ndarray,
+        *,
+        width: int | None = None,
+    ) -> np.ndarray:
         """``_child_priority`` over the children of retained groups only.
 
         Unlike a singleton group's priority, the relation term here is the
@@ -598,13 +638,13 @@ class VectorGroupBuilder:
         when some other entity targets it, not when it has a target itself.
         """
 
-        relation = np.where(targeted, 0, 1)
-        hero_building = np.where(rows["is_hero_or_building"], 0, 1)
-        hp_key = np.minimum(np.maximum(rows["hp"], 0.0), 1_048_575.0).astype(np.int64)
-        entity_id = np.clip(rows["entity_id"], 0, 2**31 - 1)
+        flat = np.flatnonzero(candidate.ravel())
+        relation = np.where(targeted.ravel()[flat], 0, 1)
+        hero_building = np.where(rows["is_hero_or_building"].ravel()[flat], 0, 1)
+        hp_key = np.minimum(np.maximum(rows["hp"].ravel()[flat], 0.0), 1_048_575.0).astype(np.int64)
+        entity_id = np.clip(rows["entity_id"].ravel()[flat], 0, 2**31 - 1)
         key = ((relation.astype(np.int64) * 2 + hero_building) << 52) | ((1_048_576 - hp_key) << 31) | entity_id
-        key = np.where(candidate, key, np.iinfo(np.int64).max)
-        return np.argsort(key, axis=1, kind="stable")
+        return self._slot_order(candidate, key, width)
 
     # ---- build -------------------------------------------------------------
 
@@ -622,7 +662,9 @@ class VectorGroupBuilder:
         lanes = int(batch.count)
         valid = rows["valid"]
         entity_count = valid.sum(axis=1).astype(np.int64)
-        group_order = self._orders(rows)
+        # The producer sorts only the live slots; the oracle path keeps the
+        # order at the record's fixed capacity so the wide assembly is measured.
+        group_order = self._orders(rows, width=None if live_slots else self.max_groups)
 
         retained_groups = np.minimum(entity_count, self.max_groups)
         group_overflow = entity_count - retained_groups
@@ -687,7 +729,7 @@ class VectorGroupBuilder:
         candidate = group_rank >= 0
         candidate_count = candidate.sum(axis=1).astype(np.int64)
         targeted = self._targeted_mask(rows)
-        child_order = self._child_order(rows, candidate, targeted)
+        child_order = self._child_order(rows, candidate, targeted, width=None if live_slots else c)
         live_c = min(c, max(1, int(candidate_count.max()))) if live_slots else c
         child_entity = child_order[:, :live_c]
         child_candidate = np.take_along_axis(candidate, child_order, axis=1)[:, :live_c]
