@@ -4881,11 +4881,19 @@ one device resumes on either.
 
 * **"8 lanes per process, 2–4 processes" is the wrong shape for a GPU.** The box
   wants **one process at 64–128 lanes**; at 128 lanes it does **395.8
-  lane-decisions/s ≈ 0.33 matches/s**, which is 6× the laptop's 65.2 at 64 lanes.
+  lane-decisions/s ≈ 0.33 matches/s** (0.163 under the both-seats, 2,428/match
+  convention), which is 6× the laptop's 65.2 at 64 lanes.
 * **The roadmap's "GPU-saturated ~51 matches/s" is not reachable from this
   producer.** At 0.33 matches/s per process, even six processes on the box's six
-  vCPUs is ~2 matches/s, not 51: the ceiling is the per-decision Python packet
-  (tensorize + decode + engine steps), not the model.
+  vCPUs is ~2 matches/s CPU-side, not 51: the ceiling is the per-decision Python
+  packet (tensorize + decode + engine steps), not the model.
+* **Multiproc is CPU-additive but GPU-shared.** At this packet the forward is 157
+  of 647 ms (24 %), so six processes ask for ~144 % of one card and eight for
+  ~194 %. Without MPS + a batched decision server they land near **1.3–1.6
+  matches/s** per 8-vCPU instance, not 6 × 0.33; one batched call per round gets
+  **2.0–2.6**. The 2.8 matches/s engine-only figure is **per process** (75 ms
+  single-threaded step); N processes carry N engines. `ROADMAP_CRFORGE.md` §4
+  has the $/M table; §1 has the unit convention.
 * **Store device choice is a real cost on GPU.** Keeping the store on the model
   device made `rollout_ms` **21.6 ms/decision** (it copies every observation into
   CUDA) against 3.2 ms on CPU. The observation tensors are the bulk; the likely
@@ -5104,6 +5112,10 @@ Evidence: `crforge_bridge/training.py` (`OverlapUpdater`, `copy_weights`),
 
 ### 3.65 `carry` leads the 50-update horizon, on one seed (2026-11-19)
 
+> **Superseded on the ranking (2026-11-19):** two more seeds do not reproduce this
+> lead — `reset` 0.4827 vs `carry` 0.4092 over three seeds, `carry` wins 1/3. The
+> tables below are kept as the one-seed record; the decision is §3.66.
+
 Session 31 refused to rank `reset` against `carry` from six updates, and it was
 right to. This is the first run long enough to see the curves move: 50 updates,
 one segment per update, 4 lanes × 24 decisions, one seed, CPU,
@@ -5169,3 +5181,108 @@ optimizer and one seed.
 Evidence: `tools/crforge/learning_horizon.py`,
 `crforge_bridge/tests/test_learning_horizon.py`, `runs/crforge-c4/learning-horizon.json`,
 `runs/crforge-c4/horizon/{reset,carry}-seed1.json`.
+
+### 3.66 Three seeds reverse the horizon ranking, and `reward_sum` was never a reward (2026-11-19)
+
+§3.65 ranked `carry` ahead on one seed and asked for ≥2 more before the default
+changed. This section adds seeds 2 and 3 at the same shape and seed list; the
+ranking **reverses**, and the run exposes a defect in the trace field the horizon
+was reading. `tools/crforge/learning_horizon.py`,
+`runs/crforge-c4/learning-horizon.json`, per-run artifacts under
+`runs/crforge-c4/horizon/`.
+
+#### Measured
+
+4 lanes × 24 decisions × 50 updates per run, CPU, `OMP_NUM_THREADS=4`, same
+`B-general-v275` and 1e-5. Every run is on-policy (0 stale) and passes the
+training gate.
+
+| last-10 return | `reset` | `carry` | delta |
+| --- | ---: | ---: | ---: |
+| seed 1 | 0.4951 | **0.5803** | +0.0852 |
+| seed 2 | **0.4888** | 0.3411 | −0.1477 |
+| seed 3 | **0.4640** | 0.3062 | −0.1578 |
+| 3-seed mean | **0.4827** | 0.4092 | **−0.0734** |
+
+| summary | `reset` | `carry` |
+| --- | ---: | ---: |
+| last-10 range across seeds | **0.031** (0.464–0.495) | **0.274** (0.306–0.580) |
+| first-10 mean | 0.2535 | 0.2346 |
+| delta (last − first) | +0.2291 | +0.1747 |
+| slope/update | 5.06e-3 | 3.79e-3 |
+| ACT last-10 per seed | 7.40 / 6.17 / 11.51 % | 12.02 / 9.72 / 6.22 % |
+| ACT mean | 8.36 % | 9.32 % |
+| wall mean | 886.8 s | 877.6 s |
+| updates / stale / gate | 150 / **0** / pass | 150 / **0** / pass |
+
+The artifact's `comparison.paired_seeds` reports **carry leads 1/3, reset 2/3,
+mean delta −0.0734, `seeds_agree: false`**.
+
+#### What it says
+
+1. **Seed 1 was the outlier.** Its +0.085 becomes −0.148 and −0.158 at seeds 2
+   and 3. `carry` is not slightly behind on the mean; it is the *less stable*
+   cadence: 0.274 of range across three seeds against reset's 0.031. A ranking
+   from one 4-lane match cannot survive that, which is what §3.65 said and this
+   measurement demonstrates.
+2. **All six runs rise, but by different amounts.** The deltas are +0.267 /
+   +0.227 / +0.193 for `reset` and +0.354 / +0.090 / +0.080 for `carry`; carry's
+   slope drops to 1.87e-3 and 1.36e-3/update at seeds 2 and 3. The direction is
+   consistent; the magnitude is not.
+3. **ACT does not separate the cadences.** The 3-seed means are 8.4 % and 9.3 %,
+   and the per-seed ordering flips (carry leads seeds 1–2, reset leads seed 3).
+   ACT is a behaviour signal, not a quality one; nothing here says more plays are
+   better.
+4. **`reward_sum` is identically zero by construction — and the reward is not.**
+   The stored reward is antisymmetric across the two seats (`[s, -s]`), so its
+   sum over the row axis cancels for every possible match; the six runs show
+   `reward_sum = 0.0` on all 300 updates. The segment summaries carry
+   `reward_abs_sum`, and they show **48–49 of every 50 updates with a nonzero
+   reward** (median per-segment absolute sum 0.002–0.025). A diagnostic repeat of
+   reset/seed 2 with the new per-update `reward_abs_max` trace reproduced the
+   curve exactly and measured the magnitude (table below). The trainer now
+   records `reward_abs_max` per update; the horizon reads it with the segment
+   summary as the fallback, so `reward_sum` must not be read as "no reward".
+5. **The return is a GAE return with real but small reward in most windows.**
+   Reward is ~1e-3 in a typical 24-decision window against a ~0.4 return, so the
+   boundary bootstrap dominates every non-terminal segment. What the shape
+   supports is "both cadences move the return, and `reset` is the more
+   seed-stable of the two"; it does not support "`carry` is worse at the game".
+   Native parity is still the only promotion gate. Whether longer segments
+   (60–120 decisions) make the reward share large enough to rank is an open
+   measurement, not an assumption.
+
+#### Reward evidence, reset seed 2 (diagnostic repeat)
+
+| measurement | value |
+| --- | ---: |
+| updates with a nonzero reward | **48 / 50** (segment summary; probe agrees) |
+| median max \|reward\| per update | **1.0e-3** |
+| updates with max \|reward\| ≥ 0.05 (one princess tower) | **7 / 50** |
+| terminal max \|reward\| | **0.92** (two terminals) |
+| first-10 / last-10 return | 0.2619 → 0.4888 (identical to the recorded run) |
+| `reward_sum`, both seats | **0.0** on all 300 updates of the six runs |
+
+Evidence: `runs/crforge-c4/horizon/reset-seed2-rewardprobe.json`.
+
+#### Pins
+
+* **The seed is the unit of a cadence ranking.** The tool now emits
+  `paired_seeds` (per-seed winner, win counts, mean delta, `seeds_agree`) so a
+  sign flip is the artifact's headline rather than something a reader has to
+  recompute from means.
+* **A mean over seeds is not evidence when the spread is larger than the gap.**
+  At three seeds the carry-minus-reset gap is −0.073 and carry's range is 0.274.
+* **Do not read `reward_sum` as evidence of (no) reward.** It cancels by
+  antisymmetry. Use `reward_abs_max` (trace, 2026-11-19 onward) or the segment
+  summary's `reward_abs_sum` (all runs); both show reward in 48–49 of 50 updates.
+* **Decision:** `reset` stays the training default; `carry` is unresolved, not
+  beaten. The next horizon must report the reward share per update and decide
+  from it whether longer segments are needed before any cadence is ranked from
+  the return; native parity (50–150 matches every N updates) is unchanged.
+
+Evidence: `tools/crforge/learning_horizon.py`,
+`crforge_bridge/tests/test_learning_horizon.py`,
+`crforge_bridge/training.py` (`reward_abs_max`),
+`runs/crforge-c4/learning-horizon.json`,
+`runs/crforge-c4/horizon/{reset,carry}-seed{1,2,3}.json`.

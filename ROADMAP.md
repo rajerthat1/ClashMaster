@@ -600,6 +600,15 @@ do not train at scale before C0; do not promote on crforge.
 11. Rent a GPU for the 400+ paired eval games and the fine-tune only after step
    9.2 lands. At today's packet cost the GPU idles 96 % of the time.
 
+> **Scale-out (measured 2026-11-19).** The crforge 0.33 matches/s is **per
+> process**, not per host. Multiproc is the largest immediate $/match lever, but
+> the forward is 24 % of the packet, so 8 processes ask for ~194 % of one A6000:
+> they land near **1.3–1.6/s** without MPS + a batched decision server and
+> **2.0–2.6/s** with one. That is **$46–92 per 1M matches** against $295 today.
+> The engine-only 2.8/s is per process too. Order: **multiproc → wire C3-B →
+> de-Python the 228 ms → graphs/state → more boxes at ~1 A6000 per 8–16 vCPU**.
+> Units and the full table: `ROADMAP_CRFORGE.md` §1 and §4.
+
 Rent only when a local segment completes in <10 min; do not spend GPU hours on
 CPU-bound prep. Training throughput notes and the portable `ever_*` techniques
 are in `HANDOFF.md` → "Adopt from the field".
