@@ -178,9 +178,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--decisions-per-segment", type=int, default=24)
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2])
     parser.add_argument("--ppo-sequence-chunk", type=int, default=24)
+    parser.add_argument(
+        "--ppo-lane-minibatch",
+        type=int,
+        default=0,
+        help="PPO lane rows per minibatch (0: one minibatch; needed to fit 8k frames on a 48 GB card)",
+    )
     parser.add_argument("--ppo-epochs", type=int, default=1)
     parser.add_argument("--ppo-learning-rate", type=float, default=1e-5)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--fast-forward",
+        action="store_true",
+        help="run the producer's in-process forward port (fp16 + CUDA graphs on a GPU)",
+    )
+    parser.add_argument(
+        "--no-cuda-graphs",
+        action="store_true",
+        help="with --fast-forward: eager fp16 forward, the measured default on the A6000",
+    )
+    parser.add_argument(
+        "--full-cuda-graph",
+        action="store_true",
+        help="with --fast-forward: capture the sampled decode in the same graph (RNG-gated)",
+    )
     parser.add_argument("--omp-threads", type=int, default=4, help="OMP_NUM_THREADS for every run")
     parser.add_argument(
         "--min-collection-rate-ratio",
@@ -211,6 +232,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("a pipeline comparison needs at least two segments")
     if args.omp_threads < 1:
         raise SystemExit("--omp-threads must be positive")
+    if args.no_cuda_graphs and not args.fast_forward:
+        raise SystemExit("--no-cuda-graphs is a --fast-forward setting")
+    if args.full_cuda_graph and not args.fast_forward:
+        raise SystemExit("--full-cuda-graph is a --fast-forward setting")
+    if args.full_cuda_graph and args.no_cuda_graphs:
+        raise SystemExit("--full-cuda-graph is the captured path; drop --no-cuda-graphs")
 
     os.environ["OMP_NUM_THREADS"] = str(args.omp_threads)
     args.run_dir.mkdir(parents=True, exist_ok=True)
@@ -242,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                     "reset",
                     "--ppo-sequence-chunk",
                     str(args.ppo_sequence_chunk),
+                    "--ppo-lane-minibatch",
+                    str(args.ppo_lane_minibatch),
                     "--ppo-epochs",
                     str(args.ppo_epochs),
                     "--ppo-learning-rate",
@@ -253,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:
                     command.append("--overlap-update")
                 if not args.validate:
                     command.append("--no-validate")
+                if args.fast_forward:
+                    command.append("--fast-forward")
+                    if args.full_cuda_graph:
+                        command.append("--full-cuda-graph")
+                    if args.no_cuda_graphs:
+                        command.append("--no-cuda-graphs")
                 _run(command, log_path)
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             summary = _summarize(artifact, mode=mode, seed=seed)
@@ -289,8 +324,12 @@ def main(argv: list[str] | None = None) -> int:
             "omp_num_threads": args.omp_threads,
             "checkpoint": str(args.checkpoint),
             "ppo_sequence_chunk": args.ppo_sequence_chunk,
+            "ppo_lane_minibatch": args.ppo_lane_minibatch,
             "ppo_epochs": args.ppo_epochs,
             "ppo_learning_rate": args.ppo_learning_rate,
+            "fast_forward": bool(args.fast_forward),
+            "cuda_graphs": bool(args.fast_forward and not args.no_cuda_graphs),
+            "full_cuda_graph": bool(args.full_cuda_graph),
             "update_state_policy": "reset",
             "min_collection_rate_ratio": args.min_collection_rate_ratio,
         },

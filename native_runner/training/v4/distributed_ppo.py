@@ -312,7 +312,7 @@ def distributed_ppo_update_v4(
                     microbatch_indices = indices[microbatch_start : microbatch_start + actual_microbatch_size]
                     lane_indices = None if int(microbatch_indices.numel()) == rollout.batch_size else microbatch_indices
 
-                    def select_time(value: Tensor) -> Tensor:
+                    def select_time(value: Tensor, lane_indices: Tensor | None = lane_indices) -> Tensor:
                         if lane_indices is None:
                             return value
                         return value.index_select(1, lane_indices.to(value.device))
@@ -353,7 +353,9 @@ def distributed_ppo_update_v4(
                             chunk_actions = tuple(rollout.actions[time_start:time_end])
                         else:
                             source_lanes = (
-                                active_lanes if lane_indices is None else lane_indices.index_select(0, active_lanes)
+                                active_lanes
+                                if lane_indices is None
+                                else lane_indices.index_select(0, active_lanes.to(lane_indices.device))
                             )
                             chunk_observations = tuple(
                                 observation.index_select(source_lanes.to(observation.match_scalars.device))

@@ -205,3 +205,27 @@ def test_the_sampled_graph_rng_gate_catches_a_frozen_stream() -> None:
     assert fast.rng_gate["max_log_prob_delta_between_replays"] == 1.0
     # The probe must not leave the table advanced.
     assert not fast.state.hidden.any()
+
+
+def test_the_rng_gate_accepts_a_peaked_policy_when_the_probe_advances() -> None:
+    """Two replays can agree on the action while the RNG stream is healthy."""
+
+    from types import SimpleNamespace
+
+    model, batch, _state, _starts = _setup()
+    fast = FastForwardV4(model, device="cpu", rows=2, precision="fp32", cuda_graphs=False)
+
+    class PeakedSlot:
+        def __init__(self) -> None:
+            self.rng_probe = torch.zeros(1)
+
+        def run(self, host_batch: object, state: object, episode_start: object) -> tuple[None, object]:
+            self.rng_probe.add_(1.0)
+            return None, SimpleNamespace(log_prob=torch.zeros(2))
+
+    fast._assert_graph_rng_advances(PeakedSlot(), batch)
+    assert fast.rng_gate is not None
+    assert fast.rng_gate["passed"] is True
+    assert fast.rng_gate["random_probe_delta_between_replays"] == 1.0
+    # The sampled log-probs were identical; only the probe separated the cases.
+    assert fast.rng_gate["max_log_prob_delta_between_replays"] == 0.0

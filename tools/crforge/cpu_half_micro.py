@@ -10,6 +10,8 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
   ``torch.stack(dim=1).reshape``;
 * the group gather: advanced indexing vs ``np.take_along_axis`` (35 calls per
   build, each rebuilding an index tuple);
+* the entity table gather: ``np.where(valid, table[rv], 0)`` vs masking the
+  gather's own copy in place (nine fields per seat in ``_entity_rows``);
 * ``record_action``: the vectorised NumPy pass vs the per-lane loop it replaced
   (the loop is one device sync per field per row on CUDA, which is what made the
   box's ``decode`` bucket 68 ms at 128 lanes).
@@ -261,6 +263,37 @@ def main(argv: list[str] | None = None) -> int:
         }
         gather["saved_ms"] = gather["take_along_axis_35_ms"] - gather["advanced_index_35_ms"]
 
+        # ---- table gather + mask ------------------------------------------
+        # ``_entity_rows`` gathers nine per-vocabulary tables through the
+        # entity row map and zeroes the invalid rows.  Masking the gather's own
+        # copy in place saves one allocation per field; measured here it saves
+        # only ~0.12 ms over nine fields, below the section's noise, so the
+        # producer keeps the single-expression ``where`` form.
+        table = np.asarray(groups.tables.card_vocab_id)
+        rv = np.clip(batch.entity_row_vocab, 0, groups.tables.vocab_size - 1)
+        valid = batch.entity_valid & ~batch.entity_is_tower
+
+        def where_take() -> np.ndarray:
+            total = np.zeros(valid.shape, dtype=table.dtype)
+            for _ in range(9):
+                total += np.where(valid, table[rv], 0)
+            return total
+
+        def inplace_take() -> np.ndarray:
+            total = np.zeros(valid.shape, dtype=table.dtype)
+            for _ in range(9):
+                values = table[rv]
+                values[~valid] = 0
+                total += values
+            return total
+
+        assert np.array_equal(where_take(), inplace_take())
+        mask = {
+            "where_9_ms": _time(where_take, args.repeats),
+            "inplace_9_ms": _time(inplace_take, args.repeats),
+        }
+        mask["saved_ms"] = mask["where_9_ms"] - mask["inplace_9_ms"]
+
         # ---- record_action -------------------------------------------------
         sequence = _sequence_for(stacks[0].candidates, model.config)
         tables = candidate_tables(stacks[0].candidates)
@@ -309,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
             "substrate": {"tables": str(DEFAULT_TABLES), "checkpoint": str(args.checkpoint), "device": "cpu"},
             "interleave": interleave,
             "group_gather": gather,
+            "entity_mask": mask,
             "record_action": record,
             "sections_ms_mean": sections,
             "note": (

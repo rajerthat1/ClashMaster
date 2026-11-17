@@ -9,11 +9,17 @@ process to talk to.  What is ported is the forward itself:
    verifying the path), with the log-probability, entropy and value restored to
    fp32 before the caller sees them.
 2. **CUDA graphs at the producer's row count.**  Captured lazily per padded row
-   count and replayed, instead of one graph for batch 1.  The graph covers the
-   deterministic encode + recurrent-core forward only.  Sampling stays eager:
-   a captured sample would replay the same random draws on every replay
-   (``torch 2.5`` has no graph-safe generator state), which is acceptable for a
-   deployment server and fatal for a self-play collector.
+   count and replayed, instead of one graph for batch 1.  The default captures
+   the deterministic encode + recurrent-core forward and leaves the sampler
+   eager.  ``--full-cuda-graph`` captures the sampled decode too; on the A6000
+   at 256 rows that is the faster shape (forward 102–106 ms against 131–149 ms
+   for the eager decode), but only after the graph's own random probe proves a
+   replay advances the RNG.  Torch 2.12 also needs the default generator named
+   before capture (``register_generator_state``); newer builds register it
+   lazily and the call is a deprecated no-op.  A log-probability comparison is
+   not a sufficient gate: an initial board samples almost every row as WAIT, so
+   two *healthy* replays can agree on the action while a frozen stream is
+   indistinguishable.
 3. **One GPU-side LSTM state table.**  The recurrent state lives in one
    preallocated pair of tensors for the run; each decision copies the previous
    ``next_state`` into that table instead of letting the allocator hand out a new
@@ -30,8 +36,9 @@ reproduce the fp32 sampled actions exactly and its log-probs within
 ``DEFAULT_TOLERANCE`` on the same batch and RNG.  :meth:`FastForwardV4.verify`
 does that comparison and is what ``self_play.py --verify-fast-forward`` records
 in the artifact.  The throughput claim (``ms.inference_ms`` at 128 lanes with
-the CPU half beside it) can only be measured on a GPU box; this host has a
-CPU-only torch build.
+the CPU half beside it) can only be measured on a GPU box; the development host
+runs a CPU-only torch build, so the wall is recorded from a rented A6000
+(``runs/crforge-c4/self-play-s38-*.json``).
 """
 
 from __future__ import annotations
@@ -190,7 +197,7 @@ class _GraphSlot:
     decision.
     """
 
-    __slots__ = ("context", "graph", "output", "stage", "state_in")
+    __slots__ = ("context", "graph", "output", "rng_generator_registered", "rng_probe", "stage", "state_in")
 
     def __init__(
         self,
@@ -225,7 +232,22 @@ class _GraphSlot:
         torch.cuda.current_stream(device).wait_stream(stream)
         torch.cuda.synchronize(device)
         self.graph = torch.cuda.CUDAGraph()
+        # A captured sampler consumes the device's default generator.  Name it
+        # explicitly when the build exposes ``register_generator_state``: torch's
+        # lazy registration arrived in 2.14, and on the older builds this is the
+        # documented shield.  The API is a deprecated no-op on newer builds, so
+        # calling it when present is safe; the random probe still decides.
+        self.rng_generator_registered = False
+        if full and sample and hasattr(self.graph, "register_generator_state"):
+            index = device.index if device.index is not None else torch.cuda.current_device()
+            self.graph.register_generator_state(torch.cuda.default_generators[index])
+            self.rng_generator_registered = True
         with torch.cuda.graph(self.graph), torch.inference_mode(), autocast():
+            # A one-value random probe makes the RNG gate independent of how
+            # peaked the policy is: the sampled actions can be identical on two
+            # replays (an initial board is almost all WAIT) while the stream is
+            # advancing normally.
+            self.rng_probe = torch.rand(1, device=device) if full and sample else None
             self.context: PolicyContextV4 = model.forward(
                 stage.batch,
                 self.state_in,
@@ -364,12 +386,12 @@ class FastForwardV4:
     def _assert_graph_rng_advances(self, slot: _GraphSlot, host_batch: UniversalSemanticBatchV4) -> None:
         """Refuse a sampled graph whose replay repeats its random draws.
 
-        A graph is only safe for a collector if the default generator's state is
-        part of the capture: PyTorch registers the default generator at
-        ``capture_begin``, but a build without that cooperation replays the same
-        draw forever, which would make every decision sample from one fixed RNG
-        position.  Two replays of the *same* batch must differ; exact equality of
-        the sampled log-probabilities is the signature of a frozen stream.
+        A graph is only safe for a collector if the generator's state advances
+        on every replay.  The authority is a one-value ``torch.rand`` captured
+        with the decode: it must draw a different number on the second replay.
+        Comparing the sampled log-probabilities alone can false-refuse a healthy
+        graph, because the warmup batch is an initial board where nearly every
+        row samples WAIT.  The log-prob delta is still recorded for the artifact.
         """
 
         rows = int(host_batch.batch_size)
@@ -380,20 +402,31 @@ class FastForwardV4:
             _context, first = slot.run(host_batch, self._table, starts)
             assert first is not None
             first_log_prob = first.log_prob.detach().clone()
+            probe = getattr(slot, "rng_probe", None)
+            first_probe = float(probe.item()) if probe is not None else None
             _context, second = slot.run(host_batch, self._table, starts)
             assert second is not None
             second_log_prob = second.log_prob.detach()
-            advance = float((second_log_prob - first_log_prob).abs().max())
+            second_probe = float(probe.item()) if probe is not None else None
+            log_prob_delta = float((second_log_prob - first_log_prob).abs().max())
+            probe_delta = (
+                None if first_probe is None or second_probe is None else abs(second_probe - first_probe)
+            )
+            # The probe is the authority: an initial board samples almost all
+            # WAIT rows, so two replays of a working graph can produce the same
+            # actions and log-probs.  A moved probe proves the stream advanced.
+            advance = probe_delta if probe_delta is not None else log_prob_delta
         finally:
             _copy_state_(self._table, state_before)
             _restore_rng(self.device, rng)
         self.rng_gate = {
             "rows": rows,
-            "max_log_prob_delta_between_replays": advance,
+            "max_log_prob_delta_between_replays": log_prob_delta,
+            "random_probe_delta_between_replays": probe_delta,
             "passed": advance > 0.0,
             "reasoning": (
-                "two replays of one captured sampled call must draw different numbers; "
-                "exact equality means the RNG stream is frozen in the graph"
+                "a one-value torch.rand() captured with the decode must draw a different number on "
+                "each replay; an identical probe means the graph stream is frozen"
             ),
         }
         if advance <= 0.0:
@@ -472,6 +505,11 @@ class FastForwardV4:
                 else ("encode + recurrent core" if self.cuda_graphs else "nothing")
             ),
             "sampled_graph_rng_gate": self.rng_gate,
+            "sampled_graph_generator_registration": (
+                "explicit default-generator registration"
+                if any(slot.rng_generator_registered for slot in self._full_graphs.values())
+                else ("torch-managed" if self.full_cuda_graph else None)
+            ),
             "captured_shapes": sorted(self._graphs),
             "captured_full_shapes": [
                 {"rows": rows, "sample": sample} for rows, sample in sorted(self._full_graphs)

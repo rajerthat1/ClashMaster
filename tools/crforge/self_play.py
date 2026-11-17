@@ -499,7 +499,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "capture the sampled decode with the forward in one CUDA Graph instead of leaving the "
-            "sampler eager; refused unless two replays draw different numbers (the frozen-RNG gate)"
+            "sampler eager; a captured random probe must draw a different number on the second "
+            "replay (the frozen-RNG gate)"
         ),
     )
     parser.add_argument(
