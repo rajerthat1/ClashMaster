@@ -496,8 +496,82 @@ def pad_group_section(section: VectorGroupSection, *, groups: int, children: int
     )
 
 
+class _PhaseMarker:
+    """Accumulate named ``perf_counter`` boundaries into a caller's dict.
+
+    ``build(phases=...)`` and ``build_pair(phases=...)`` mark their own terms;
+    a caller that passes nothing pays one attribute check per boundary.
+    """
+
+    __slots__ = ("phases", "started")
+
+    def __init__(self, phases: dict[str, float] | None) -> None:
+        self.phases = phases
+        self.started = time.perf_counter() if phases is not None else 0.0
+
+    def __call__(self, name: str) -> None:
+        if self.phases is None:
+            return
+        now = time.perf_counter()
+        self.phases[name] = self.phases.get(name, 0.0) + (now - self.started) * 1000.0
+        self.started = now
+
+
+@dataclass(frozen=True)
+class _CompactRows:
+    """The compact ``(lanes, widest live count)`` entity-row axis.
+
+    A lane's non-tower entity rows are packed into ascending entity-slot order,
+    with the entity slot each column came from in ``slots`` and the live count
+    in ``counts``.  ``valid`` marks the columns below that lane's count.  The
+    padded columns carry the same fills as before, but nothing reads them.
+    """
+
+    lanes: int
+    width: int
+    live: np.ndarray
+    lane_of: np.ndarray
+    rank: np.ndarray
+    counts: np.ndarray
+    slots: np.ndarray
+    valid: np.ndarray
+    vocab_live: np.ndarray
+
+    def scatter(self, values: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
+        """Live-row values, ``fill`` in every padded column."""
+
+        out = np.full((self.lanes, self.width), fill, dtype=values.dtype if dtype is None else dtype)
+        out[self.lane_of, self.rank] = values
+        return out
+
+    def field(self, source: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
+        """The live rows of one batch field, ``fill`` in every padded column."""
+
+        return self.scatter(np.asarray(source).ravel()[self.live], dtype, fill)
+
+    def table(self, values: np.ndarray) -> np.ndarray:
+        out = np.zeros((self.lanes, self.width), dtype=values.dtype)
+        out[self.lane_of, self.rank] = values[self.vocab_live]
+        return out
+
+
 class VectorGroupBuilder:
     """Fill the group/children section for a whole vector batch in one pass."""
+
+    # Tables the group build reads.  ``build_pair`` refuses two builders whose
+    # static semantics differ, so a shared row build cannot mix catalogs.
+    _PAIR_TABLE_FIELDS = (
+        "card_id",
+        "archetype_id",
+        "child_type",
+        "card_vocab_id",
+        "runtime_form",
+        "group_type",
+        "is_hero_or_building",
+        "radius",
+        "footprint_half_w",
+        "footprint_half_h",
+    )
 
     def __init__(self, tensorizer: Any, tables: VectorEntityTables) -> None:
         self.tensorizer = tensorizer
@@ -506,24 +580,17 @@ class VectorGroupBuilder:
         self.perspective = tensorizer.perspective
         self.max_groups = int(self.config.max_battle_groups)
         self.max_children = int(self.config.max_children_total)
+        # id(other) -> other, held so an id cannot be reused under the cache.
+        self._pair_checked: dict[int, VectorGroupBuilder] = {}
 
     # ---- entity row view ---------------------------------------------------
 
-    def _entity_rows(self, batch: VectorObservationBatch) -> dict[str, Any]:
-        """Per-entity arrays for every lane, compacted to the live rows.
+    def _compact_rows(self, batch: VectorObservationBatch) -> _CompactRows:
+        """The shared lane-major axis both actor seats read from.
 
-        Each lane's non-tower entity rows are packed into one lane-major
-        ``(lanes, widest live count)`` axis, with the entity slot each column
-        came from in ``slots`` and the live count in ``counts``.  The previous
-        form assembled the same values but scattered them into a zero-filled
-        ``(lanes, max_entities)`` array, so every field paid the 200-row axis
-        in writes — float64 ids included — for ~11 live rows.  The group build
-        only ever reads live rows, and the section's dense ``group_index`` /
-        ``child_index`` are scattered back once at the end.
-
-        A lane's compact columns are in ascending entity-slot order; ``valid``
-        marks the columns below that lane's count.  The padded columns carry
-        the same fills as before, but nothing reads them.
+        The seat only changes a row's position, its velocity sign and which
+        owner a group belongs to, so the axis (and every id, hitpoint, table
+        value and sort key derived from it) is built once for the batch.
         """
 
         dense_valid = batch.entity_valid & ~batch.entity_is_tower
@@ -539,86 +606,102 @@ class VectorGroupBuilder:
         slots[lane_of, rank] = slot_of
         valid = np.arange(width, dtype=np.int64)[None, :] < counts[:, None]
         row_vocab = np.clip(batch.entity_row_vocab, 0, self.tables.vocab_size - 1)
-        vocab_live = row_vocab.ravel()[live]
-        def scatter(values: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
-            """Live-row values, ``fill`` in every padded column."""
+        return _CompactRows(
+            lanes=lanes,
+            width=width,
+            live=live,
+            lane_of=lane_of,
+            rank=rank,
+            counts=counts,
+            slots=slots,
+            valid=valid,
+            vocab_live=row_vocab.ravel()[live],
+        )
 
-            out = np.full((lanes, width), fill, dtype=values.dtype if dtype is None else dtype)
-            out[lane_of, rank] = values
-            return out
+    def _core_rows(self, batch: VectorObservationBatch, axis: _CompactRows) -> dict[str, Any]:
+        """Every seat-independent per-entity field on the compact axis."""
 
-        def field(source: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
-            """The live rows of one batch field, ``fill`` in every padded column."""
+        target_live = batch.entity_target.ravel()[axis.live]
+        velocity_valid = axis.field(batch.entity_velocity_valid, bool)
+        velocity_valid &= axis.valid
+        return {
+            "valid": axis.valid,
+            "counts": axis.counts,
+            "slots": axis.slots,
+            "row_vocab": axis.scatter(axis.vocab_live),
+            "entity_id": axis.field(batch.entity_id, np.int64, -1),
+            "hp": axis.scatter(np.maximum(batch.entity_hp.ravel()[axis.live], 0), np.float64),
+            "max_hp": axis.scatter(np.maximum(batch.entity_max_hp.ravel()[axis.live], 0), np.float64),
+            "shield": axis.scatter(np.maximum(batch.entity_shield.ravel()[axis.live], 0), np.float64),
+            "age_ms": axis.field(batch.entity_age_ms, np.float64),
+            "target": axis.scatter(target_live >= 0),
+            "target_id": axis.scatter(target_live, fill=-1),
+            "velocity_valid": velocity_valid,
+            "card_id": axis.table(self.tables.card_id),
+            "archetype_id": axis.table(self.tables.archetype_id),
+            "child_type": axis.table(self.tables.child_type),
+            "card_vocab_id": axis.table(self.tables.card_vocab_id),
+            "runtime_form": axis.table(self.tables.runtime_form),
+            "group_type": axis.table(self.tables.group_type),
+            "is_hero_or_building": axis.table(self.tables.is_hero_or_building),
+            "radius": axis.table(self.tables.radius),
+            "side": axis.field(batch.entity_side, fill=-1),
+        }
 
-            return scatter(source.ravel()[live], dtype, fill)
+    def _seat_rows(
+        self,
+        core: dict[str, Any],
+        batch: VectorObservationBatch,
+        perspective: Any,
+        axis: _CompactRows,
+    ) -> dict[str, Any]:
+        """Add one actor seat's positions, extents and velocity to the core rows."""
 
-        def table(values: np.ndarray) -> np.ndarray:
-            out = np.zeros((lanes, width), dtype=values.dtype)
-            out[lane_of, rank] = values[vocab_live]
-            return out
-
-        target_live = batch.entity_target.ravel()[live]
-        hp = scatter(np.maximum(batch.entity_hp.ravel()[live], 0), np.float64)
-        max_hp = scatter(np.maximum(batch.entity_max_hp.ravel()[live], 0), np.float64)
-        shield = scatter(np.maximum(batch.entity_shield.ravel()[live], 0), np.float64)
-
-        x = field(batch.entity_x, np.float64)
-        y = field(batch.entity_y, np.float64)
-        x, y = _tile_positions(x, y, config=self.config, perspective=self.perspective)
-        half_w = table(self.tables.footprint_half_w)
-        half_h = table(self.tables.footprint_half_h)
-        extent_x0 = x - half_w
-        extent_y0 = y - half_h
-        extent_x1 = x + half_w
-        extent_y1 = y + half_h
+        rows = dict(core)
+        x = axis.field(batch.entity_x, np.float64)
+        y = axis.field(batch.entity_y, np.float64)
+        x, y = _tile_positions(x, y, config=self.config, perspective=perspective)
+        half_w = axis.table(self.tables.footprint_half_w)
+        half_h = axis.table(self.tables.footprint_half_h)
+        rows["x"] = x
+        rows["y"] = y
+        rows["extent_x0"] = x - half_w
+        rows["extent_y0"] = y - half_h
+        rows["extent_x1"] = x + half_w
+        rows["extent_y1"] = y + half_h
 
         # The model flips signs exactly as ``_model_velocity`` does, then the
         # tensorizer divides by world-to-board scale before the ``/ 10``.  Only
         # the live rows carry a velocity; the padded columns are zero and
         # ``velocity_valid`` is false for them.
-        velocity = np.zeros((lanes, width, 2), dtype=np.float64)
-        velocity[lane_of, rank] = batch.entity_velocity.reshape(-1, 2)[live]
-        velocity_valid = field(batch.entity_velocity_valid, bool)
-        velocity_valid &= valid
-        if self.perspective.flip_x:
+        velocity = np.zeros((axis.lanes, axis.width, 2), dtype=np.float64)
+        velocity[axis.lane_of, axis.rank] = batch.entity_velocity.reshape(-1, 2)[axis.live]
+        if perspective.flip_x:
             np.negative(velocity[..., 0], out=velocity[..., 0])
-        if self.perspective.flip_y:
+        if perspective.flip_y:
             np.negative(velocity[..., 1], out=velocity[..., 1])
         scale_x = float(WORLD_WIDTH) / float(self.config.board_width)
         scale_y = float(WORLD_HEIGHT) / float(self.config.board_height)
         np.divide(velocity[..., 0], scale_x, out=velocity[..., 0])
         np.divide(velocity[..., 1], scale_y, out=velocity[..., 1])
+        rows["velocity"] = velocity
+        return rows
 
-        return {
-            "valid": valid,
-            "counts": counts,
-            "slots": slots,
-            "row_vocab": scatter(vocab_live),
-            "entity_id": field(batch.entity_id, np.int64, -1),
-            "hp": hp,
-            "max_hp": max_hp,
-            "shield": shield,
-            "age_ms": field(batch.entity_age_ms, np.float64),
-            "target": scatter(target_live >= 0),
-            "target_id": scatter(target_live, fill=-1),
-            "x": x,
-            "y": y,
-            "extent_x0": extent_x0,
-            "extent_y0": extent_y0,
-            "extent_x1": extent_x1,
-            "extent_y1": extent_y1,
-            "velocity": velocity,
-            "velocity_valid": velocity_valid,
-            "card_id": table(self.tables.card_id),
-            "archetype_id": table(self.tables.archetype_id),
-            "child_type": table(self.tables.child_type),
-            "card_vocab_id": table(self.tables.card_vocab_id),
-            "runtime_form": table(self.tables.runtime_form),
-            "group_type": table(self.tables.group_type),
-            "is_hero_or_building": table(self.tables.is_hero_or_building),
-            "radius": table(self.tables.radius),
-            "side": field(batch.entity_side, fill=-1),
-        }
+    def _entity_rows(self, batch: VectorObservationBatch) -> dict[str, Any]:
+        """Per-entity arrays for every lane of one actor seat, at live width.
+
+        The previous form assembled the same values but scattered them into a
+        zero-filled ``(lanes, max_entities)`` array, so every field paid the
+        200-row axis in writes — float64 ids included — for ~11 live rows.  The
+        group build only ever reads live rows, and the section's dense
+        ``group_index`` / ``child_index`` are scattered back once at the end.
+
+        This is one seat's view.  :meth:`build_pair` builds the same rows for
+        both seats from one shared core, which is what the producer does.
+        """
+
+        axis = self._compact_rows(batch)
+        return self._seat_rows(self._core_rows(batch, axis), batch, self.perspective, axis)
 
     def _dense_entity_rows(self, batch: VectorObservationBatch, rows: dict[str, Any]) -> dict[str, Any]:
         """Expand compact rows onto the ``max_entities`` axis (oracle form).
@@ -757,7 +840,7 @@ class VectorGroupBuilder:
         live_slots: bool = True,
         phases: dict[str, float] | None = None,
     ) -> VectorGroupSection:
-        """Build the section.
+        """Build one actor seat's section.
 
         ``live_slots`` is the producer path: only the lanes' live group/child
         slots are gathered, assembled and returned, so the record carries the
@@ -777,25 +860,124 @@ class VectorGroupBuilder:
         the build (the tool's phase table); it does not change the record.
         """
 
-        if phases is not None:
-            _started = time.perf_counter()
-
-            def mark(name: str) -> None:
-                nonlocal _started
-                now = time.perf_counter()
-                phases[name] = phases.get(name, 0.0) + (now - _started) * 1000.0
-                _started = now
-
-        else:
-
-            def mark(name: str) -> None:
-                pass
-
-        rows = self._entity_rows(batch)
+        mark = _PhaseMarker(phases)
+        axis = self._compact_rows(batch)
+        rows = self._seat_rows(self._core_rows(batch, axis), batch, self.perspective, axis)
         if not live_slots:
             rows = self._dense_entity_rows(batch, rows)
         mark("entity_rows")
-        lanes = int(batch.count)
+        lanes = int(rows["valid"].shape[0])
+        return self._assemble(
+            rows,
+            lanes=lanes,
+            live_slots=live_slots,
+            mark=mark,
+            actor_owner=np.full(lanes, int(self.tensorizer.actor_owner), dtype=np.int64),
+            entity_slots=int(batch.entity_valid.shape[1]),
+        )
+
+    def build_pair(
+        self,
+        other: VectorGroupBuilder,
+        batch: VectorObservationBatch,
+        *,
+        phases: dict[str, float] | None = None,
+    ) -> tuple[VectorGroupSection, VectorGroupSection]:
+        """Build both actor seats' sections in one pass over one shared row core.
+
+        The two seats differ only in a row's position (the flip), its velocity
+        sign and which owner a group belongs to; every id, hitpoint, table value,
+        sort key and rank is the same.  At the producer's training width a
+        settled board has a handful of live rows, so this section is dominated
+        by per-call overhead: running the assembly once on the two seats'
+        stacked rows halves the number of NumPy calls instead of building the
+        same section twice.  The returned sections are lane-for-lane
+        bit-identical to two :meth:`build` calls (the CPU-half tool asserts it,
+        and the digest gate runs the pair path).
+
+        ``self`` supplies the first seat's perspective and the static tables;
+        ``other`` must build the same record shape and semantics.  The pair
+        path is live-width only — the oracle form stays :meth:`build`.
+        """
+
+        self._check_pair(other)
+        mark = _PhaseMarker(phases)
+        axis = self._compact_rows(batch)
+        core = self._core_rows(batch, axis)
+        left = self._seat_rows(core, batch, self.perspective, axis)
+        right = other._seat_rows(core, batch, other.perspective, axis)
+        rows = {name: np.concatenate((values, right[name]), axis=0) for name, values in left.items()}
+        mark("entity_rows")
+
+        lanes = int(axis.lanes)
+        combined = self._assemble(
+            rows,
+            lanes=2 * lanes,
+            live_slots=True,
+            mark=mark,
+            actor_owner=np.concatenate(
+                (
+                    np.full(lanes, int(self.tensorizer.actor_owner), dtype=np.int64),
+                    np.full(lanes, int(other.tensorizer.actor_owner), dtype=np.int64),
+                )
+            ),
+            entity_slots=int(batch.entity_valid.shape[1]),
+        )
+        return self._section_slice(combined, 0, lanes), self._section_slice(combined, lanes, 2 * lanes)
+
+    def _check_pair(self, other: VectorGroupBuilder) -> None:
+        """Refuse a pair build whose static semantics or record shape differ."""
+
+        if other is self:
+            raise ValueError("a group pair build needs two actor seats")
+        key = id(other)
+        if key in self._pair_checked:
+            return
+        if (self.max_groups, self.max_children) != (other.max_groups, other.max_children):
+            raise ValueError("group pair build: record capacities differ")
+        if self.config != other.config:
+            raise ValueError("group pair build: model configs differ")
+        if int(self.tables.vocab_size) != int(other.tables.vocab_size):
+            raise ValueError("group pair build: entity vocabularies differ")
+        for name in self._PAIR_TABLE_FIELDS:
+            if not np.array_equal(getattr(self.tables, name), getattr(other.tables, name)):
+                raise ValueError(f"group pair build: entity table {name} differs")
+        self._pair_checked[key] = other
+
+    @staticmethod
+    def _section_slice(section: VectorGroupSection, lo: int, hi: int) -> VectorGroupSection:
+        """One seat's rows of a combined section (a view, not a copy)."""
+
+        values: dict[str, torch.Tensor] = {}
+        for name in _GROUP_SLOT_FIELDS:
+            values[name] = getattr(section.groups, name)[lo:hi]
+        for name in _CHILD_SLOT_FIELDS:
+            values[name] = getattr(section.groups, name)[lo:hi]
+        return VectorGroupSection(
+            groups=BattleGroupSetV4(**values),
+            group_index=section.group_index[lo:hi],
+            child_index=section.child_index[lo:hi],
+            group_overflow=section.group_overflow[lo:hi],
+            child_overflow=section.child_overflow[lo:hi],
+        )
+
+    def _assemble(
+        self,
+        rows: dict[str, Any],
+        *,
+        lanes: int,
+        live_slots: bool,
+        mark: _PhaseMarker,
+        actor_owner: np.ndarray,
+        entity_slots: int,
+    ) -> VectorGroupSection:
+        """Gather, assemble and mask every slot of ``rows``.
+
+        ``rows`` is one seat's row view, or both seats' row views stacked on the
+        lane axis.  ``actor_owner`` is per lane, so the same body serves the
+        pair path.
+        """
+
         valid = rows["valid"]
         entity_count = valid.sum(axis=1).astype(np.int64)
         # The producer sorts only the live slots; the oracle path keeps the
@@ -923,7 +1105,7 @@ class VectorGroupBuilder:
         group_extent[...] = g_extent
 
         g_side = gather(rows["side"], group_order, live_g)
-        owner_type = np.where(g_side == self.tensorizer.actor_owner, OWNER_SELF, OWNER_ENEMY)
+        owner_type = np.where(g_side == actor_owner[:, None], OWNER_SELF, OWNER_ENEMY)
         group_owner = np.where((g_side == 0) | (g_side == 1), owner_type, OWNER_NEUTRAL)
         source_card = gather(rows["card_vocab_id"], group_order, live_g)
         if np.any((source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask):
@@ -1055,7 +1237,7 @@ class VectorGroupBuilder:
             # The producer's ranks are compact columns; the section's index
             # arrays are per entity slot, so scatter them once through the
             # compact→slot map.  Padded columns are excluded by ``valid``.
-            dense_shape = (lanes, int(batch.entity_valid.shape[1]))
+            dense_shape = (lanes, int(entity_slots))
             entity_lane = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], valid.shape)
             group_index = np.full(dense_shape, -1, dtype=np.int32)
             child_index = np.full(dense_shape, -1, dtype=np.int32)

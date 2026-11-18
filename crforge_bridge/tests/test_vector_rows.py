@@ -217,6 +217,58 @@ def test_entity_rows_are_compact_to_the_live_rows(crforge_runtime: None) -> None
             assert np.array_equal(projected[rows["valid"]], rows[name][rows["valid"]]), name
 
 
+def test_group_pair_build_matches_two_single_seat_builds(crforge_runtime: None) -> None:
+    """Both seats' group sections in one pass are the two single-seat records.
+
+    The pair path shares the entity rows, sort keys and ranks between the two
+    perspectives; only position, velocity sign and owner differ.  This pins the
+    shared core to the per-seat build it replaces, field for field.
+    """
+
+    from dataclasses import fields, is_dataclass
+
+    import torch
+
+    def equal(left, right) -> bool:
+        if isinstance(left, torch.Tensor):
+            return torch.equal(left, right)
+        if isinstance(left, np.ndarray):
+            return np.array_equal(left, right)
+        if is_dataclass(left) and type(left) is type(right):
+            return all(equal(getattr(left, item.name), getattr(right, item.name)) for item in fields(left))
+        return left == right
+
+    with _vector(count=3) as vector:
+        seats = {seat: _builder(_tensorizer(actor_owner=seat), vector)[0] for seat in (0, 1)}
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        batch = encoder.encode()
+        for step in range(60):
+            _step(vector, 500 + step)
+            encoder.encode(batch)
+        left, right = seats[0].build_pair(seats[1], batch)
+        assert equal(left, seats[0].build(batch))
+        assert equal(right, seats[1].build(batch))
+        # The two seats really are different records: a perspective flip is in
+        # the positions, not only in the labels.
+        assert not equal(left.groups.position, right.groups.position)
+
+
+def test_group_pair_build_refuses_mismatched_tables(crforge_runtime: None) -> None:
+    """A pair build cannot mix two catalogs or two record shapes."""
+
+    from dataclasses import replace
+
+    with _vector(count=2) as vector:
+        left = _builder(_tensorizer(), vector)[0]
+        right = _builder(_tensorizer(actor_owner=1), vector)[0]
+        right.tables = replace(right.tables, group_type=right.tables.group_type + 1)
+        encoder = VectorObservationEncoder(vector, Catalog.load())
+        encoder.reset()
+        with pytest.raises(ValueError, match="group_type"):
+            left.build_pair(right, encoder.encode())
+
+
 def test_group_capacity_overflow_is_exact(crforge_runtime: None) -> None:
     """A two-group / three-child cap must drop the same rows as the oracle."""
 

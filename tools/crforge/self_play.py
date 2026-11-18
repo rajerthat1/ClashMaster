@@ -124,7 +124,7 @@ from crforge_bridge.vector_actions import (
     plan_window_ticks,
 )
 from crforge_bridge.vector_observation import VectorObservationEncoder
-from crforge_bridge.vector_tensorize import VectorTensorizer, interleave_rows
+from crforge_bridge.vector_tensorize import VectorTensorizer, interleave_rows, tensorize_seats
 from native_runner.contracts import DEFAULT_TICK_MS as TICK_MS
 from native_runner.cr_native_env import FIRST_PLAYABLE_TICK
 from native_runner.timeline import load_game_mode_timeline
@@ -824,7 +824,7 @@ def main(argv: list[str] | None = None) -> int:
         # which lands in decision 0's bucket and inflates a mean rate while every
         # median stays blind to it.  Prime the exact sampled path here, then put
         # the RNG back so the action stream is byte-identical to a cold run.
-        warm_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
+        warm_stacks = tensorize_seats(rows, batch)
         warm_batch = interleave_rows([warm_stacks[seat] for seat in seats])
         rng_state = torch.get_rng_state()
         numpy_state = np.random.get_state()
@@ -969,7 +969,7 @@ def main(argv: list[str] | None = None) -> int:
                         rows[seat].reset_rows(batch, reset_mask)
 
                 section_timings: dict[str, float] = {}
-                stacks = {seat: rows[seat].tensorize(batch, timings=section_timings) for seat in seats}
+                stacks = tensorize_seats(rows, batch, timings=section_timings)
                 sections_done = time.perf_counter()
                 stacked = interleave_rows([stacks[seat] for seat in seats])
                 tensorize_done = time.perf_counter()
@@ -1167,7 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
                 boundary_started = time.perf_counter()
                 # The observation after the last decision is the time-limit
                 # bootstrap every still-running lane needs at the segment cut.
-                boundary_stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
+                boundary_stacks = tensorize_seats(rows, batch)
                 boundary_batch = interleave_rows([boundary_stacks[seat] for seat in seats])
                 with torch.inference_mode():
                     boundary_starts = torch.zeros(args.count * len(seats), dtype=torch.bool, device=device)

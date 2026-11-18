@@ -54,6 +54,7 @@ from crforge_bridge.vector_tensorize import (
     compare_semantic_batches,
     lane_batch,
     lane_sequence,
+    tensorize_seats,
 )
 from native_runner.timeline import load_game_mode_timeline
 from native_runner.training.v4.config import ModelConfigV4
@@ -231,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=(0, 1),
         help="actor seats to tensorize (0 1 gates both owners of every lane)",
     )
+    parser.add_argument(
+        "--no-pair",
+        action="store_true",
+        help="tensorize each seat separately instead of the producer's two-seat group pass",
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--checkpoint", type=Path, default=Path(".resource/RoyaleFish/models/B-general-v275.pt"))
     parser.add_argument("--output", type=Path, default=Path("runs/crforge-c3/batched-tensorize.json"))
@@ -263,6 +269,15 @@ def main(argv: list[str] | None = None) -> int:
     }
     for rows in rows_by_seat.values():
         rows.reset(batch)
+    # Two seats go through the producer path by default: one group build for
+    # both perspectives.  ``--no-pair`` keeps the per-seat path measurable.
+    pair = len(seats) == 2 and not args.no_pair
+
+    def tensorize_batch(*, validate: bool = False) -> dict[int, Any]:
+        if pair:
+            return tensorize_seats(rows_by_seat, batch, validate=validate)
+        return {seat: rows_by_seat[seat].tensorize(batch, validate=validate) for seat in seats}
+
     rng = np.random.default_rng(args.seed)
     for _ in range(args.warmup_steps):
         _step(vector, rng, 0.0)
@@ -293,11 +308,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for step in range(args.steps):
             lanes = list(range(args.count)) if step == 0 else list(range(min(args.verify_lanes, args.count)))
-            stacked_by_seat = {}
+            stacked_by_seat = tensorize_batch(validate=(step == 0))
             for seat in seats:
                 rows = rows_by_seat[seat]
-                stacked = rows.tensorize(batch, validate=(step == 0))
-                stacked_by_seat[seat] = stacked
+                stacked = stacked_by_seat[seat]
                 if tuple(stacked.match_scalars.shape) != (args.count, int(config.generic_scalar_dim)):
                     mismatches.append(f"step={step} seat={seat} stacked shape")
                 for lane in lanes:
@@ -378,13 +392,16 @@ def main(argv: list[str] | None = None) -> int:
         }
         for seat in seats:
             timing_stock[seat].start_episode(references[seat][0])
-        stacked_by_seat = {seat: rows_by_seat[seat].tensorize(batch) for seat in seats}
+        stacked_by_seat = tensorize_batch()
         sequences = {seat: _action_sequence(stacked_by_seat[seat].candidates, config) for seat in seats}
 
         def facts() -> None:
             encoder.encode(batch)
 
         def batched() -> None:
+            if pair:
+                tensorize_seats(rows_by_seat, batch)
+                return
             for seat in seats:
                 rows_by_seat[seat].tensorize(batch)
 
@@ -454,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
                 "play_rate": args.play_rate,
                 "seed": args.seed,
                 "seats": list(seats),
+                "group_pair": pair,
             },
             "substrate": {
                 "release": RELEASE,

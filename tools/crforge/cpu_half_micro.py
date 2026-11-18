@@ -313,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     from crforge_bridge.vector_actions import candidate_tables
     from crforge_bridge.vector_observation import VectorObservationEncoder
     from crforge_bridge.vector_rows import OWNER_NEUTRAL, pad_group_section
-    from crforge_bridge.vector_tensorize import VectorTensorizer, interleave_rows
+    from crforge_bridge.vector_tensorize import VectorTensorizer, interleave_rows, tensorize_seats
     from native_runner.timeline import load_game_mode_timeline
     from native_runner.training.v4.factory import production_semantic_bundle
     from native_runner.training.v4.policy_session import load_policy_v4
@@ -370,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         for _ in range(40):
             vector.step()
         encoder.encode(batch)
-        stacks = {seat: rows[seat].tensorize(batch) for seat in seats}
+        stacks = tensorize_seats(rows, batch)
 
         # ---- interleave ----------------------------------------------------
         stacked = interleave_rows([stacks[seat] for seat in seats])
@@ -465,19 +465,46 @@ def main(argv: list[str] | None = None) -> int:
         build["saved_ms"] = build["full_capacity_ms"] - build["live_slots_ms"]
         build["entity_rows_saved_ms"] = build["entity_rows_dense_ms"] - build["entity_rows_ms"]
 
+        # ---- both seats in one pass ----------------------------------------
+        # The producer builds the two actor seats' sections together (their rows
+        # differ only in the perspective).  ``build_pair`` assembles the stacked
+        # rows once; the A/B is two single-seat builds in the same process, and
+        # the records must agree lane for lane.
+        pair_left, pair_right = groups.build_pair(rows[seats[1]].group_builder, batch)
+
+        def single_pair() -> None:
+            groups.build(batch)
+            rows[seats[1]].group_builder.build(batch)
+
+        def combined_pair() -> None:
+            groups.build_pair(rows[seats[1]].group_builder, batch)
+
+        assert _records_equal(pair_left, groups.build(batch))
+        assert _records_equal(pair_right, rows[seats[1]].group_builder.build(batch))
+        pair = {
+            "two_builds_ms": _time(single_pair, args.repeats),
+            "one_pair_ms": _time(combined_pair, args.repeats),
+            "equal_values": True,
+        }
+        pair["saved_ms"] = pair["two_builds_ms"] - pair["one_pair_ms"]
+        pair["saved_fraction"] = pair["saved_ms"] / pair["two_builds_ms"]
+        build["pair"] = pair
+
         # ---- where the live build's time goes ------------------------------
-        # ``build(phases=...)`` accumulates its own terms without changing the
-        # record.  The phase sum is checked against the timed call above so the
-        # table cannot silently miss work.
+        # ``build_pair(phases=...)`` accumulates its own terms without changing
+        # the record.  This is the producer path, so a term is one decision's
+        # cost for both seats.  The phase sum is checked against the timed call
+        # above so the table cannot silently miss work.
         phase_samples: dict[str, list[float]] = {}
         for _ in range(args.repeats):
             accumulator: dict[str, float] = {}
-            groups.build(batch, phases=accumulator)
+            groups.build_pair(rows[seats[1]].group_builder, batch, phases=accumulator)
             for name, value in accumulator.items():
                 phase_samples.setdefault(name, []).append(value)
         phases = {name: statistics.fmean(values) for name, values in phase_samples.items()}
         build["phases_ms_mean"] = phases
         build["phases_sum_ms"] = sum(phases.values())
+        build["phase_share_of_pair"] = build["phases_sum_ms"] / pair["one_pair_ms"]
 
         # ---- the fixed-capacity pad (what the producer no longer pays) ------
         # ``build`` used to assemble every field at the lane's live width and
@@ -708,8 +735,7 @@ def main(argv: list[str] | None = None) -> int:
             vector.step()
             encoder.encode(batch)
             timings: dict[str, float] = {}
-            for seat in seats:
-                rows[seat].tensorize(batch, timings=timings)
+            tensorize_seats(rows, batch, timings=timings)
             for name, value in timings.items():
                 section_samples.setdefault(name, []).append(value)
         sections = {name: statistics.fmean(values) for name, values in section_samples.items()}

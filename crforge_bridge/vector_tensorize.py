@@ -134,7 +134,11 @@ class VectorTensorizer:
     # ---- sections ----------------------------------------------------------
 
     def build_sections(
-        self, batch: VectorObservationBatch, *, timings: dict[str, float] | None = None
+        self,
+        batch: VectorObservationBatch,
+        *,
+        timings: dict[str, float] | None = None,
+        groups: VectorGroupSection | None = None,
     ) -> VectorTensorSections:
         """Every section for one decision, in the order the stock path builds them.
 
@@ -142,6 +146,10 @@ class VectorTensorizer:
         builder's share of the decision is added to it under its own name.  The
         producer's CPU-half probe uses it to name the section that has to fall
         (``ROADMAP_CRFORGE.md`` §4); the returned record is identical either way.
+
+        ``groups`` supplies a section that was already built — the producer
+        builds both actor seats' groups in one pass (:func:`tensorize_seats`),
+        so ``groups_ms`` is timed there once per decision and not here.
         """
 
         def measure(name: str, build: Any) -> Any:
@@ -154,7 +162,8 @@ class VectorTensorizer:
 
         cards = measure("cards_ms", lambda: self.card_builder.build(batch))
         towers = measure("towers_ms", lambda: self.tower_builder.build(batch))
-        groups = measure("groups_ms", lambda: self.group_builder.build(batch))
+        if groups is None:
+            groups = measure("groups_ms", lambda: self.group_builder.build(batch))
         empty = measure("empty_ms", lambda: self.empty_builder.build(batch))
         candidates = measure("candidates_ms", lambda: self.candidate_builder.build(batch))
         relations = measure(
@@ -246,12 +255,17 @@ class VectorTensorizer:
         *,
         validate: bool = False,
         timings: dict[str, float] | None = None,
+        groups: VectorGroupSection | None = None,
     ) -> UniversalSemanticBatchV4:
-        """Build the stacked semantic batch for every lane of ``batch``."""
+        """Build the stacked semantic batch for every lane of ``batch``.
+
+        ``groups`` is an optional prebuilt group section (see
+        :func:`tensorize_seats`), already timed by its caller.
+        """
 
         self._ensure_state(batch)
         assert self._previous_action is not None  # narrowed by ``_ensure_state``
-        sections = self.build_sections(batch, timings=timings)
+        sections = self.build_sections(batch, timings=timings, groups=groups)
         result = UniversalSemanticBatchV4(
             match_scalars=sections.scalars.scalars,
             own_cards=sections.cards.own,
@@ -391,6 +405,50 @@ class VectorTensorizer:
     def _ensure_state_from_batch(self, batch: UniversalSemanticBatchV4) -> None:
         if self._previous_action is None or int(self._previous_action.gate.shape[0]) != int(batch.batch_size):
             self._previous_action = self._empty_previous_action(int(batch.batch_size))
+
+
+def tensorize_seats(
+    tensorizers: dict[int, VectorTensorizer],
+    batch: VectorObservationBatch,
+    *,
+    validate: bool = False,
+    timings: dict[str, float] | None = None,
+) -> dict[int, UniversalSemanticBatchV4]:
+    """Tensorize one batch for every actor seat, sharing a two-seat group build.
+
+    The group section is the one section whose rows are the same for both
+    seats except for the perspective: :meth:`VectorGroupBuilder.build_pair`
+    builds both in one pass (:func:`vector_rows`), and each seat's tensorize
+    then consumes its half.  Every other section is per seat and unchanged.
+    With one seat this is exactly ``tensorizer.tensorize``.
+
+    ``timings`` keeps the producer's section accounting: the pair build is
+    recorded once per *decision* under ``groups_ms``, because it is one pass,
+    not one pass per seat.
+    """
+
+    seats = list(tensorizers)
+    if not seats:
+        raise ValueError("tensorize_seats needs at least one seat")
+    shared: list[VectorGroupSection] | None = None
+    if len(seats) == 2:
+        started = time.perf_counter()
+        shared = list(
+            tensorizers[seats[0]].group_builder.build_pair(
+                tensorizers[seats[1]].group_builder, batch
+            )
+        )
+        if timings is not None:
+            timings["groups_ms"] = timings.get("groups_ms", 0.0) + (time.perf_counter() - started) * 1000.0
+    return {
+        seat: tensorizers[seat].tensorize(
+            batch,
+            validate=validate,
+            timings=timings,
+            groups=None if shared is None else shared[index],
+        )
+        for index, seat in enumerate(seats)
+    }
 
 
 # ---- lane slicing and digests ----------------------------------------------
@@ -565,4 +623,5 @@ __all__ = [
     "interleave_rows",
     "lane_batch",
     "lane_sequence",
+    "tensorize_seats",
 ]
