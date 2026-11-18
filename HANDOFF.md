@@ -4,62 +4,113 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 47)
+## Bottom line (2026-11-18, session 48)
 
-The multiproc/decision-server lever is built and gated; the CPU half of it is
-measured and negative, and the GPU half needs the card.
+The server's card half is measured: it **wins where the design said it would**
+(1.38× the multiproc floor at 32 lanes/producer; 1.16× at six producers on six
+vCPU) and loses where a producer's forward is launch-bound (0.68× at four
+lanes).  Training behind the server works: the weight push is landed and gated.
 
-1. **One batched decision server, gated on the wire.**  A server module
-   (`crforge_bridge/decision_server.py`) serves every waiting producer's
-   tensorized batch in one forward: live widths are padded to a ladder bucket
-   (`1/2/4/…/48` groups, `1/4/…/160` children), the row axis to the next
-   power-of-two multiple of the producer's rows, and the request/response cross a
-   length-framed socket as one row-major buffer per dtype.  The handshake refuses
-   a server built from other weights (checkpoint sha256 + weights digest).
-   `self_play.py --decision-server … --verify-decision-server` samples the warmup
-   batch through the server under a fixed seed and compares it with the same
-   checkpoint's eager path.
-2. **The gate is exact and rollout storage crosses it.**  Real checkpoint, 8
-   rows: all six action fields equal, log-prob/entropy/value deltas **0.0**; the
-   round pads the live axes, so this also proves the padding is inert.  A
-   two-segment run with rollout storage through the server is gate-pass (48 time
-   steps, 8 episode starts, 34 reward-bearing rows, boundary value included).
-   Bridge suite **168 passed** (148 + 12 server + 8 harness tests; 20 new).
-3. **A real bug, found by the four-producer arm.**  A seeded verification request
-   sharing the wait window with a training request made the round refuse, killed
-   the server and broke the other producers.  A queue is now split into plain and
-   seeded groups (each seeded request its own forward), and a failed round replies
-   an error and keeps serving.  Regression test included.
-4. **On this CPU-only host the shared server's aggregate is one forward's
-   throughput, flat in N: 0.95× at two producers and 0.97× at four.**  At two it
-   served **68 requests in 68 rounds** (`requests_per_round 1.0`) because a
-   decision is ~40 ms of CPU half after a ~180 ms forward, so the next request
-   never lands in the 2 ms window; raising the window is the measured negative of
-   §3.40.  At four the schedule overlaps — **136 requests in 71 rounds,
-   `requests_per_round 1.92`, max 4** — but the forward grows with the joined
-   rows: **210 ms per request against 187 ms unbatched**, so the aggregate stays
-   at ~40 ld/s.  Per-process forwards (the multiproc lever) keep **1.42× at two**
-   and **2.01× at four**.  Unpinned, the server's forward inflates to 233 ms and
-   the aggregate falls to 0.67×; the harness now pins `OMP_NUM_THREADS` for every
-   process.
-5. **What the card has to show.**  The A6000 forward is flat in rows (141 ms at
-   256, 88.5 at 16), so the GPU gate is `requests_per_round > 1` **and**
-   `forward_ms_per_request` below the single-request forward.  The CPU arm prices
-   the wire (round-trip **108 ms** at 8 rows on torch's default thread count,
-   **187 ms** pinned, `assemble` 1.4 ms, client pack 1.0 ms) and proves the gate,
-   not the win — and it shows the linear-in-rows shape the card has to break.
-6. **Weight push is the missing piece for training behind the server.**
-   `--ppo-update`/`--overlap-update` are refused with `--decision-server` until
-   the server can be given the updated weights: sampling old weights while
-   storing a rollout labelled with the new policy state would be stale data.
-7. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot lost
-   19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %, p = 0.15).
-   The A6000 width question is still open.
+1. **The weight push closes the server's training loop.**  A producer pushes its
+   updated state dict at every segment boundary; the server copies it into its
+   own parameters **in place** (captured graphs, staging and pinned mirrors keep
+   their objects) and re-hashes the result.  Three refusals stand in front of the
+   copy: checkpoint sha256, the client's `base_weights_digest` (the weights it
+   last sampled with — a lost push is stale data, not a version to paper over),
+   and the incoming bytes' digest, computed the way `weights_digest` walks a
+   model (`state_digest`).  `--ppo-update`/`--overlap-update` are no longer
+   refused with `--decision-server`.  Measured: 74,153,397 bytes, client pack
+   **51.6 ms**, round trip **193.2 ms**, server copy + re-hash **57.1 ms**, once
+   per segment; serial and overlapped probes both pass their gates on this host
+   and the acked digest labels the segment's rollout.  **On the card the probe
+   does not finish a segment — and the control clears the push: the same probe
+   with no server at all (`--ppo-update`, in-process) segfaults at the same point
+   after segment 0's update**, so that box's producer-after-update path is a
+   pre-existing defect, not the push (no JVM fatal-error log; `dmesg` shows
+   `segfault at c`).  The card half of the training gate is therefore open, and
+   the session-38 1-process CUDA trainer should be re-run under this torch build
+   before any training claim on a rented box.
+2. **The card's gate passes at six producers and at 32 lanes, not at four.**  At
+   session 47's shape (4 lanes = 8 rows/producer): 6 producers coalesce
+   **3.14 requests/round** and the forward falls to **36.8 ms per request**
+   against 49.7 unbatched (−26 %) — the gate is passed — and the aggregate
+   **272.4 ld/s beats the per-process floor's 235.7 (1.16×)**.  At four,
+   `1.91` requests/round buy **no per-request gain** (49.9 against 49.7): an
+   8-row forward is launch-bound, and the aggregate is 0.68× the floor.
+3. **The row axis is the real crossover.**  Four producers at 16 lanes: the
+   server's per-request forward is already 102.0 ms against a ~190 ms
+   single-request round trip, yet the aggregate is 0.62× the floor (232.3 against
+   372.8) because a 175.6 ms round serializes the card while four 32-row forwards
+   would overlap it.  At **32 lanes** (64 rows/producer) the CPU halves (~215 ms)
+   hide behind the 124 ms round and the server is **736.7 against 534.4
+   (1.38×)**, 1.5 requests/round, 83.9 ms per request.
+4. **The card found a real shape bug, latent since session 43.**  `FastForwardV4`
+   keyed its staging and its graphs by the row count, so the first batch fixed
+   the group/child width; a board that then widened (troops spawn) raised
+   `staging axis 8 exceeds capacity 1` — in the producer's `--fast-forward` path
+   *and* in the server (whose `_forwards` was row-keyed, so its width buckets
+   never reached the graph vocabulary).  The key is now the full shape
+   (`(rows, groups, children)` for the producer, the whole bucket tuple for the
+   server); a run captures one graph per shape it visits (10 at 4 lanes, ladder-
+   bounded on the server).  Regression test included.
+5. **`--no-validate` is part of the card's shape, one session later.**  The first
+   arm left per-decision contract validation on and read a **2.3 s** forward at
+   four producers — session 38's device-sync defect in a new place.  The harness
+   now also forwards `--fast-forward`/precision/graph flags to the in-process
+   arm, so both arms differ in batching, not in precision.
+6. **Rental:** one Thunder `base` (6 vCPU, 1×A6000 48 GB, $0.35/h), torch
+   2.12.1+cu130.  No native work: the promotion gate is unchanged and negative.
+7. **Still open:** the rented box's producer-after-update segfault (open it
+   first — it blocks the card's training gate), NVIDIA MPS, the 8-vCPU question
+   (dominated until `g` falls), the A6000 overlapped-loop gate, the native parity
+   cadence, and whether to pad the producer's width to the server's ladder to cut
+   its capture count.
 
-See `FINDINGS.md` §3.81 (this session), §3.80 (session 46) and §3.74 (native
-gate).
+See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
+§3.81 (the server on CPU) and §3.74 (native gate).
 
 ## Decisions — what changed
+
+### 2026-11-18 (session 48) — the card prices the server, and the push lets it train
+
+Session 47 left one measured negative and two named holes: the GPU arm and the
+weight push.  Both are closed; the card arm also found a latent shape bug.
+
+- **The server's paying region is measured, not assumed.**  Four producers on
+  one A6000, `--no-validate`, fp16 + graphs on both arms: 4 lanes/producer is
+  0.68× the per-process floor (one forward is launch-bound at ~50 ms and the
+  round doubles it), 16 lanes is 0.62× (the join is a per-request win but a
+  175.6 ms round cannot be overlapped the way four 32-row forwards are), 32
+  lanes is **1.38×** (736.7 against 534.4, 1.5 requests/round, 83.9 ms per
+  request against a 188.2 ms single-request round trip).  At six producers on
+  six vCPU the 4-lane arm flips too: **272.4 against 235.7 (1.16×)** — the server
+  is how you add collectors past the host's cores.
+- **The gate's two halves are both necessary.**  At 16 lanes the per-request
+  forward falls 1.9× and the aggregate still loses; at 4 lanes/6 producers
+  requests coalesce 3.14/round and it wins.  Quote the shape with the verdict.
+- **The push.**  `DecisionClient.push_weights` / `ensure_weights` pack the
+  state as one row-major record per dtype (shapes in the schema), the server
+  copies in place and verifies the client's digest both before and after, and a
+  `stats` reader is allowed to skip the weight check so a supervisor survives a
+  push.  The producer pushes at the segment boundary **before** the rollout store
+  is labelled, so the store's `policy_state_id` is the digest the server acked.
+  Measured cost: 74 MB, pack 51.6 ms, round trip 193.2 ms, server apply 57.1 ms
+  (CPU; on the card the round trip is 1.19 s because both digest passes walk
+  74 MB of CUDA parameters through host memory).  **Card caveat:** the card's
+  training probe segfaults after its update *with or without* a server, so the
+  push's card-side continuation is untested, not disproved.
+- **The shape bug.**  Row-keyed staging (`self._staged[rows]`) was correct only
+  while the record was padded to 48/160 (pre-session-43).  Live width made the
+  first batch's width the graph's capacity, so a board that widened overflowed
+  it — in `--fast-forward` and in the server's `_forwards`.  Both are keyed on
+  the full shape now; `test_a_board_that_widens_gets_its_own_staging` pins it.
+- **Harness.**  `multiproc.py` gained `--fast-forward` (forwarded to the
+  in-process arm with the same precision/graph flags), and its docstring now
+  states why the card arm must pass `--no-validate`.
+- **Gate:** bridge suite **174 passed** (5 new: 4 on the push/record round trip,
+  1 on the shape key, plus the harness forwarding test); ruff clean on the
+  touched files; the two server arms are `--verify-decision-server`-pass, 0
+  failed rounds, 0 illegal, 0 rejected.
 
 ### 2026-11-17 (session 47) — the server is one host's forward, and its gate is the action
 

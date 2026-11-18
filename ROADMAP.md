@@ -614,6 +614,17 @@ do not train at scale before C0; do not promote on crforge.
 > The engine-only 2.8/s is per process too. Order: **multiproc → wire C3-B →
 > de-Python the 228 ms → graphs/state → more boxes at ~1 A6000 per 8–16 vCPU**.
 > Units and the full table: `ROADMAP_CRFORGE.md` §1 and §4.
+>
+> **The batched decision server is priced on the card (2026-11-18,
+> `FINDINGS.md` §3.82–§3.84).** One A6000 serving four collectors through one
+> forward is **1.38×** the four-per-process forward arm at 32 lanes per producer
+> (736.7 vs 534.4 lane-decisions/s) and **1.16×** at six producers on six vCPU
+> (4 lanes), but **0.68×** at four producers/4 lanes and **0.62×** at 16 lanes:
+> an 8-row forward is launch-bound, so the batch only pays once a producer's own
+> batch is off that floor. The server also trains now (weight push at each
+> segment boundary, verified by digest). Plan the box as **one server + 4–6
+> collectors at ≥32 lanes each**, or add collectors past the host's cores; MPS
+> is the remaining step for >1 process per core.
 
 Rent only when a local segment completes in <10 min; do not spend GPU hours on
 CPU-bound prep. Training throughput notes and the portable `ever_*` techniques
