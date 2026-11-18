@@ -28,6 +28,9 @@ public final class SeatIdsOfRepro {
 
   private static final int IDS_PER_KIND = 1_000_000;
 
+  /** `kind * IDS_PER_KIND` has to stay inside an int, and no board is near a thousand kinds. */
+  private static final int MAX_KINDS = 1000;
+
   /** Per seat and entity kind, by the battle id's count within its kind: the seat's id + 1. */
   private final int[][][] ids = new int[2][0][];
 
@@ -94,7 +97,7 @@ public final class SeatIdsOfRepro {
       int n = (state >>> 8) % 2048;
       sum += ids.of(seat, kind * IDS_PER_KIND + n);
       calls++;
-      if (calls % newEvery == 0) {
+      if (calls % newEvery == 0 && kinds < MAX_KINDS) {
         kinds++;
         // A new kind, read once: the slot is null and n is 0 in the first call below.
         sum += ids.of(seat, kinds * IDS_PER_KIND);
