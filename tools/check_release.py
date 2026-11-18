@@ -22,7 +22,10 @@ def main():
             continue
         count += 1
         size += path.stat().st_size
-        if path.suffix.lower() in {".apk", ".so", ".scdb", ".keystore", ".jks", ".parquet"} or (path.suffix.lower() == ".pt" and name not in models):
+        suffix = path.suffix.lower()
+        if suffix in {".apk", ".so", ".scdb", ".keystore", ".jks", ".parquet"} or (
+            suffix == ".pt" and name not in models
+        ):
             failures.append(f"Local binary/data in release: {name}")
         if path.name == ".env" or path.name.startswith(".env.") and path.name != ".env.example":
             failures.append(f"Local configuration in release: {name}")
@@ -50,7 +53,9 @@ def main():
     for line in template.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.lstrip().startswith("#") and line.partition("=")[2].strip():
             failures.append(".env.example must contain only blank configuration values")
-    for required in ("LICENSE", "NOTICE", "build_offline_engine.ps1", "native_runner/supported_engine.json"):
+    # The project is MIT and has no NOTICE: 256e50d dropped the upstream one and
+    # 4b207a0 replaced the licence, so the release set has no third-party notice to carry.
+    for required in ("LICENSE", "build_offline_engine.ps1", "native_runner/supported_engine.json"):
         if not (ROOT / required).is_file():
             failures.append(f"Missing release file: {required}")
     for failure in failures:
