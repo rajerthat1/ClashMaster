@@ -240,6 +240,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ppo-learning-rate", type=float, default=1e-5)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
+        "--jvm-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra option for every run's engine JVM (repeatable)",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="keep the per-decision record validation (default off, as in the GPU runs)",
@@ -300,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 if not args.validate:
                     command.append("--no-validate")
+                for value in args.jvm_arg:
+                    command.append(f"--jvm-arg={value}")
                 _run_command(command, log_path)
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             summary = summarize_run(artifact)

@@ -405,6 +405,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--omp-threads", type=int, default=4, help="OMP_NUM_THREADS for every run")
     parser.add_argument(
+        "--jvm-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra option for every run's engine JVM (repeatable)",
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="keep the per-decision record validation (default off, as in the cadence runs)",
@@ -464,6 +471,8 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 if not args.validate:
                     command.append("--no-validate")
+                for value in args.jvm_arg:
+                    command.append(f"--jvm-arg={value}")
                 _run(command, log_path)
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             summary = _summarize(artifact, policy=policy, seed=seed)

@@ -42,6 +42,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "no_cuda_graphs": False,
         "full_cuda_graph": False,
         "omp_threads": 1,
+        "jvm_arg": [],
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -75,6 +76,18 @@ def test_the_producer_command_forwards_validation_flags() -> None:
     )
     assert "--no-validate" in command
     assert "--no-warmup-forward" in command
+
+
+def test_the_producer_command_forwards_jvm_options() -> None:
+    """A host whose JVM miscompiles the engine needs the flag on every producer."""
+
+    command = multiproc.producer_command(
+        _args(jvm_arg=["-XX:TieredStopAtLevel=1", "-Xmx4g"]), output=Path("o"), address=None
+    )
+    assert "--jvm-arg=-XX:TieredStopAtLevel=1" in command
+    assert "--jvm-arg=-Xmx4g" in command
+    assert not any(item == "--jvm-arg" for item in command)
+    assert "--jvm-arg" not in multiproc.producer_command(_args(), output=Path("o"), address=None)
 
 
 def test_the_in_process_arm_carries_the_same_forward_settings() -> None:

@@ -439,7 +439,7 @@ def _stock_tensorizer(bundle: Any, config: Any, seat: int) -> UniversalObservati
     )
 
 
-def _vector(count: int, *, max_ticks: int) -> Any:
+def _vector(count: int, *, max_ticks: int, jvm_args: tuple[str, ...] = ()) -> Any:
     from crforge_env.vector import LadderConfig, SideSetup, VectorBattle
 
     setup = SideSetup(towers="King_PrincessTowers", king_level=16, tower_level=16)
@@ -449,6 +449,7 @@ def _vector(count: int, *, max_ticks: int) -> Any:
         install=str(DEFAULT_INSTALL),
         tables=str(DEFAULT_TABLES),
         config=LadderConfig(decision_ticks=1, level=16, tower_level=16, max_ticks=max_ticks or None),
+        jvm_args=jvm_args,
     )
     vector.reset(
         list(range(1, count + 1)),
@@ -613,6 +614,19 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--no-validate", action="store_true", help="skip the per-decision record validation")
+    parser.add_argument(
+        "--jvm-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help=(
+            "extra option for the engine's JVM, repeatable; write "
+            "--jvm-arg=-XX:TieredStopAtLevel=1 so a leading '-' is not read as "
+            "an option.  A rented A6000 host's HotSpot C2 compiler miscompiles "
+            "SeatIds.of once it is hot and the producer segfaults on a new "
+            "entity kind; C1-only runs pass (FINDINGS.md 3.85)"
+        ),
+    )
     parser.add_argument(
         "--profile-collection",
         action="store_true",
@@ -807,7 +821,7 @@ def main(argv: list[str] | None = None) -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise SystemExit("--device cuda requested but CUDA is unavailable")
 
-    start_jvm(str(DEFAULT_INSTALL))
+    start_jvm(str(DEFAULT_INSTALL), jvm_args=tuple(args.jvm_arg))
     from crforge_env import _jvm as env_jvm
 
     env_jvm._started_with = Path(DEFAULT_INSTALL).expanduser().resolve()
@@ -822,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
     catalog = Catalog.load()
     timeline = load_game_mode_timeline(STANDARD_GAME_MODE).timeline
 
-    vector = _vector(args.count, max_ticks=args.max_ticks)
+    vector = _vector(args.count, max_ticks=args.max_ticks, jvm_args=tuple(args.jvm_arg))
     encoder = VectorObservationEncoder(vector, catalog)
     encoder.reset()
     batch = encoder.encode()

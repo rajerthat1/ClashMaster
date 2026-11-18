@@ -97,6 +97,8 @@ def producer_command(args: argparse.Namespace, *, output: Path, address: str | N
         command.append("--no-validate")
     if args.no_warmup_forward:
         command.append("--no-warmup-forward")
+    for value in args.jvm_arg:
+        command.append(f"--jvm-arg={value}")
     if args.fast_forward:
         # The in-process arm owns its forward here: give it the same fp16/graph
         # forward the server uses, so the two arms differ in batching, not in
@@ -381,6 +383,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rollout", action="store_true", help="store each producer's rollout (default: probe shape)")
     parser.add_argument("--no-validate", action="store_true")
     parser.add_argument("--no-warmup-forward", action="store_true")
+    parser.add_argument(
+        "--jvm-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra option for every producer's engine JVM (repeatable)",
+    )
     parser.add_argument("--baseline", dest="baseline", action="store_true", default=True)
     parser.add_argument("--no-baseline", dest="baseline", action="store_false")
     parser.add_argument("--timeout", type=float, default=3600.0)

@@ -204,6 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--omp-threads", type=int, default=4, help="OMP_NUM_THREADS for every run")
     parser.add_argument(
+        "--jvm-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="extra option for every run's engine JVM (repeatable)",
+    )
+    parser.add_argument(
         "--min-collection-rate-ratio",
         type=float,
         default=0.9,
@@ -282,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
                     command.append("--overlap-update")
                 if not args.validate:
                     command.append("--no-validate")
+                for value in args.jvm_arg:
+                    command.append(f"--jvm-arg={value}")
                 if args.fast_forward:
                     command.append("--fast-forward")
                     if args.full_cuda_graph:
