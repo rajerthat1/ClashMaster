@@ -527,8 +527,10 @@ bulk path is crforge, in the order that protects the schedule:
    replays as contiguous slices: gate shape 1,024 lane-decisions / 45 ACT /
    0 rejected, one 1,024-frame update; multi-episode 8 × 2 × 60 with 16
    mid-rollout starts, 2 updates, 0 rejected. Still open: CUDA/MPS throughput
-   (NVIDIA MPS, the 8-vCPU question, the A6000 overlapped-loop gate) and the
-   native parity cadence. A **CPU-updating producer on the affected host class
+   (NVIDIA MPS, the 8-vCPU question, the A6000 overlapped-loop gate). The native
+   parity cadence is defined: `--checkpoint-every` plus
+   `tools/native_analysis/parity_curve.py`, priced at 27.9 updates per 4-game
+   gate (`FINDINGS.md` §3.87). A **CPU-updating producer on the affected host class
    needs `--jvm-arg=-XX:TieredStopAtLevel=1`** until the host's C2 miscompile of
    `SeatIds.of` is fixed: `tools/crforge/hotspot_repro.py` is the reproducer, and
    both hosts tried so far are negatives (most recently a Thunder `base` with the

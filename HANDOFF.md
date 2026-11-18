@@ -51,7 +51,7 @@ record.  The flag stays: the card is the affected host class.
    `ArrayIndexOutOfBoundsException: Index -2146` before reaching the case under
    test.  The driver caps at 1,000 kinds; the throw was the driver's, not the
    JVM's.
-6. **Gate:** `test_hotspot_repro.py` **8 passed**, bridge suite **185 passed**;
+6. **Gate:** `test_hotspot_repro.py` **8 passed**, bridge suite **191**;
    ruff clean (E,F) on the tool and the test.  Evidence:
    `runs/crforge-c4/hotspot-seatids.json`, `hotspot-seatids-soak.json`,
    `s50-thunder/`.
@@ -60,12 +60,23 @@ record.  The flag stays: the card is the affected host class.
    `lscpu`**, then capture `-XX:+LogCompilation` + an `hsdis` disassembly and file
    at bugreport.java.com from `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.
 8. **Still open:** a reproducing host for the C2 report, NVIDIA MPS, the 8-vCPU
-   question, the A6000 overlapped-loop gate, the native parity cadence, and
-   whether to pad a producer's width to the server's ladder.
+   question, the A6000 overlapped-loop gate, and whether to pad a producer's
+   width to the server's ladder.
 
-See `FINDINGS.md` §3.86 (this reproducer), §3.85 (the JIT defect and the flag),
-§3.84 (the card), §3.83 (the shape bug), §3.82 (the push) and §3.81 (the server on
-CPU).
+See `FINDINGS.md` §3.87 (the parity cadence), §3.86 (the C2 reproducer), §3.85
+(the JIT defect and the flag), §3.84 (the card), §3.83 (the shape bug), §3.82
+(the push) and §3.81 (the server on CPU).
+
+**Also this session — the native parity cadence.**  C5's "50–150 matches every N
+updates" now has both halves: `self_play.py --checkpoint-every N` writes
+`ck-step-<n>.pt` mid-run (3.0–3.1 s per 193 MiB save, outside the segment clock),
+and `tools/native_analysis/parity_curve.py` gates those checkpoints on the same
+seeds against one reference and prices the cadence.  Measured: a 4-game point is
+**315 s = 27.9 updates**, so a 10 % budget allows a gate **every 279 updates**;
+the 50-game gate C5 asks for is **~350 updates**, i.e. every 3,500 updates at
+10 % or every 1,400 at 25 %.  The two smoke points (4 games, seeds 101–104) were
+2–2 and 1–3 with overlapping intervals — a schedule proof, not a ranking.  Gate:
+`test_parity_cadence.py` 6 passed, bridge suite **191**.
 
 ## Bottom line (2026-11-18, session 49)
 
@@ -192,6 +203,36 @@ See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
 §3.81 (the server on CPU) and §3.74 (native gate).
 
 ## Decisions — what changed
+
+### 2026-11-18 (session 50b) — the native parity cadence: a checkpoint every N updates, and the gate priced in updates
+
+C5 said "50–150 native matches every N updates" and N was undefined, because the
+trainer only wrote a checkpoint at the end of a run.  Both halves are in, and the
+price says the cadence is a budget decision.
+
+- **Mid-run checkpoints.**  `self_play.py --checkpoint-every N` writes
+  `<--save-checkpoint stem>-step-<n><suffix>` every N updates (refused without
+  `--save-checkpoint`, refused negative).  The save runs **outside the segment
+  clock** and costs **3.0–3.1 s** for a 193 MiB checkpoint; each segment records
+  `checkpoint_cadence_s`, so a cadence cannot quietly inflate throughput.
+- **The curve is paired and the gate reads its own checkpoints.**
+  `tools/native_analysis/parity_curve.py` runs `native_block_run.sh` per
+  checkpoint against one reference on **the same seeds**, merges each point with
+  `native_block.summarize` (Wilson interval, seat split, illegal/rejected) and
+  refuses a point whose chunks are not one experiment.  Smoke, 4 games per point,
+  seeds 101–104, mirror X-Bow, checkpoints 277/279 vs `B-general-v275`: **2–2**
+  and **1–3**, overlapping intervals, 0 illegal, 0 rejected, gate complete — a
+  schedule proof, not a ranking.
+- **The cadence is `gate / (budget × update)`.**  Measured: a 4-game point is
+  **315 s = 27.9 updates** (77.9–79.6 s/game), an update is **10.3–11.3 s**, so a
+  10 % budget allows a gate **every 279 updates**.  The 50-game gate C5 asks for
+  is **~350 updates**, hence every **3,500** updates at 10 % and **1,400** at
+  25 %.  On this shape the gate is milestone-scale; a tighter cadence needs a
+  smaller block (10 games ≈ 790 s ≈ 70 updates), not a shorter interval.  Quote
+  the games per gate with the cadence.
+- **Gate:** `test_parity_cadence.py` **6 passed**; bridge suite **191 passed**;
+  ruff (F) clean.  Evidence: `runs/crforge-c4/s50/train-cadence.json`,
+  `runs/native-parity-s50/curve.json`.
 
 ### 2026-11-18 (session 50) — the C2 miscompile gets a reproducer, and both hosts tried are negatives
 

@@ -7094,3 +7094,53 @@ has it.  Evidence: `runs/crforge-c4/s50-thunder/` (`host.txt`, `D.*`, `E.*`,
 run died in `ids[seat]` with `ArrayIndexOutOfBoundsException: Index -2146` — the
 driver's bug, not the JVM's, and it hid the case under test.  The driver caps at
 **1,000 kinds** now.
+
+### 3.87 The native parity cadence: a checkpoint every N updates, and the gate priced in updates (2026-11-18)
+
+C5 asks for **50–150 native matches every N updates**, and N was never defined —
+nor could it be: the trainer wrote one checkpoint at the end of a run, so the
+gate had nothing to read *while* a run was training.  Both halves are in now, and
+the price is measured: **one native game is 7.4 training updates** at this host's
+C4 shape, so a 50-game gate is **~350 updates** of training and the cadence is a
+budget question, not a fixed number.
+
+**The trainer writes mid-run checkpoints.**  `self_play.py --checkpoint-every N`
+writes `<--save-checkpoint stem>-step-<step><suffix>` every N updates (refused
+without `--save-checkpoint`; a negative N is refused).  The save is **outside the
+segment clock** — a 193 MiB checkpoint costs **3.0–3.1 s** to write and reload —
+and every segment records `checkpoint_cadence_s`, so a cadence does not inflate
+`lane_decisions_per_s`.  The training-side run (`4 lanes × 2 seats × 4 segments ×
+24 decisions`, lane minibatch 4, sequence chunk 8, CPU): 4 updates with walls
+**10.3 / 10.6 / 11.3 / 11.1 s**, checkpoints at steps **277** and **279**
+(193.6 MiB, reload-identical), 28 ACT / 735 eligible (3.8 %), 0 illegal,
+0 rejected, gate pass, |KL| ≤ 9.3e-3, clip ≤ 3.1 %, segments 13.9–16.3 s at
+11.8–13.8 lane-decisions/s.
+
+**The curve is paired.**  `tools/native_analysis/parity_curve.py` runs
+`native_block_run.sh` for every checkpoint against one reference on **the same
+seeds**, merges each point with `native_block.summarize` (Wilson interval,
+per-seat split, illegal/rejected totals) and refuses a point whose chunks are not
+one experiment.  Two points, 4 games each, seeds 101–104, mirror X-Bow config,
+checkpoints 277 and 279 against `B-general-v275`: **2–2** (50 %, CI 15–85 %) and
+**1–3** (25 %, CI 5–70 %), 0 illegal, 0 rejected, gate complete.  Four games is a
+smoke, not a ranking — the two points are two updates apart and the intervals
+overlap — but it proves the schedule is paired and the gate reads the checkpoints
+it was given.  Wall: **312 s and 318 s** per 4-game point, **77.9 and 79.6 s per
+game** including one engine-host start, against the recorded 75–90 s/game of the
+100-game s40 blocks.
+
+**The cadence is the gate's price over the budget.**  A gate every `N` updates
+costs `gate / (N × update)` of the run, so `N ≥ gate / (budget × update)`.  At the
+measured terms — 4 games = **315 s = 27.9 updates**, 10 % budget — the tool
+returns **every 279 updates** (share 9.99 %).  Scale to the gate C5 actually asks
+for: 50 games at 79 s = **3,950 s ≈ 350 updates**, so a 10 % cadence is **every
+3,500 updates** and a 25 % cadence is **every 1,400** — on this host that is
+milestone-scale, and the way to buy a tighter cadence is a smaller block (10 games
+≈ 790 s ≈ 70 updates), not a shorter interval.  The rule the docs carry is
+therefore the ratio, not a number: **quote the games per gate with the cadence**.
+
+**Gate:** `test_parity_cadence.py` **6 passed** (path/step parsing, the refusal
+cases, the cadence arithmetic and its missing-wall/zero-budget answers); bridge
+suite **191 passed**; ruff (F) clean on the touched files.  Evidence:
+`runs/crforge-c4/s50/train-cadence.json`, `runs/native-parity-s50/curve.json`
+(chunk dirs and logs beside it).
