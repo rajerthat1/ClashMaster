@@ -536,12 +536,19 @@ class _CompactRows:
     slots: np.ndarray
     valid: np.ndarray
     vocab_live: np.ndarray
+    flat: np.ndarray
 
     def scatter(self, values: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
-        """Live-row values, ``fill`` in every padded column."""
+        """Live-row values, ``fill`` in every padded column.
+
+        ``flat`` is each live row's index into the raveled ``(lanes * width)``
+        array, built once with the axis.  One index is ~2x a two-array
+        ``out[lane_of, rank]`` scatter (measured in ``cpu_half_micro.py``), and
+        the row build makes ~20 of them.
+        """
 
         out = np.full((self.lanes, self.width), fill, dtype=values.dtype if dtype is None else dtype)
-        out[self.lane_of, self.rank] = values
+        out.ravel()[self.flat] = values
         return out
 
     def field(self, source: np.ndarray, dtype: Any = None, fill: Any = 0) -> np.ndarray:
@@ -551,7 +558,7 @@ class _CompactRows:
 
     def table(self, values: np.ndarray) -> np.ndarray:
         out = np.zeros((self.lanes, self.width), dtype=values.dtype)
-        out[self.lane_of, self.rank] = values[self.vocab_live]
+        out.ravel()[self.flat] = values[self.vocab_live]
         return out
 
 
@@ -582,6 +589,12 @@ class VectorGroupBuilder:
         self.max_children = int(self.config.max_children_total)
         # id(other) -> other, held so an id cannot be reused under the cache.
         self._pair_checked: dict[int, VectorGroupBuilder] = {}
+        # The row gather's form.  ``"flat"`` is the producer path: one index
+        # into the raveled row array (``lane * row width + column``) instead of
+        # a two-array advanced index.  ``"two_index"`` is the pre-session-46
+        # form, kept only so ``cpu_half_micro.py`` can A/B them in one process;
+        # it returns identical values.
+        self.gather_form = "flat"
 
     # ---- entity row view ---------------------------------------------------
 
@@ -602,8 +615,9 @@ class VectorGroupBuilder:
         width = max(1, int(counts.max()))
         starts = np.concatenate(([0], np.cumsum(counts)[:-1]))
         rank = np.arange(live.size, dtype=np.int64) - starts[lane_of]
+        flat = lane_of * width + rank
         slots = np.zeros((lanes, width), dtype=np.int64)
-        slots[lane_of, rank] = slot_of
+        slots.ravel()[flat] = slot_of
         valid = np.arange(width, dtype=np.int64)[None, :] < counts[:, None]
         row_vocab = np.clip(batch.entity_row_vocab, 0, self.tables.vocab_size - 1)
         return _CompactRows(
@@ -616,6 +630,7 @@ class VectorGroupBuilder:
             slots=slots,
             valid=valid,
             vocab_live=row_vocab.ravel()[live],
+            flat=flat,
         )
 
     def _core_rows(self, batch: VectorObservationBatch, axis: _CompactRows) -> dict[str, Any]:
@@ -675,7 +690,7 @@ class VectorGroupBuilder:
         # the live rows carry a velocity; the padded columns are zero and
         # ``velocity_valid`` is false for them.
         velocity = np.zeros((axis.lanes, axis.width, 2), dtype=np.float64)
-        velocity[axis.lane_of, axis.rank] = batch.entity_velocity.reshape(-1, 2)[axis.live]
+        velocity.reshape(-1, 2)[axis.flat] = batch.entity_velocity.reshape(-1, 2)[axis.live]
         if perspective.flip_x:
             np.negative(velocity[..., 0], out=velocity[..., 0])
         if perspective.flip_y:
@@ -995,42 +1010,59 @@ class VectorGroupBuilder:
         # time.  The oracle form pads with zeros for the feature/position/
         # extent tensors, zero for the ids, and OWNER_NEUTRAL for a group.
         live_g = min(g, max(1, int(entity_count.max()))) if live_slots else g
-        # Advanced indexing is the gather: ``take_along_axis`` rebuilds an index
-        # tuple on every call (35 times per build), which was a third of this
-        # section's own time.  ``order`` holds columns into the row view's axis,
-        # so the pair of index arrays is the same operation without it.
+        # A row field is ``(lanes, row width)``.  The gather is one index into
+        # the raveled field (``lane * width + column``) instead of two; NumPy
+        # rebuilds a broadcast index tuple on every advanced-index call and this
+        # section makes 35 of them per build.  ``flat_offsets`` is per lane, so a
+        # field's flat index is one add.  ``rows["velocity"]`` is the one
+        # three-dimensional field and gathers both components at once.
+        # ``self.gather_form`` keeps the old two-array form for the tool's A/B.
         lane_index = np.arange(lanes, dtype=np.int64)[:, None]
+        row_width = int(rows["hp"].shape[1])
+        flat_offsets = lane_index * row_width
+        group_columns = group_order[:, :live_g]
+        flat_group = flat_offsets + group_columns
         mark("orders")
 
-        def gather(values: np.ndarray, order: np.ndarray, width: int) -> np.ndarray:
+        def gather(
+            values: np.ndarray, order: np.ndarray, width: int, flat: np.ndarray
+        ) -> np.ndarray:
+            # ``values`` is a C-contiguous row field, so ``reshape(-1)`` is a view.
+            if self.gather_form == "flat":
+                return values.reshape(-1)[flat]
             return values[lane_index, order[:, :width]]
+
+        def gather_velocity(
+            values: np.ndarray, order: np.ndarray, width: int, flat: np.ndarray
+        ) -> np.ndarray:
+            if self.gather_form == "flat":
+                return values.reshape(-1, 2)[flat]
+            columns = order[:, :width]
+            return np.stack(
+                (values[..., 0][lane_index, columns], values[..., 1][lane_index, columns]),
+                axis=-1,
+            )
 
         # Group rows keep the first ``retained_groups`` entries of the group
         # order; everything after is padded with zeros and masked off.
         group_mask = np.arange(live_g, dtype=np.int64)[None, :] < retained_groups[:, None]
-        g_hp = gather(rows["hp"], group_order, live_g)
-        g_max_hp = gather(rows["max_hp"], group_order, live_g)
-        g_shield = gather(rows["shield"], group_order, live_g)
-        g_x = gather(rows["x"], group_order, live_g)
-        g_y = gather(rows["y"], group_order, live_g)
+        g_hp = gather(rows["hp"], group_order, live_g, flat_group)
+        g_max_hp = gather(rows["max_hp"], group_order, live_g, flat_group)
+        g_shield = gather(rows["shield"], group_order, live_g, flat_group)
+        g_x = gather(rows["x"], group_order, live_g, flat_group)
+        g_y = gather(rows["y"], group_order, live_g, flat_group)
         g_extent = np.stack(
             [
-                gather(rows["extent_x0"], group_order, live_g),
-                gather(rows["extent_y0"], group_order, live_g),
-                gather(rows["extent_x1"], group_order, live_g),
-                gather(rows["extent_y1"], group_order, live_g),
+                gather(rows["extent_x0"], group_order, live_g, flat_group),
+                gather(rows["extent_y0"], group_order, live_g, flat_group),
+                gather(rows["extent_x1"], group_order, live_g, flat_group),
+                gather(rows["extent_y1"], group_order, live_g, flat_group),
             ],
             axis=-1,
         )
-        g_velocity = np.stack(
-            [
-                gather(rows["velocity"][..., 0], group_order, live_g),
-                gather(rows["velocity"][..., 1], group_order, live_g),
-            ],
-            axis=-1,
-        )
-        g_velocity_valid = gather(rows["velocity_valid"], group_order, live_g)
-        g_target = gather(rows["target"], group_order, live_g)
+        g_velocity = gather_velocity(rows["velocity"], group_order, live_g, flat_group)
+        g_velocity_valid = gather(rows["velocity_valid"], group_order, live_g, flat_group)
+        g_target = gather(rows["target"], group_order, live_g, flat_group)
         mark("group_gathers")
 
         # Group rank per entity: the retained portion of the group order.
@@ -1053,6 +1085,7 @@ class VectorGroupBuilder:
         child_order = self._child_order(rows, candidate, targeted, width=None if live_slots else c)
         live_c = min(c, max(1, int(candidate_count.max()))) if live_slots else c
         child_entity = child_order[:, :live_c]
+        flat_child = flat_offsets + child_entity
         child_candidate = np.take_along_axis(candidate, child_order, axis=1)[:, :live_c]
         child_count = np.minimum(candidate_count, self.max_children)
         child_mask = np.arange(live_c, dtype=np.int64)[None, :] < child_count[:, None]
@@ -1076,7 +1109,7 @@ class VectorGroupBuilder:
         ratio = g_hp / np.where(g_max_hp > 0, g_max_hp, 1.0)
         retained_ids = np.zeros(valid.shape, dtype=bool)
         retained_ids[child_rank_rows[child_mask], child_entity[child_mask]] = True
-        g_retained = gather(retained_ids, group_order, live_g)
+        g_retained = gather(retained_ids, group_order, live_g, flat_group)
 
         group_features[..., _G_MEMBERS] = 1.0 / 16.0
         group_features[..., _G_DROPPED] = np.where(g_retained, 0.0, 1.0 / 16.0)
@@ -1104,17 +1137,17 @@ class VectorGroupBuilder:
         group_position[..., 1] = g_y
         group_extent[...] = g_extent
 
-        g_side = gather(rows["side"], group_order, live_g)
+        g_side = gather(rows["side"], group_order, live_g, flat_group)
         owner_type = np.where(g_side == actor_owner[:, None], OWNER_SELF, OWNER_ENEMY)
         group_owner = np.where((g_side == 0) | (g_side == 1), owner_type, OWNER_NEUTRAL)
-        source_card = gather(rows["card_vocab_id"], group_order, live_g)
+        source_card = gather(rows["card_vocab_id"], group_order, live_g, flat_group)
         if np.any((source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask):
             bad = int(
-                gather(rows["card_id"], group_order, live_g)[(source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask][0]
+                gather(rows["card_id"], group_order, live_g, flat_group)[(source_card == UNKNOWN_CARD_VOCAB_ID) & group_mask][0]
             )
             raise ValueError(f"public causal-group source card {bad} is outside this V4 catalog")
-        group_type = gather(rows["group_type"], group_order, live_g)
-        runtime_form = gather(rows["runtime_form"], group_order, live_g)
+        group_type = gather(rows["group_type"], group_order, live_g, flat_group)
+        runtime_form = gather(rows["runtime_form"], group_order, live_g, flat_group)
         mark("group_features")
 
         # ---- child tensors -------------------------------------------------
@@ -1126,30 +1159,24 @@ class VectorGroupBuilder:
         child_group = np.empty((lanes, live_c), dtype=np.int64)
         child_type = np.empty((lanes, live_c), dtype=np.int64)
 
-        c_hp = gather(rows["hp"], child_order, live_c)
-        c_max_hp = gather(rows["max_hp"], child_order, live_c)
-        c_shield = gather(rows["shield"], child_order, live_c)
-        c_age = gather(rows["age_ms"], child_order, live_c)
-        c_target = gather(rows["target"], child_order, live_c)
-        c_x = gather(rows["x"], child_order, live_c)
-        c_y = gather(rows["y"], child_order, live_c)
+        c_hp = gather(rows["hp"], child_order, live_c, flat_child)
+        c_max_hp = gather(rows["max_hp"], child_order, live_c, flat_child)
+        c_shield = gather(rows["shield"], child_order, live_c, flat_child)
+        c_age = gather(rows["age_ms"], child_order, live_c, flat_child)
+        c_target = gather(rows["target"], child_order, live_c, flat_child)
+        c_x = gather(rows["x"], child_order, live_c, flat_child)
+        c_y = gather(rows["y"], child_order, live_c, flat_child)
         c_extent = np.stack(
             [
-                gather(rows["extent_x0"], child_order, live_c),
-                gather(rows["extent_y0"], child_order, live_c),
-                gather(rows["extent_x1"], child_order, live_c),
-                gather(rows["extent_y1"], child_order, live_c),
+                gather(rows["extent_x0"], child_order, live_c, flat_child),
+                gather(rows["extent_y0"], child_order, live_c, flat_child),
+                gather(rows["extent_x1"], child_order, live_c, flat_child),
+                gather(rows["extent_y1"], child_order, live_c, flat_child),
             ],
             axis=-1,
         )
-        c_velocity = np.stack(
-            [
-                gather(rows["velocity"][..., 0], child_order, live_c),
-                gather(rows["velocity"][..., 1], child_order, live_c),
-            ],
-            axis=-1,
-        )
-        c_velocity_valid = gather(rows["velocity_valid"], child_order, live_c)
+        c_velocity = gather_velocity(rows["velocity"], child_order, live_c, flat_child)
+        c_velocity_valid = gather(rows["velocity_valid"], child_order, live_c, flat_child)
 
         child_features[..., _C_HP_RATIO] = c_hp / np.where(c_max_hp > 0, c_max_hp, 1.0)
         child_features[..., _C_HP] = c_hp / 10_000.0
@@ -1165,9 +1192,9 @@ class VectorGroupBuilder:
         child_position[..., 0] = c_x
         child_position[..., 1] = c_y
         child_extent[...] = c_extent
-        child_radius[...] = gather(rows["radius"], child_order, live_c)
-        child_archetype[...] = gather(rows["archetype_id"], child_order, live_c)
-        child_type[...] = gather(rows["child_type"], child_order, live_c)
+        child_radius[...] = gather(rows["radius"], child_order, live_c, flat_child)
+        child_archetype[...] = gather(rows["archetype_id"], child_order, live_c, flat_child)
+        child_type[...] = gather(rows["child_type"], child_order, live_c, flat_child)
         child_group[...] = group_rank[lane_index, child_entity]
         mark("child_features")
 
@@ -1241,8 +1268,9 @@ class VectorGroupBuilder:
             entity_lane = np.broadcast_to(np.arange(lanes, dtype=np.int64)[:, None], valid.shape)
             group_index = np.full(dense_shape, -1, dtype=np.int32)
             child_index = np.full(dense_shape, -1, dtype=np.int32)
-            group_index[entity_lane[valid], rows["slots"][valid]] = group_rank[valid]
-            child_index[entity_lane[valid], rows["slots"][valid]] = child_rank[valid]
+            dense_flat = (entity_lane * int(entity_slots) + rows["slots"])[valid]
+            group_index.ravel()[dense_flat] = group_rank[valid]
+            child_index.ravel()[dense_flat] = child_rank[valid]
         else:
             group_index = group_rank
             child_index = child_rank

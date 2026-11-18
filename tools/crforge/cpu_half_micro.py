@@ -16,6 +16,10 @@ cannot tell a faster shim from a quieter machine.  This tool measures the shims
   entity axis) vs the compact live-row form the producer uses now (sessions 41
   and 44); the dense form reimplements the fields from the batch and is the
   oracle for the compact rows;
+* the row gather and scatter forms: one flat index into the raveled row array
+  vs the two-array advanced index the build used before session 46.  The
+  gather switch lives on the builder (``gather_form``); the scatter form is
+  measured in isolation because ``_CompactRows.scatter`` is one call site;
 * the group sort keys and ``_targeted_mask``: the same dense/local split.  An
   order only has to cover the lane's live width, so the compact sort is
   compared on the prefix ``build`` actually reads (session 42);
@@ -490,21 +494,102 @@ def main(argv: list[str] | None = None) -> int:
         pair["saved_fraction"] = pair["saved_ms"] / pair["two_builds_ms"]
         build["pair"] = pair
 
+        # ---- row gather form: flat index vs two-array advanced index -------
+        # The build gathers 35 row fields; each used to be
+        # ``values[lane_index, order[:, :width]]``.  The flat form indexes the
+        # raveled field with one array.  Both are timed here on the same batch
+        # and asserted to agree; ``gather_form`` is the switch, not a semantic.
+        def _set_form(form: str) -> None:
+            groups.gather_form = form
+            rows[seats[1]].group_builder.gather_form = form
+
+        flat_sections = groups.build_pair(rows[seats[1]].group_builder, batch)
+        _set_form("two_index")
+        two_index_sections = groups.build_pair(rows[seats[1]].group_builder, batch)
+        assert _records_equal(flat_sections[0], two_index_sections[0])
+        assert _records_equal(flat_sections[1], two_index_sections[1])
+
+        def pair_call() -> None:
+            groups.build_pair(rows[seats[1]].group_builder, batch)
+
+        # Alternating A/B: the host's segments drift, so interleave the two
+        # forms instead of timing one block after the other, and report the
+        # median of the per-pair difference as well as the two medians.
+        two_samples: list[float] = []
+        flat_samples: list[float] = []
+        for _ in range(args.repeats):
+            _set_form("two_index")
+            started = time.perf_counter()
+            pair_call()
+            two_samples.append((time.perf_counter() - started) * 1000.0)
+            _set_form("flat")
+            started = time.perf_counter()
+            pair_call()
+            flat_samples.append((time.perf_counter() - started) * 1000.0)
+        _set_form("flat")
+        two_index_ms = statistics.median(two_samples)
+        flat_ms = statistics.median(flat_samples)
+        build["gather_form"] = {
+            "two_index_ms": two_index_ms,
+            "flat_ms": flat_ms,
+            "saved_ms": two_index_ms - flat_ms,
+            "saved_mean_ms": statistics.fmean(
+                two - flat for two, flat in zip(two_samples, flat_samples, strict=True)
+            ),
+            "saved_fraction": (two_index_ms - flat_ms) / two_index_ms,
+            "equal_values": True,
+        }
+
+        # ---- row scatter form: the same split inside the row build ---------
+        # ``_CompactRows.scatter``/``table`` write each field's live rows into a
+        # zeroed ``(lanes, width)`` array; ``out[lane_of, rank] = values`` used
+        # two index arrays, the flat form uses one.  This is the isolated form
+        # (the in-build effect shows up in the phase table's ``entity_rows``).
+        compact = groups._compact_rows(batch)
+        scatter_values = np.arange(compact.live.size, dtype=np.float64)
+
+        def two_index_scatter() -> np.ndarray:
+            out = np.zeros((compact.lanes, compact.width), dtype=np.float64)
+            out[compact.lane_of, compact.rank] = scatter_values
+            return out
+
+        def flat_scatter() -> np.ndarray:
+            out = np.zeros((compact.lanes, compact.width), dtype=np.float64)
+            out.ravel()[compact.flat] = scatter_values
+            return out
+
+        assert np.array_equal(two_index_scatter(), flat_scatter())
+        scatter_two = _time(two_index_scatter, args.repeats)
+        scatter_flat = _time(flat_scatter, args.repeats)
+        build["scatter_form"] = {
+            "two_index_ms": scatter_two,
+            "flat_ms": scatter_flat,
+            "saved_ms": scatter_two - scatter_flat,
+            "saved_fraction": (scatter_two - scatter_flat) / scatter_two,
+            "rows": int(compact.live.size),
+            "equal_values": True,
+        }
+
         # ---- where the live build's time goes ------------------------------
         # ``build_pair(phases=...)`` accumulates its own terms without changing
         # the record.  This is the producer path, so a term is one decision's
-        # cost for both seats.  The phase sum is checked against the timed call
-        # above so the table cannot silently miss work.
+        # cost for both seats.  The wall is recorded in the same loop as the
+        # phases: this host's segments drift by more than 50 %, so a share
+        # against a wall timed elsewhere in the run can exceed 100 %.
         phase_samples: dict[str, list[float]] = {}
+        phase_wall: list[float] = []
         for _ in range(args.repeats):
             accumulator: dict[str, float] = {}
+            started = time.perf_counter()
             groups.build_pair(rows[seats[1]].group_builder, batch, phases=accumulator)
+            phase_wall.append((time.perf_counter() - started) * 1000.0)
             for name, value in accumulator.items():
                 phase_samples.setdefault(name, []).append(value)
         phases = {name: statistics.fmean(values) for name, values in phase_samples.items()}
         build["phases_ms_mean"] = phases
         build["phases_sum_ms"] = sum(phases.values())
-        build["phase_share_of_pair"] = build["phases_sum_ms"] / pair["one_pair_ms"]
+        build["phases_wall_ms"] = statistics.fmean(phase_wall)
+        build["phase_share_of_pair"] = build["phases_sum_ms"] / build["phases_wall_ms"]
 
         # ---- the fixed-capacity pad (what the producer no longer pays) ------
         # ``build`` used to assemble every field at the lane's live width and
