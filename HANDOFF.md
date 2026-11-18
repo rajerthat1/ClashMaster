@@ -4,52 +4,100 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 44)
+## Bottom line (2026-11-17, session 45)
 
-The group section's last reserved-axis write is gone: `_entity_rows` now packs
-the live rows instead of scattering them into the 200-row entity axis.
+The producer no longer builds the group section twice: both actor seats' rows go
+through one build, because the seats differ only in position, velocity sign and
+group owner.
 
-1. **`_entity_rows`: 0.43 → 0.18 ms (2.4×), build 1.35 → 1.00 ms (1.35×).**
-   The row view is a lane-major `(lanes, widest live count)` array plus
-   `counts` and `slots`; the order, targeted-mask and gather code needed no
-   representation change (they already worked from an include mask and flat
-   indices), and the section's dense `group_index`/`child_index` are scattered
-   back once at the end.  Against the pre-session-41 dense form the same tool
-   measures **0.18 against 0.995 ms** (5.5×).  `build(live_slots=False)`
-   densifies the compact rows, so the oracle A/B is unchanged.
-2. **The build has a phase table now.**  `build(phases=...)` accumulates its
-   own terms without changing the record; on the settled fixture they sum to
-   the timed call (0.991 of 1.00 ms): rows 0.217, child features 0.156, group
-   features 0.121, child order/rank 0.112, zeroing 0.092, orders 0.082,
-   group gathers 0.081, targeted 0.050, group rank 0.033, index scatter 0.036,
-   record 0.013.  The next term is no longer a single axis.
-3. **A zeroing rewrite measured worse and was reverted.**  `np.copyto(where=)`
-   in place of the 14 fancy assignments put zeroing at **0.184 against
-   0.092 ms**.
-4. **The gate is bit-exact.**  `batched_tensorize.py` **3,008/3,008**
-   lane-decisions, both seats, 0 mismatches, 5,196 micro-actions,
-   **0.0345 ms/lane-decision** (18.5×), end to end **0.0499**; seed 2
-   **3,008/3,008**, 5,361 actions, **0.0490** (12.6×), 0.0638.  The seed-to-seed
-   spread exceeds the session-43→44 difference, so the digest is the
-   correctness claim and the micro phase numbers are the change.  Bridge suite
-   **146 passed** (one new compact-row test); native PPO/trainer subset 49
-   passed, 4 skipped; ruff clean; the 4-lane × 2-seat × 2-segment × 24-decision
-   `--ppo-update` probe is **2/2 on-policy**, 0 stale, gate pass, 0 illegal /
-   0 rejected, checkpoint 277 reload-identical, with the same KL trace as
-   session 43's probe.
-5. **The forward width win from session 43 is unchanged** (1.74 s live vs
-   2.60 s padded at 128 CPU rows, 33 %); nothing in this session changed the
-   model input.
+1. **The pair build takes 32 % off the group section at the producer's width.**
+   Two builds → one: **8 lanes 0.838 → 0.569 ms**, **16 lanes 1.240 → 0.855**
+   (32.1 % / 31.1 %), 128 lanes 2.234 → 1.683 (24.7 %), 256 lanes 3.643 →
+   3.248 (10.8 %).  `_entity_rows` is split into a shared compact axis, a
+   seat-independent core and a per-seat geometry; `build_pair` stacks the two
+   seats' rows and runs the assembly once at `2 × lanes`, then slices the record
+   back.  A single seat still builds in 1.015 ms at 128 lanes, so the pair costs
+   **1.66× one seat** where two builds cost 2×.  The saving is the duplicated
+   passes (orders, targeted mask, rank scatters, feature arithmetic), so it is
+   largest where the producer actually runs.
+2. **The pair's phase table sums to 97.6 % of its timed call** (128 lanes): rows
+   0.349, child features 0.281, group features 0.206, zeroing 0.171, child
+   order/rank 0.164, group gathers 0.145, orders 0.129, targeted 0.075, index
+   scatter 0.062, group rank 0.049, record 0.014.
+3. **The training record is bit-identical.**  The 4-lane × 2-seat × 2-segment ×
+   24-decision `--ppo-update` probe reproduces session 44's KL trace exactly
+   (1.90e-3, −5.85e-3), the same clip (2.08 %, 1.56 %), the same return trace,
+   18/375 ACT, checkpoint 277 reload-identical, 2/2 on-policy, 0 stale, gate
+   pass, 0 illegal / 0 rejected.
+4. **The gate is bit-exact.**  `batched_tensorize.py --seats 0 1` runs the pair
+   path by default: **3,008/3,008** lane-decisions, 0 mismatches, 5,196
+   micro-actions, **0.0291 ms/lane-decision** (22.5×), end to end **0.0440**;
+   seed 2 **3,008/3,008**, 5,361 actions, **0.0316** (21.0×), 0.0477.  Same
+   host with `--no-pair`: **0.0324** (19.7×), 0.0474 — the gate-width A/B
+   matches the 10.8 % same-process number.  Bridge suite **148 passed** (two new
+   pair tests), `test_training_v4*` **457 passed, 8 skipped**, ruff clean.
+5. **One accounting change.**  `tensorize_seats` times the pair once per
+   decision, so `cpu_half.breakdown_ms_mean.groups_ms` is a per-decision number
+   from this session on, not a per-seat sum.  The forward is unchanged (nothing
+   in this session touched the model input).
 6. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
    lost 19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %,
    p = 0.15); `A-hog26-v738` is 49–1 against the seed and is a canary, not the
-   learner's bar.  The 8-vCPU measurement still waits for a training run with a
-   native win rate.
+   learner's bar.  The A6000 width question from session 43 is still open.
 
-See `FINDINGS.md` §3.78 (this session), §3.77 (session 43) and §3.74 (native
+See `FINDINGS.md` §3.79 (this session), §3.78 (session 44) and §3.74 (native
 gate).
 
 ## Decisions — what changed
+
+### 2026-11-17 (session 45) — both actor seats' group sections come from one build
+
+Session 44 closed the reserved-axis work and named the next move: batch the
+group field writes across the two seats, or make one packed assembly pass.  The
+producer was building the section twice per decision, once per actor seat.
+
+- **The seats share almost every row.**  They differ in a row's position (the
+  perspective flip), the sign of its velocity, and whether a group's owner is
+  `self` or `enemy`; every id, hitpoint, table value, sort key, count, slot map
+  and rank is the same.  `_entity_rows` is now `_compact_rows` (axis) +
+  `_core_rows` (shared values) + `_seat_rows` (position/extent/velocity), and
+  `build_pair` stacks the two seats' rows and runs the assembly once at
+  `2 × lanes`.  `_assemble` takes a per-lane `actor_owner` array; that is the
+  only owner change.  `_check_pair` refuses mismatched configs, capacities or
+  entity tables.
+- **The measurements.**  Two single-seat builds against one pair, same process,
+  by shape: **8 lanes 0.838 → 0.569 ms (32.1 %)**, **16 lanes 1.240 → 0.855
+  (31.1 %)**, 128 lanes 2.234 → 1.683 (24.7 %), 256 lanes 3.643 → 3.248
+  (10.8 %).  A single seat is 1.015 ms at 128 lanes, so the pair costs 1.66×
+  one seat where two builds cost 2×.  The saving is the duplicated work
+  (orders, targeted mask, rank scatters, seat-independent feature arithmetic),
+  which is why it is largest at the producer's own width and shrinks as
+  per-element work dominates.
+  The pair's phase table at 128 lanes (rows 0.349, child features 0.281, group
+  features 0.206, zeroing 0.171, child order/rank 0.164, gathers 0.145, orders
+  0.129, targeted 0.075, index 0.062, rank 0.049, record 0.014) sums to
+  **97.6 %** of the timed call.
+- **The producer uses it everywhere.**  `tensorize_seats` builds the pair once
+  and hands each seat its section; `VectorTensorizer.tensorize` /
+  `build_sections` accept a prebuilt `groups`.  `groups_ms` is now recorded once
+  per **decision**, not once per seat — the one `cpu_half` field whose meaning
+  changed.  `whole_ms.tensorize` is untouched by the accounting.
+- **Gate:** `batched_tensorize.py --seats 0 1` (pair path) **3,008/3,008**
+  lane-decisions, 0 mismatches, 5,196 micro-actions, **0.0291 ms/lane-decision**
+  (22.5×), end to end **0.0440**; seed 2 **3,008/3,008**, 5,361 actions,
+  **0.0316** (21.0×), 0.0477; the same host with `--no-pair` is **0.0324**
+  (19.7×), 0.0474.  Bridge suite **148 passed** (two new tests: pair equals two
+  single builds; a mismatched table is refused); `test_training_v4*` **457
+  passed, 8 skipped**; ruff clean.  The `--ppo-update` probe is **bit-identical**
+  to session 44's (KL 1.90e-3 / −5.85e-3, clip 2.08 % / 1.56 %, return 0.338085
+  / 0.2, 18/375 ACT, checkpoint 277 reload-identical, 2/2 on-policy, 0 stale,
+  0 illegal / 0 rejected).
+- **Next term:** the group build is 0.84 ms per seat at 128 lanes, and the
+  largest remaining term is child feature assembly (0.28).  A packed channel
+  write is the candidate, but session 38 measured the transposed
+  `(features, lanes, groups)` form as a loss (1.02 against 0.56 ms), so the next
+  attempt must keep the last-axis layout in one store.  The A6000 width question
+  is still open.
 
 ### 2026-11-17 (session 44) — the entity rows are compact, and the build can name its own terms
 
@@ -91,7 +139,8 @@ next term.  Measuring it needed a breakdown, and the breakdown named
   (~0.23), zeroing (~0.09) and gathers (~0.08).  A further CPU win needs
   batching field writes across both seats or one packed assembly pass, not
   another single-field rewrite.  The A6000 width question from session 43 is
-  still open.
+  still open.  *(Session 45: the two seats' sections are one build now, 2.234 →
+  1.683 ms per decision, 24.7 %.  See `FINDINGS.md` §3.79.)*
 
 ### 2026-11-17 (session 43) — the group record keeps its live width, and the pad leaves the producer
 
@@ -5634,7 +5683,7 @@ Scale options, in order of leverage:
 | `.resource/crforge/env/build/install/env` | Installed JVM env distribution for `VectorBattle` |
 | `~/.crforge/tables/16.635.8` | Pinned game tables (also 16.635.3); record the lock with every run |
 | `crforge_bridge/` | `BattleEnvV1` bridge for evaluation/parity; 152/152 cards, 118 forms. `native_runner/crforge_resident.py` presents the same surface in-process |
-| `crforge_bridge/vector_rows.py` | **C3-B row build** — `VectorGroupBuilder` (`_groups`+children), `VectorCardBuilder` (own/opponent sets incl. the 21-column pending schema), `VectorTowerBuilder` (the six-row tower section + the tower model-row map), `VectorSpatialPlaneBuilder` (the 14-channel explicit planes), `VectorScalarBuilder` (the 18 match scalars), `VectorEmptySectionBuilder` (the empty effect/event records), `VectorCandidateBuilder` (legal hand slots, native placement grid, building geometry), `VectorRelationBuilder` (target/reverse/card→group edges, tower tokens through `tower_index`) over a whole `VectorBattle` batch; every builder is actor-seat aware; `reference_observation` / `reference_action_mask` project the per-lane oracle input from the same facts |
+| `crforge_bridge/vector_rows.py` | **C3-B row build** — `VectorGroupBuilder` (`_groups`+children; `build_pair` assembles both actor seats from one shared row core), `VectorCardBuilder` (own/opponent sets incl. the 21-column pending schema), `VectorTowerBuilder` (the six-row tower section + the tower model-row map), `VectorSpatialPlaneBuilder` (the 14-channel explicit planes), `VectorScalarBuilder` (the 18 match scalars), `VectorEmptySectionBuilder` (the empty effect/event records), `VectorCandidateBuilder` (legal hand slots, native placement grid, building geometry), `VectorRelationBuilder` (target/reverse/card→group edges, tower tokens through `tower_index`) over a whole `VectorBattle` batch; every builder is actor-seat aware; `reference_observation` / `reference_action_mask` project the per-lane oracle input from the same facts |
 | `tools/crforge/batched_groups.py` | **C3-B group gate** — per-lane `_groups` oracle vs the batched section; writes `runs/crforge-c3/batched-groups.json` |
 | `tools/crforge/batched_cards.py` | **C3-B card/relation gate** — reads the checkpoint's own `model_config` (21 card columns), verifies both sections against the stock methods, then times them paired; writes `runs/crforge-c3/batched-cards.json` |
 | `tools/crforge/batched_towers.py` | **C3-B tower gate** — 256 learner-deck lanes, `TowerSetV4` validation and full section equivalence every step, paired timing, the two envelope pins on the artifact; writes `runs/crforge-c3/batched-towers.json` |
@@ -5642,7 +5691,7 @@ Scale options, in order of leverage:
 | `tools/crforge/batched_scalars.py` | **C3-B scalar gate** — 256 learner-deck lanes, full scalar equivalence with the oracle's own group/candidate counts, paired timing; writes `runs/crforge-c3/batched-scalars.json` |
 | `tools/crforge/batched_empty_sections.py` | **C3-B empty-record gate** — 256 learner-deck lanes, both records validated and compared every step, paired timing; writes `runs/crforge-c3/batched-empty-sections.json` |
 | `tools/crforge/batched_candidates.py` | **C3-B candidate gate** — 256 learner-deck lanes past the start cooldown, `ActionCandidatesV4` validation and full section equivalence every step, paired timing; writes `runs/crforge-c3/batched-candidates.json` |
-| `tools/crforge/batched_tensorize.py` | **C3-B end-to-end gate** — 256 learner-deck lanes × 40 decisions, `--seats 0 1` drives one `VectorTensorizer` and one stock tensorizer per actor, compares whole records field by field plus `batch_digest`, records actions on both paths, and reports combined timing per lane-decision; writes `runs/crforge-c3/batched-tensorize.json` |
+| `tools/crforge/batched_tensorize.py` | **C3-B end-to-end gate** — 256 learner-deck lanes × 40 decisions, `--seats 0 1` drives one `VectorTensorizer` and one stock tensorizer per actor, compares whole records field by field plus `batch_digest`, records actions on both paths, and reports combined timing per lane-decision; two seats go through the producer's `tensorize_seats` pair path (`--no-pair` measures the per-seat path); writes `runs/crforge-c3/batched-tensorize.json` |
 | `tools/crforge/frame_crosscheck.py` | **Native frame gate** — one play at the same game point in the x86_64 engine and a one-lane `VectorBattle`, compared on the first spawned frame; also records the facts-layer pending point; writes `runs/crforge-c3/frame-crosscheck.json` |
 | `crforge_bridge/vector_actions.py` | **C4 action path** — one NumPy pass from a stacked `ActionSequenceV4` to the engine's flat index (`0` wait, `1 + slot*rows*cols + row*cols + col`), for both seats, every micro-action with its execute offset; `plan_window_ticks` maps those offsets onto the engine ticks of one decision window (collision shift / drop counted); deploy-only envelope; reports closed mask indices instead of repairing them |
 | `tools/crforge/vector_decode.py` | **C4 action gate** — 256 learner-deck lanes, both seats, every index/offset/candidate row against the stock per-lane decoder on the same facts, then the decoded indices are stepped into the engine; writes `runs/crforge-c4/vector-decode.json` |

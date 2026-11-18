@@ -116,7 +116,10 @@ tensors for every lane at once. `VectorEntityTables` compiles the card /
 archetype / child-type / extent / runtime-form semantics once per tensorizer;
 `VectorGroupBuilder.build` is a per-lane priority sort and fixed-array fill, not
 a graph walk (the bridge envelope has no causal-group events, so every group is
-a singleton). The per-lane tensorizer stays the oracle:
+a singleton). `VectorGroupBuilder.build_pair` builds both actor seats' sections
+in one pass: they differ only in position, velocity sign and group owner, so it
+shares the row core, orders, targeted mask and ranks and assembles once at
+`2 × lanes` (`FINDINGS.md` §3.79). The per-lane tensorizer stays the oracle:
 `reference_entities` + `oracle_groups` run the stock `_groups` on
 `EntityStateV1` rows projected from the same facts.
 

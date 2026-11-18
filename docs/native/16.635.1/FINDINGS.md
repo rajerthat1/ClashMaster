@@ -6390,3 +6390,93 @@ Evidence: `runs/crforge-c4/cpu-half-micro-s44.json`,
 `runs/crforge-c4/batched-tensorize-s44.json`,
 `runs/crforge-c4/batched-tensorize-s44-seed2.json`,
 `runs/crforge-c4/self-play-s44-compact-rows.json`.
+
+### 3.79 The two actor seats' group sections are one build (2026-11-17)
+
+Session 44 closed the reserved-axis work and named the next move: batching the
+group field writes across both seats, or one packed assembly pass.  The producer
+was building the section twice per decision, once per actor seat, and at its
+training width (4–16 lanes) the section is per-call-overhead-bound — a settled
+lane has ~11 live rows, so each NumPy call works on ~100 elements.
+
+**The two seats differ in three things only.**  A row's position carries the
+perspective flip, its velocity carries the sign flip, and a group's owner is
+`self` for one seat and `enemy` for the other.  Every id, hitpoint, static table
+value, sort key, count, slot map and rank is the same array for both seats.
+`_entity_rows` is now three pieces: `_compact_rows` (the lane-major axis),
+`_core_rows` (every seat-independent field) and `_seat_rows` (position, extent
+and velocity for one perspective).  `build` is their composition; the new
+`build_pair(other, batch)` computes the core once, builds both geometries,
+stacks the rows on the lane axis and runs `_assemble` **once** at `2 × lanes`,
+then splits the record back into two per-seat views.  `_assemble` takes a
+per-lane `actor_owner` array instead of reading the tensorizer's scalar; that is
+the only owner-related change.  `_check_pair` refuses two builders whose model
+config, record capacity or static entity tables differ, so a shared row build
+cannot mix two catalogs.
+
+**Measured on one process, same batch** (`cpu-half-micro.py`, this host;
+`runs/crforge-c4/cpu-half-micro-s45*.json`):
+
+| lanes | two single-seat builds | one pair build | saved |
+| ---: | ---: | ---: | ---: |
+| 8 | 0.838 | **0.569** | **32.1 %** |
+| 16 | 1.240 | **0.855** | **31.1 %** |
+| 128 | 2.234 | **1.683** | **24.7 %** |
+| 256 | 3.643 | **3.248** | **10.8 %** |
+
+The saving is the work that used to be duplicated — the orders, the targeted
+mask, the rank scatters and the seat-independent feature arithmetic — so it is
+largest where the producer actually runs (4–16 lanes, per-call overhead
+dominated) and shrinks towards the gate width, where the per-element work
+dominates.  At 128 lanes the pair's phase table (per decision, both seats) is:
+rows **0.349**, child features **0.281**, group features **0.206**, masked
+zeroing **0.171**, child order/rank **0.164**, group gathers **0.145**, orders
+**0.129**, targeted mask **0.075**, index scatter **0.062**, group rank
+**0.049**, record **0.014**; sum 1.643 = **97.6 %** of the timed call.  The row
+phase is larger than one seat's (0.349 against 0.211) because it carries both
+geometries and the stacked fields.
+
+**The producer runs the pair.**  `tensorize_seats` builds the pair once and
+hands each seat its section; `VectorTensorizer.tensorize` / `build_sections`
+accept a prebuilt `groups` section.  `groups_ms` is therefore recorded **once
+per decision**, not once per seat: a `cpu_half` breakdown from this session is
+not comparable with an earlier artifact on that one field (everything else in
+the breakdown is unchanged).  `self_play.py` uses the helper for all three of
+its tensorize call sites, and `batched_tensorize.py --seats 0 1` runs the pair
+path by default (`--no-pair` keeps the per-seat path measurable).
+
+**The record did not move.**  Two new tests pin the pair to two single-seat
+builds field for field and pin the mismatched-table refusal.  The
+4-lane × 2-seat × 2-segment × 24-decision `--ppo-update` probe is bit-identical
+to session 44's: same KL trace (**1.90e-3, −5.85e-3**), same clip
+(2.08 %, 1.56 %), same return trace (0.338085, 0.2), same 18/375 ACT,
+checkpoint 277 reload-identical, 2/2 on-policy, 0 stale, gate pass, 0 illegal /
+0 rejected.
+
+**Gates.**  `batched_tensorize.py --seats 0 1` (pair path): **3,008/3,008**
+lane-decisions, 0 mismatches, 5,196 micro-actions, **0.0291 ms/lane-decision**
+(22.5×), end to end **0.0440**; seed 2 **3,008/3,008**, 5,361 actions, **0.0316**
+(21.0×), 0.0477.  The same tool with `--no-pair`, same host, same session:
+**0.0324** (19.7×), 0.0474 — a **10 %** end-to-end saving at the gate width,
+which matches the 10.8 % same-process A/B at 256 lanes.  The speeds are this
+host's; the same-process table above is the change.  Bridge suite **148 passed**
+(two new tests: pair equals two single builds, and a mismatched entity table is
+refused); `native_runner/tests/test_training_v4*.py` **457 passed, 8 skipped**;
+ruff clean on the touched files.
+
+**What is left.**  The group build is **1.683 ms per decision for both seats** at
+128 lanes on this host — 0.84 of the call per seat, against 1.015 ms for a lone
+seat at the same width.  The remaining terms are all inside the assembly, and
+the biggest is child feature assembly (0.281).  A packed channel write is the
+named candidate, but session 38 already measured the transposed
+`(features, lanes, groups)` form as a loss (1.02 against 0.56 ms), so the next
+attempt has to be a same-layout single store, not a transpose.  The A6000
+question from session 43 — does the group encoder's width term exist there — is
+still open.
+
+Evidence: `runs/crforge-c4/cpu-half-micro-s45.json` (128 lanes),
+`-s45-8.json`, `-s45-16.json`, `-s45-256.json`,
+`runs/crforge-c4/batched-tensorize-s45.json`,
+`runs/crforge-c4/batched-tensorize-s45-no-pair.json`,
+`runs/crforge-c4/batched-tensorize-s45-seed2.json`,
+`runs/crforge-c4/self-play-s45-pair-groups.json`.

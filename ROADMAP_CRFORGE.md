@@ -547,6 +547,22 @@ masked zeroing measured slower (0.184 against 0.092) and was reverted.  Digest
 probe is 2/2 on-policy with the same KL trace as session 43.  See
 `FINDINGS.md` §3.78.
 
+**Status (2026-11-17, session 45).**  The two actor seats' group sections are
+one build.  They differ only in a row's position (the perspective flip), its
+velocity sign and a group's owner; every id, hitpoint, static table value, sort
+key, count and rank is the same.  `_entity_rows` is split into `_compact_rows` /
+`_core_rows` / `_seat_rows`, and `build_pair` stacks the two seats' rows and
+assembles them once at `2 × lanes`, then slices the record back.  Same-process
+A/B: **8 lanes 0.838 → 0.569 ms (32.1 %)**, **16 lanes 1.240 → 0.855 (31.1 %)**,
+128 lanes 2.234 → 1.683 (24.7 %), 256 lanes 3.643 → 3.248 (10.8 %) — the saving
+is the duplicated pass, so it is largest at the producer's own width.  The
+producer runs it through `tensorize_seats`, so `cpu_half.groups_ms` is now a
+per-decision figure, not a per-seat sum.  Digest **3,008/3,008** both seeds
+(**0.0291 / 0.0316 ms/lane-decision**, 22.5× / 21.0×), end to end **0.0440 /
+0.0477**; `--no-pair` on the same host is 0.0324 / 0.0474.  The `--ppo-update`
+probe is bit-identical to session 44's (KL 1.90e-3 / −5.85e-3, 18/375 ACT,
+checkpoint 277 reload-identical); bridge suite 148.  See `FINDINGS.md` §3.79.
+
 ---
 
 ## 5. CI and parity role (always on)
