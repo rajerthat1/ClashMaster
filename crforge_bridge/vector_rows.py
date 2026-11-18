@@ -544,7 +544,7 @@ class _CompactRows:
         ``flat`` is each live row's index into the raveled ``(lanes * width)``
         array, built once with the axis.  One index is ~2x a two-array
         ``out[lane_of, rank]`` scatter (measured in ``cpu_half_micro.py``), and
-        the row build makes ~20 of them.
+        the pair's row build makes 27 of them.
         """
 
         out = np.full((self.lanes, self.width), fill, dtype=values.dtype if dtype is None else dtype)

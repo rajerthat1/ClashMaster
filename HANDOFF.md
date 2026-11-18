@@ -4,49 +4,115 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 45)
+## Bottom line (2026-11-17, session 46)
 
-The producer no longer builds the group section twice: both actor seats' rows go
-through one build, because the seats differ only in position, velocity sign and
-group owner.
+The next term paid, but not the way session 45 named it.  The packed channel
+write is a loss in every form; the child and gather terms fell because the 35 row
+gathers stopped rebuilding a two-array advanced index.
 
-1. **The pair build takes 32 % off the group section at the producer's width.**
-   Two builds → one: **8 lanes 0.838 → 0.569 ms**, **16 lanes 1.240 → 0.855**
-   (32.1 % / 31.1 %), 128 lanes 2.234 → 1.683 (24.7 %), 256 lanes 3.643 →
-   3.248 (10.8 %).  `_entity_rows` is split into a shared compact axis, a
-   seat-independent core and a per-seat geometry; `build_pair` stacks the two
-   seats' rows and runs the assembly once at `2 × lanes`, then slices the record
-   back.  A single seat still builds in 1.015 ms at 128 lanes, so the pair costs
-   **1.66× one seat** where two builds cost 2×.  The saving is the duplicated
-   passes (orders, targeted mask, rank scatters, feature arithmetic), so it is
-   largest where the producer actually runs.
-2. **The pair's phase table sums to 97.6 % of its timed call** (128 lanes): rows
-   0.349, child features 0.281, group features 0.206, zeroing 0.171, child
-   order/rank 0.164, group gathers 0.145, orders 0.129, targeted 0.075, index
-   scatter 0.062, group rank 0.049, record 0.014.
-3. **The training record is bit-identical.**  The 4-lane × 2-seat × 2-segment ×
-   24-decision `--ppo-update` probe reproduces session 44's KL trace exactly
-   (1.90e-3, −5.85e-3), the same clip (2.08 %, 1.56 %), the same return trace,
-   18/375 ACT, checkpoint 277 reload-identical, 2/2 on-policy, 0 stale, gate
-   pass, 0 illegal / 0 rejected.
-4. **The gate is bit-exact.**  `batched_tensorize.py --seats 0 1` runs the pair
-   path by default: **3,008/3,008** lane-decisions, 0 mismatches, 5,196
-   micro-actions, **0.0291 ms/lane-decision** (22.5×), end to end **0.0440**;
-   seed 2 **3,008/3,008**, 5,361 actions, **0.0316** (21.0×), 0.0477.  Same
-   host with `--no-pair`: **0.0324** (19.7×), 0.0474 — the gate-width A/B
-   matches the 10.8 % same-process number.  Bridge suite **148 passed** (two new
-   pair tests), `test_training_v4*` **457 passed, 8 skipped**, ruff clean.
-5. **One accounting change.**  `tensorize_seats` times the pair once per
-   decision, so `cpu_half.breakdown_ms_mean.groups_ms` is a per-decision number
-   from this session on, not a per-seat sum.  The forward is unchanged (nothing
-   in this session touched the model input).
+1. **The packed channel write loses.**  Child features write 11 columns of 72.
+   The current strided writes are **0.116 ms** against **0.146** for a stacked
+   packed block, **0.175** for an empty-allocate packed write, and **0.322** for
+   the transposed form (128 lanes, both seats, 50 repeats).  The arithmetic is
+   0.043 and the zeros 0.030; a packed write adds a pass.  The group slab orders
+   the same way (**0.126 against 0.157**).  The last-axis write stays.
+2. **The row gather is one index now.**  The 35 gathers per pair build each paid
+   for NumPy's two-array advanced index.  One flat index
+   (`lane * width + column`) makes the 35 gathers **0.310 → 0.058 ms** in
+   isolation (5.3×) and the pair **1.655 → 1.461 ms** in an alternating
+   same-process A/B (**0.195 ms**, 11.7 %); in the build the split reads
+   `group_gathers` 0.213 → 0.111 and child feature assembly 0.482 → 0.334.  The
+   row scatters take the same edit: **0.0031 → 0.0015 ms** per call and
+   `entity_rows` **0.643 → 0.55**.
+3. **The pair build is 1.925 → 1.577 ms** (two builds → one, 18.0 %) at 128
+   lanes; the phase sum is **1.366 ms, 95.0 %** of a same-loop wall.  The largest
+   remaining term is `_entity_rows` (0.306); the gathers are 0.186 + 0.067.  At
+   the producer's width the pair is **0.940 → 0.635 ms** at 8 lanes and
+   **1.321 → 0.907** at 16; the 8-lane gather saving (0.056 paired mean) is at
+   this host's noise floor.
+4. **The record is bit-identical.**  `batched_tensorize.py --seats 0 1`
+   **3,008/3,008** lane-decisions, 0 mismatches, 5,196 micro-actions, **0.0282
+   ms/lane-decision** (21.2×), end to end **0.0441**; seed 2 **3,008/3,008**,
+   5,361 actions, **0.0317** (21.4×), 0.0469.  The `--ppo-update` probe
+   reproduces session 45 exactly: KL **1.90e-3 / −5.85e-3**, clip **2.08 % /
+   1.56 %**, returns 0.338085 / 0.2, 18/375 ACT, checkpoint 277
+   reload-identical, 2/2 on-policy, 0 stale, gate pass, 0 illegal / 0 rejected.
+   Bridge suite **148 passed**; ruff clean.
+5. **One tooling change.**  `cpu_half_micro.py` now records the phase share
+   against a wall timed in the same loop — this host's drift made a separately
+   timed wall read 56–115 % — and records the gather-form alternating A/B and
+   the isolated scatter A/B beside the phase table.
 6. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
    lost 19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %,
    p = 0.15); `A-hog26-v738` is 49–1 against the seed and is a canary, not the
    learner's bar.  The A6000 width question from session 43 is still open.
 
-See `FINDINGS.md` §3.79 (this session), §3.78 (session 44) and §3.74 (native
+See `FINDINGS.md` §3.80 (this session), §3.79 (session 45) and §3.74 (native
 gate).
+
+## Decisions — what changed
+
+### 2026-11-17 (session 46) — the channel write stays; the row index was the cost
+
+Session 45 named child feature assembly as the next term and proposed a packed
+channel write that kept the last-axis layout.  The measurement kills the
+candidate and finds the cheaper term beside it.
+
+- **The packed write is slower, in every form.**  Child features are
+  `(lanes, live children, 72)` and only 11 columns are written.  Current strided
+  writes **0.116 ms**; `np.zeros` then `out[..., :11] = np.stack(columns, -1)`
+  **0.146**; `np.empty`, packed assign and zero the tail **0.175**; a
+  feature-major buffer with one transpose copy **0.322**.  The arithmetic is
+  0.043 and the zeros 0.030, so the rest is the 11 strided stores.  A packed
+  build replaces them with a contiguous 11-wide block plus one more strided copy
+  — it can only add a pass.  The group slab (14 of 22 columns) orders the same
+  way, 0.126 against 0.157.  Session 38's transposed negative was not a width
+  artefact.
+- **The gather paid for its index form, not its data.**  `_assemble` gathered 35
+  row fields with `values[lane_index, order[:, :width]]`; NumPy rebuilds a
+  broadcast index tuple on every call.  A row field is `(lanes, row width)`, so
+  `values.ravel()[lane * width + column]` is the same selection with one index,
+  built once per order (`flat_offsets = lane * width`, then one add).  Velocity
+  is the one 3-D field and now gathers both components with one
+  `reshape(-1, 2)[flat]` instead of two gathers plus `np.stack`.  Isolated, 35
+  gathers **0.310 → 0.058 ms**; alternating pair A/B **0.195 ms** per decision
+  at 128 lanes; phases `group_gathers` 0.213 → 0.111, child features 0.482 →
+  0.334.
+- **The row scatter is the same split.**  `_CompactRows.scatter` / `table` use
+  `out.ravel()[flat] = values`; **0.0031 → 0.0015 ms** per call (701 live rows),
+  `entity_rows` 0.643 → 0.55 in the build A/B.  `gather_form` on the builder is
+  the measurement switch (`"flat"` producer, `"two_index"` the old form); both
+  records are asserted equal in the tool and the two-index path is not a
+  semantic.
+- **The pair build and its phases.**  Two builds → one: **0.940 → 0.635 ms** at
+  8 lanes (32.5 %), **1.321 → 0.907** at 16 (31.3 %), **1.925 → 1.577** at 128
+  (18.0 %), **4.546 → 3.964** at 256 (12.8 %).  The 128-lane phase table sums to
+  **1.366 ms, 95.0 %** of a same-loop wall: rows 0.306, child features 0.186,
+  group features 0.171, zeroing 0.167, child order/rank 0.166, orders 0.124,
+  targeted 0.072, group gathers 0.067, group rank 0.047, index scatter 0.046,
+  record 0.014.  The gather saving at 8 lanes is 0.056 ms — read the paired mean
+  there, the block medians do not separate it.
+- **Gate:** `batched_tensorize.py --seats 0 1` **3,008/3,008** lane-decisions,
+  0 mismatches, 5,196 micro-actions, **0.0282 ms/lane-decision** (21.2×), end to
+  end **0.0441**; seed 2 **3,008/3,008**, 5,361 actions, **0.0317** (21.4×),
+  0.0469.  Bridge suite **148 passed**; ruff clean.  The `--ppo-update` probe
+  (4 lanes × 2 seats × 2 segments × 24 decisions, lane minibatch 4, sequence
+  chunk 8) is **bit-identical** to session 45: KL 1.90e-3 / −5.85e-3, clip
+  2.08 % / 1.56 %, returns 0.338085 / 0.2, 18/375 ACT, checkpoint 277
+  reload-identical (digest `eb7009aa…`), 2/2 on-policy, 0 stale, gate pass,
+  0 illegal / 0 rejected.
+- **One tooling fix.**  The phase share is now against a wall timed in the same
+  loop as the phases: this host's segments drift by more than 50 %, and a wall
+  timed elsewhere in the run made the share read 56–115 % before it was fixed.
+- **Next term:** the pair build is 1.577 ms and `_entity_rows` is the largest
+  term (0.306); the gathers are 0.186 + 0.067.  The rest is small-array NumPy
+  call overhead over ~150 calls.  The section is ~2.2 ms of a ~254 ms CPU half,
+  so the next CPU dollar is not here: the A6000 width question (does the group
+  encoder's width term exist on the card) and the multiproc/decision-server path
+  are the levers.  If this section is revisited, batch the per-field allocations
+  into one multi-field row buffer; do not pack the channel write.
+
+### 2026-11-17 (session 45) — both actor seats' group sections come from one build
 
 ## Decisions — what changed
 
@@ -97,7 +163,10 @@ producer was building the section twice per decision, once per actor seat.
   write is the candidate, but session 38 measured the transposed
   `(features, lanes, groups)` form as a loss (1.02 against 0.56 ms), so the next
   attempt must keep the last-axis layout in one store.  The A6000 width question
-  is still open.
+  is still open.  *(Session 46: the packed channel write loses in every form
+  (0.116 against 0.146/0.175/0.322); the real cost was the two-array advanced
+  index behind the 35 row gathers, 0.195 ms per pair decision, and the pair
+  build is 1.925 → 1.577 ms.  See `FINDINGS.md` §3.80.)*
 
 ### 2026-11-17 (session 44) — the entity rows are compact, and the build can name its own terms
 

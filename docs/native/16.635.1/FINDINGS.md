@@ -6472,7 +6472,9 @@ named candidate, but session 38 already measured the transposed
 `(features, lanes, groups)` form as a loss (1.02 against 0.56 ms), so the next
 attempt has to be a same-layout single store, not a transpose.  The A6000
 question from session 43 — does the group encoder's width term exist there — is
-still open.
+still open.  *(Session 46: the packed write is a loss in every form; the real
+cost was the two-array advanced index behind the 35 row gathers, 0.195 ms per
+pair decision, and the pair build is 1.925 → 1.577 ms.  See §3.80.)*
 
 Evidence: `runs/crforge-c4/cpu-half-micro-s45.json` (128 lanes),
 `-s45-8.json`, `-s45-16.json`, `-s45-256.json`,
@@ -6480,3 +6482,122 @@ Evidence: `runs/crforge-c4/cpu-half-micro-s45.json` (128 lanes),
 `runs/crforge-c4/batched-tensorize-s45-no-pair.json`,
 `runs/crforge-c4/batched-tensorize-s45-seed2.json`,
 `runs/crforge-c4/self-play-s45-pair-groups.json`.
+
+### 3.80 The packed channel write loses; the row index form was the cost (2026-11-17)
+
+Session 45 named child feature assembly (0.281 ms of the pair build at 128 lanes)
+as the next term and proposed a packed channel write that keeps the last-axis
+layout.  It is measured and it loses.  The same phase table also named a cheaper
+term: the 35 row-field gathers each paid for NumPy's two-array advanced index,
+not for the data they moved.
+
+**The packed write is slower in every form.**  Child features are
+``(lanes, live children, 72)`` and the build writes 11 of those 72 columns with a
+strided ``out[..., k] = value``.  Same fixture, same process, 50 repeats, 128
+lanes, both seats, `OMP_NUM_THREADS=1`, ms per pair decision:
+
+| form | ms |
+| --- | ---: |
+| current strided writes (11 of 72 columns) | **0.116** |
+| `np.zeros`, then `out[..., :11] = np.stack(columns, -1)` | 0.146 |
+| `np.empty`, packed assign, zero the tail | 0.175 |
+| feature-major buffer, one transpose copy | 0.322 |
+
+The arithmetic is **0.043** and the zeros **0.030**; the rest is the 11 strided
+writes.  A packed build replaces them with a contiguous 11-wide array plus one
+more strided copy, so it can only add a pass.  The group slab (14 of 22 columns)
+orders the same way, **0.126 against 0.157** for the stacked form.  Session 38's
+transposed ``(features, lanes, groups)`` negative (1.02 against 0.56 ms) was not
+a width artefact: the last-axis write is the right layout, and the write count is
+not the problem.
+
+**One index, not two.**  ``_assemble`` gathers 35 row fields with
+``values[lane_index, order[:, :width]]``.  A row field is ``(lanes, row width)``,
+so ``values.ravel()[lane * width + column]`` is the same selection with one
+index; ``flat_offsets = lane * width`` is built once per build and a field's
+index is one add.  Velocity is the one three-dimensional field and now gathers
+both components with one ``reshape(-1, 2)[flat]`` instead of two gathers plus
+``np.stack``.  Isolated at the fixture's shape, 35 gathers are **0.310 → 0.058
+ms** (5.3×; dense oracle axis, 1.058 → 0.287).  In the build, an alternating
+same-process A/B of the two forms puts the pair at **1.655 → 1.461 ms**
+(**0.195 ms**, 11.7 %) at 128 lanes; the phase split is ``group_gathers`` 0.213
+→ 0.111 and child feature assembly 0.482 → 0.334 (that phase also carries the
+child arithmetic).
+
+**The row scatter is the same split.**  ``_CompactRows.scatter`` / ``table``
+write each field's ~700 live rows into a zeroed ``(lanes, width)`` array with
+``out[lane_of, rank] = values``; one flat index is **0.0031 → 0.0015 ms** per
+call (701 rows), and the pair's row build makes 17 of them in the shared core
+plus 5 per seat, before the dense index scatter.  In the same-process build A/B ``entity_rows`` reads
+**0.643 → 0.55 ms** (0.09).  The switch lives on the builder as
+``gather_form = "flat" | "two_index"`` so the tool can A/B in one process; the
+spelling is not a semantic, and both forms return the same record.
+
+**Where the pair build is now** (128 lanes, 11 live groups / 11 children,
+`OMP_NUM_THREADS=4`, this session's artifact):
+
+| phase | s45 | s46 |
+| --- | ---: | ---: |
+| `_entity_rows` | 0.349 | **0.306** |
+| child feature assembly | 0.281 | **0.186** |
+| group feature assembly | 0.206 | 0.171 |
+| masked zeroing | 0.171 | 0.167 |
+| child order + rank | 0.164 | 0.166 |
+| group gathers | 0.145 | **0.067** |
+| `_orders` | 0.129 | 0.124 |
+| `_targeted_mask` | 0.075 | 0.072 |
+| dense index scatter | 0.062 | 0.046 |
+| group rank | 0.049 | 0.047 |
+| record construction | 0.014 | 0.014 |
+| **sum** | **1.643** | **1.366** |
+
+The pair itself is **1.925 → 1.577 ms** for two builds → one (18.0 %), and the
+phase sum is **95.0 %** of the same-loop wall (1.438 ms).  The phase columns are
+different processes on a host whose segments drift by more than 50 %, so only
+the two same-process A/Bs are the change; the table is the record, not a
+cross-session delta.
+
+**The producer width.**  The gather saving scales with the live width, and so
+does its noise:
+
+| lanes | pair, two → one build | gather, two-index → flat |
+| ---: | ---: | ---: |
+| 8 | 0.940 → **0.635** (32.5 %) | 0.786 / 0.913 median, **0.056** paired mean* |
+| 16 | 1.321 → **0.907** (31.3 %) | 0.959 → **0.896** (6.6 %) |
+| 128 | 1.925 → **1.577** (18.0 %) | 1.655 → **1.461** (11.7 %) |
+| 256 | 4.546 → **3.964** (12.8 %) | 4.411 → **3.753** (14.9 %) |
+
+\* At 8 lanes the difference is at this host's noise floor: the block medians do
+not separate the forms, and the alternating paired mean is the number to read.
+
+**The record is bit-identical.**  ``batched_tensorize.py --seats 0 1``:
+**3,008/3,008** lane-decisions, both seats, 0 mismatches, 5,196 micro-actions,
+**0.0282 ms/lane-decision** (21.2×), end to end **0.0441**; seed 2
+**3,008/3,008**, 5,361 actions, **0.0317** (21.4×), 0.0469.  Those are session
+45's gate numbers within this host's range (0.0291/0.0316), which is the point:
+the change is 0.2 ms of the ~25 ms batched packet, and the gate exists to prove
+the record did not move.  The CPU-half tool asserts flat and two-index records are
+equal field for field on both seats and that the live pair still pads to the
+full-capacity oracle.  Bridge suite **148 passed**; ruff clean.  The
+4-lane × 2-seat × 2-segment × 24-decision ``--ppo-update`` probe (lane minibatch
+4, sequence chunk 8) is **bit-identical** to session 45's: same KL trace
+(**1.90e-3, −5.85e-3**), same clip (2.08 %, 1.56 %), same returns (0.338085,
+0.2), 18/375 ACT, checkpoint 277 reload-identical (weights digest
+``eb7009aa…``), 2/2 on-policy, 0 stale, gate pass, 0 illegal / 0 rejected.
+
+**What is left.**  The pair build is **1.577 ms** and the largest term is
+`_entity_rows` (0.306); the gathers session 45 pointed at are 0.186 + 0.067.  The
+remaining cost is small-array NumPy call overhead spread over ~150 calls — rows,
+feature arithmetic, zeroing, order/rank — and there is no single layout rewrite
+left in it.  The section is ~2.2 ms of a ~254 ms CPU half at 128 lanes, so the
+next CPU dollar is not here: the open A6000 question (does the group encoder's
+width term exist on the card) and the multiproc/decision-server path in
+`ROADMAP_CRFORGE.md` §4 are the levers.  If the section is revisited, batch the
+per-field allocations into one multi-field row buffer; do not pack the channel
+write.
+
+Evidence: `runs/crforge-c4/cpu-half-micro-s46.json` (128 lanes),
+`-s46-8.json`, `-s46-16.json`, `-s46-256.json`,
+`runs/crforge-c4/batched-tensorize-s46.json`,
+`runs/crforge-c4/batched-tensorize-s46-seed2.json`,
+`runs/crforge-c4/self-play-s46-flat-rows.json`.
