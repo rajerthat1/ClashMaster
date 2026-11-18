@@ -7017,3 +7017,56 @@ gate pass**.
 Evidence: `runs/crforge-c4/s49/crash-evidence.txt`, `crash-c2-producer.log`,
 `c1-producer.log`, `jvm-c2.json`, `jvm-c1.json`,
 `ds-train-{producer,server}.json`, `cuda-train128.json`.
+
+### 3.86 `SeatIds.of` miscompile: reproducer written, and this laptop is a recorded negative (2026-11-18)
+
+§3.85 named the C2 defect on one rented host and left two holes: the evidence was
+one box, and the workaround (`-XX:TieredStopAtLevel=1`) costs **+108 %** of the
+engine step at 128 lanes.  A bug report needs a reproducer that runs without the
+engine, torch or JPype, and a reproducer is only worth filing if its `of` is the
+engine's `of`.  Both now exist; the defect does not reproduce here.
+
+**The reproducer is the engine's method, checked, not transcribed by eye.**
+`tools/crforge/hotspot/SeatIdsOfRepro.java` is the crforge body verbatim
+(`.resource/crforge/env/src/main/java/org/crforge/env/SeatIds.java` at
+`c4721bd9`, `BattleEntity.IDS_PER_KIND` inlined as `1_000_000`); `javap -p -c`
+of its `of` against the built engine jar
+(`.resource/crforge/env/build/install/env/lib/env-1.0-SNAPSHOT.jar`) is **117
+instruction slots, identical opcodes** (only constant-pool indices differ), and
+`-XX:+PrintCompilation` shows the same **194-byte** level-4 nmethod the box's
+`LogCompilation` named (`SeatIds of (II)I bytes='194' level='4'`).  The tool
+records that comparison, so a pass can never be read from a method that was not
+compiled.
+
+**`hotspot_repro.py` is the host check.**  It compiles the reproducer with each
+JDK and runs three arms, all with `-XX:+PrintCompilation`: default flags (C2, the
+arm expected to crash), `-XX:TieredStopAtLevel=1`, and `-Xint`.  A pass is
+counted only when the arm's output shows the **level-4** nmethod; a timeout, a
+crashing control arm, an uncompiled method or a failed bytecode check makes the
+run `inconclusive`.  Two shapes: `quick` (kinds 0..k-1 warm, then a new kind) and
+`soak` (random ids over live kinds, a new kind every *N* calls — the box crashed
+**65.1 s** in, so the default soak is 70 s).  Exit status 0 reproduced, 1
+negative, 2 inconclusive; the artifact is `crforge-hotspot-seatids.v1`.
+
+**Negative on this laptop, with the method confirmed hot.**  i5-1235U, kernel
+`7.0.0-43-generic`, `.resource` JDKs `21.0.13` and `25.0.5`: **6/6** default-flag
+arms compiled `of` at level 4 and **0 crashed**; C1 and `-Xint` pass; the engine
+jar bytecode check passes; the 70 s soak passes in all six arms.  So the same JDK
+majors, the same bytecode and the same tier level do not reproduce it here — the
+defect is host/build-specific (affected: Ubuntu `21.0.13.0.3` and Temurin `25.0.5`
+on the rented 6-vCPU box; clean: Temurin `21.0.13` and `25.0.5` on Alder Lake).
+That is a reason to file with the box's disassembly, not a reason to drop the
+flag: the production card is the affected host.
+
+**Gate:** `test_hotspot_repro.py` **8 passed** (verdict mapping: crash with clean
+controls = reproduced, an uncompiled pass = inconclusive, a clean level-4 pass
+with the engine bytecode = negative, a timeout and a crashing control do not
+count, and the compiled body is still the engine's).  ruff clean (E,F) on the
+tool and the test.
+
+The hand-off for the next host: run
+`tools/crforge/hotspot_repro.py --mode soak --seconds 70 --repeats 2` on the
+affected box class, keep `-XX:+LogCompilation` and (ideally) an `hsdis`
+disassembly of the miscompiled body, and file at <https://bugreport.java.com>
+with `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.  Evidence:
+`runs/crforge-c4/hotspot-seatids.json` and `hotspot-seatids-soak.json`.

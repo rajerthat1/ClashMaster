@@ -526,8 +526,12 @@ bulk path is crforge, in the order that protects the schedule:
    now splits at every episode boundary, so a lane that autoresets mid-segment
    replays as contiguous slices: gate shape 1,024 lane-decisions / 45 ACT /
    0 rejected, one 1,024-frame update; multi-episode 8 × 2 × 60 with 16
-   mid-rollout starts, 2 updates, 0 rejected. Still open: CUDA/MPS throughput, a
-   persistent-optimizer training loop, and the native parity cadence.
+   mid-rollout starts, 2 updates, 0 rejected. Still open: CUDA/MPS throughput
+   (NVIDIA MPS, the 8-vCPU question, the A6000 overlapped-loop gate) and the
+   native parity cadence. A **CPU-updating producer on the affected host class
+   needs `--jvm-arg=-XX:TieredStopAtLevel=1`** until the host's C2 miscompile of
+   `SeatIds.of` is fixed: `tools/crforge/hotspot_repro.py` is the reproducer and
+   this laptop is its recorded negative (`FINDINGS.md` §3.85–§3.86).
 5. **C5 — parity curve.** 50–150 native matches every N updates and after every
    adapter change; a persistent win-rate gap freezes the checkpoint.
 6. **C6–C7 — native promotion gate, then live canary.** ≥150 native paired games,

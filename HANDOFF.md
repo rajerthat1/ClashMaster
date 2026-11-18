@@ -4,6 +4,51 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
+## Bottom line (2026-11-18, session 50)
+
+The C2 miscompile has a **reproducer**, a **host check** and **one recorded
+negative**.  `tools/crforge/hotspot/SeatIdsOfRepro.java` is the engine's
+`SeatIds.of` verbatim (its `javap` instruction stream is identical to the built
+jar's, 117 slots) and `tools/crforge/hotspot_repro.py` runs it in three arms
+(default flags, C1, `-Xint`) and only counts a pass when
+`-XX:+PrintCompilation` shows the **194-byte level-4** nmethod.  On this laptop
+both `.resource` JDKs (21.0.13, 25.0.5) compile it at level 4 and **nothing
+crashes** — quick 6/6 and a 70 s soak — so the defect is host/build-specific and
+the report still needs the affected box's run.  The flag stays: the card is the
+affected host class.
+
+1. **The reproducer is checked, not eyeballed.**  `of` is the crforge body
+   verbatim (`SeatIds.java` at `c4721bd9`, `IDS_PER_KIND` = 1,000,000); the tool
+   diffs its `javap -c` against `.resource/.../env-1.0-SNAPSHOT.jar` and records
+   `identical: true` (117 instruction slots, same opcodes, constant-pool indices
+   folded), and `PrintCompilation` reports the same `SeatIdsOfRepro::of
+   (194 bytes)` level-4 nmethod the box's `LogCompilation` named.
+2. **The host check has a shape for the box.**  `quick` warms kinds then reads a
+   new one; `soak` draws random ids for `--seconds` and adds a kind every
+   `--new-every` calls (the box crashed 65.1 s in, so the default is 70 s).  Exit
+   0 = reproduced, 1 = negative, 2 = inconclusive; an arm that never compiled
+   `of` at level 4, a timeout, a crashing control or a failed bytecode check is
+   `inconclusive`, never a pass.
+3. **This laptop is a recorded negative.**  i5-1235U, kernel `7.0.0-43`: quick
+   mode **6/6** C2 arms compiled level 4, **0 crashes**, controls clean; `soak`
+   70 s per arm clean as well.  Same JDK majors and same bytecode as the box, so
+   the difference is host or build; the affected host is Temurin 25.0.5 **and**
+   Ubuntu 21.0.13, this one is Temurin 21.0.13 **and** 25.0.5.
+4. **Gate:** `test_hotspot_repro.py` **8 passed**; ruff clean (E,F) on the tool
+   and the test.  Evidence: `runs/crforge-c4/hotspot-seatids.json`,
+   `hotspot-seatids-soak.json`.
+5. **Next on this thread:** run `hotspot_repro.py --mode soak --seconds 70
+   --repeats 2` on the affected box class with `-XX:+LogCompilation` (plus an
+   `hsdis` disassembly if available) and file at bugreport.java.com using
+   `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.
+6. **Still open:** the box run of the reproducer, NVIDIA MPS, the 8-vCPU
+   question, the A6000 overlapped-loop gate, the native parity cadence, and
+   whether to pad a producer's width to the server's ladder.
+
+See `FINDINGS.md` §3.86 (this reproducer), §3.85 (the JIT defect and the flag),
+§3.84 (the card), §3.83 (the shape bug), §3.82 (the push) and §3.81 (the server on
+CPU).
+
 ## Bottom line (2026-11-18, session 49)
 
 The card's producer-after-update segfault is **not crforge's loop and not the
@@ -129,6 +174,41 @@ See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
 §3.81 (the server on CPU) and §3.74 (native gate).
 
 ## Decisions — what changed
+
+### 2026-11-18 (session 50) — the C2 miscompile gets a reproducer, and this host is its negative
+
+Session 49 named the defect on one rented box and left it there: no reproducer, no
+second observation, and a workaround that costs +108 % of the engine step.  This
+session turns the finding into something runnable and records the negative.
+
+- **The reproducer is the engine's method.**  `tools/crforge/hotspot/SeatIdsOfRepro.java`
+  is `SeatIds.of` verbatim (`SeatIds.java` @ `c4721bd9`, `IDS_PER_KIND` inlined as
+  1,000,000), with a `quick` driver (warm kinds, then a new one) and a `soak`
+  driver (random ids over live kinds, a new kind every *N* calls).  The tool runs
+  `javap -p -c` on the reproducer and on the built engine jar and compares the
+  instruction streams: **117 slots, identical opcodes** (constant-pool indices
+  folded away).  `-XX:+PrintCompilation` shows `SeatIdsOfRepro::of (194 bytes)`
+  at **level 4**, the same method shape the box's `LogCompilation` recorded.
+- **The reading is conservative.**  `hotspot_repro.py` runs `c2` (default),
+  `c1` (`-XX:TieredStopAtLevel=1`) and `interpreter` (`-Xint`) arms, all with
+  `-XX:+PrintCompilation`.  A pass is only a pass when the level-4 nmethod is in
+  the output; a timeout, an uncompiled method, a crashing control arm or a failed
+  bytecode check makes the run `inconclusive`.  Exit 0/1/2 = reproduced/negative/
+  inconclusive, so a CI or a rented box can treat it as a gate.
+- **The negative, measured.**  On this laptop (i5-1235U, kernel `7.0.0-43`) with
+  JDK 21.0.13 and 25.0.5, **6/6** default-flag arms reached level 4 and **0
+  crashed**; C1 and `-Xint` pass; the 70 s soak passes in all six arms.  So the
+  same JDK majors, the same bytecode and the same tier do not reproduce it here:
+  the difference is the host or the build, which is exactly what the reproducer
+  is for.  The `--jvm-arg=-XX:TieredStopAtLevel=1` workaround stays — the card is
+  the affected host class.
+- **The report is drafted, not filed.**  `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`
+  holds the text (summary, environment, reproducer, `dmesg`/`nmethod` evidence,
+  the bytecode listing, the flags that do not clear it, and the local negative)
+  and the one step that is missing: a run on the affected box with
+  `-XX:+LogCompilation` and, if possible, an `hsdis` disassembly.
+- **Gate:** `test_hotspot_repro.py` **8 passed**; ruff clean (E,F) on the tool
+  and the test.  Evidence in `runs/crforge-c4/hotspot-seatids*.json`.
 
 ### 2026-11-18 (session 49) — the crash is the JIT, not the push, and one flag clears it
 
