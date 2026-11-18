@@ -665,12 +665,28 @@ count, so the first batch fixed the group/child width and a board that widened
 raised `staging axis 8 exceeds capacity 1`; both are keyed on the full shape now
 (one graph per shape visited; the server's ladder bounds it).
 
-**Still open:** the rented box's producer-after-update segfault (blocks the
-card's training gate), NVIDIA MPS and the 8-vCPU question (both now computable
-from the 32-lane rate), the A6000 overlapped-loop gate, the native parity
-cadence, and whether to pad a producer's width to the server's ladder to cut its
-captures.
-Bridge suite **174** (6 new).  See `FINDINGS.md` §3.82–§3.84.
+**Status (2026-11-18, session 49).**  The training-gate blocker was the engine's
+HotSpot C2 compiler, not the push.  On the rented box's CPU half (the shape a
+decision-server arm runs) C2 miscompiled `org.crforge.env.SeatIds.of` while the
+~25 s PPO update left the JVM idle; the next segment's first call died with
+`segfault at c`, with or without a server, and no `hs_err` was written.
+`--jvm-arg=-XX:TieredStopAtLevel=1` (C1 only) clears it, and the producer plus
+every training harness forward the flag; `-Xint`, C1 and default C2 separate the
+defect (`FINDINGS.md` §3.85).  With the flag the card's training gate passes:
+4 lanes × 2 seats × 3 segments × 24 decisions through the CUDA server, 576
+lane-decisions, 24 ACT, **0 illegal / 0 rejected**, and every segment's rollout
+is labelled with the pushed digest the server acked (`04a50b… → fb4acf…`,
+`c198425… → b878470…`, `4a043a… → 2b167a…`).  The session-38 128-lane CUDA
+trainer also re-runs under torch 2.12.1: 24,358 lane-decisions, 710 ACT
+(2.91 %), 308–344 ld/s, 9.2–10.5 s per update, **0 illegal / 0 rejected, gate
+pass**.  C1 costs 66 ms of engine step per decision at 128 lanes
+(51.3 → 106.9 ms), so only a producer that updates on the CPU pays it.
+
+**Still open:** NVIDIA MPS and the 8-vCPU question, the A6000 overlapped-loop
+gate, the native parity cadence, whether to pad a producer's width to the
+server's ladder to cut its captures, and a HotSpot bug report for the C2
+miscompile.
+Bridge suite **177** (3 new).  See `FINDINGS.md` §3.82–§3.85.
 
 ---
 

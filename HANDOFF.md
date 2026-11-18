@@ -4,7 +4,66 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-18, session 48)
+## Bottom line (2026-11-18, session 49)
+
+The card's producer-after-update segfault is **not crforge's loop and not the
+weight push**.  It is the rented box's HotSpot C2 compiler miscompiling
+`org.crforge.env.SeatIds.of` on the producer's CPU path (the shape a
+decision-server arm runs); the miscompiled body is entered when a new entity
+kind allocates its `int[]`, and `-XX:TieredStopAtLevel=1` (C1 only) clears it.
+That option is now carried by `--jvm-arg` on the producer and every training
+harness.  With it the card's training gate closes and the session-38 128-lane
+CUDA trainer re-runs under torch 2.12.1.
+
+1. **The crash is the engine's JIT, on the CPU half.**  Session 48's "card"
+   control was a `--device cpu` producer (a decision-server arm keeps the
+   producer on the CPU half; its 25 s update and 423 ms forward are CPU numbers).
+   Re-run on a fresh Thunder `base` (torch 2.12.1+cu130, OpenJDK 21.0.13): the
+   same SIGSEGV, `segfault at c`, after segment 0; the rollout is bit-identical
+   to session 48's.  Every `--device cuda` arm (eager, fp16, full graph,
+   overlapped) completes.
+2. **The faulting code is C2's `SeatIds.of`.**  `-XX:+LogCompilation` maps the
+   fault PC to the level-4 nmethod of `org.crforge.env.SeatIds.of(II)I`; the
+   bytecode compares `n` with `of.length`, the compiled body compares it with
+   the previous array's length and loads `of.length` through a null `of`.  The
+   nmethod is installed 65.1 s into the run (count 14,406), i.e. once the engine
+   has been hot long enough, and the crash follows the next new entity kind.
+   Guards: `-Xint` passes, C1 passes, default C2 crashes 6/6; JDK 21.0.13 and
+   Temurin 25.0.5 both crash; `-XX:-UseSuperWord`, `-XX:UseAVX=2` and
+   `-XX:CompileCommand=exclude,...,SeatIds::of` do not help.
+3. **The workaround is one flag, priced.**  `--jvm-arg=-XX:TieredStopAtLevel=1`
+   (the `=` form: the value starts with `-`); `multiproc.py`,
+   `overlap_compare.py`, `cadence_compare.py` and `learning_horizon.py` forward
+   it.  At 128 lanes the engine step is **51.3 → 106.9 ms** per decision
+   (+55.6 ms, +108 %); at the server arm's 8 rows it is **4.4–8.9 ms against
+   5.6** (noise).  The update is not the cause: the reproduction is a run long
+   enough for the method to become hot and a board that then shows a new
+   entity kind; the `--device cuda` arms sampled a different board and did not
+   meet that case (the 128-lane trainer passes 3 segments under C2).  So only a
+   producer that meets the case on its board pays the flag.
+4. **The card's training gate passes.**  4 lanes × 2 seats × 3 segments × 24
+   decisions through the CUDA server with `--verify-decision-server`: 576
+   lane-decisions, 24 ACT (4.4 %), **0 illegal, 0 rejected, gate pass**.  The
+   push chain is exact: server `04a50b…` labels segment 0 (`fb4acf…`), push
+   `c198425…` labels segment 1 (`b878470…`), push `4a043a…` labels segment 2
+   (`2b167a…`).  Pushes are 74,153,397 bytes; pack 44–51 ms, round trip
+   1.17 s, server apply 519–545 ms.
+5. **The session-38 trainer runs under this torch build.**  128 lanes × 2 seats
+   × 3 × 32, full CUDA graph, lane minibatch 16: 24,358 lane-decisions, 710 ACT
+   (2.91 %), 308–344 ld/s, 9.2–10.5 s per update, **0 illegal, 0 rejected, gate
+   pass**.
+6. **Rental:** one Thunder `base` (6 vCPU, 1×A6000 48 GB, $0.35/h), torch
+   2.12.1+cu130, OpenJDK 21.0.13 (Temurin 25.0.5 for the A/B).  This is still
+   not a promotion: the native gate is unchanged and negative.
+7. **Still open:** NVIDIA MPS, the 8-vCPU question, the A6000 overlapped-loop
+   gate, the native parity cadence, whether to pad a producer's width to the
+   server's ladder, and a HotSpot bug report for the C2 miscompile.
+
+See `FINDINGS.md` §3.85 (the JIT defect and the flag), §3.84 (the card), §3.83
+(the shape bug), §3.82 (the push), §3.81 (the server on CPU) and §3.74 (native
+gate).
+
+## Bottom line (2026-11-18, session 48) — superseded by session 49
 
 The server's card half is measured: it **wins where the design said it would**
 (1.38× the multiproc floor at 32 lanes/producer; 1.16× at six producers on six
@@ -70,6 +129,58 @@ See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
 §3.81 (the server on CPU) and §3.74 (native gate).
 
 ## Decisions — what changed
+
+### 2026-11-18 (session 49) — the crash is the JIT, not the push, and one flag clears it
+
+Session 48 left one blocker: the producer segfaulted after a CPU PPO update on
+the card, with and without the server, so the push's continuation was untested.
+This session reproduced it on a fresh box, named the defect, made the workaround
+a flag, and closed the gate.
+
+- **The s48 "control" was the CPU path.**  A decision-server arm keeps the
+  producer on the CPU half, so its 25 s update and 423 ms at 8 rows are CPU
+  numbers; the "in-process" control was the same CPU producer with no server.
+  `--device cuda --ppo-update` completes in every arm (eager, fp16, full graph,
+  overlapped), so the crash was never a CUDA or torch defect.
+- **Reproduced, then named.**  A fresh Thunder `base` (6 vCPU, 1×A6000, torch
+  2.12.1+cu130, OpenJDK 21.0.13) crashes 6/6 in the CPU producer, with
+  `segfault at c` and no `hs_err` (the JVM declines the signal).
+  `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation` maps the fault PC to the
+  **level-4** nmethod of `org.crforge.env.SeatIds.of(II)I`; the
+  bytecode loads `of.length` at bci 61, but the compiled body compares `n`
+  against the previously loaded `byKind.length` and dereferences a null `of`.
+  `-Xint` and C1 pass; C2 crashes.  Temurin 25.0.5 crashes like 21.0.13;
+  `-XX:-UseSuperWord`, `-XX:UseAVX=2` and `-XX:CompileCommand=exclude,…SeatIds::of`
+  do not clear it.  The development host (i5-1235U, JDK 25, torch 2.5.1) does
+  not reproduce, so this is a host/JIT-specific miscompile, not a crforge loop.
+- **The update is the setting, not the cause.**  The reproduction is a
+  CPU-updating run: long enough for `SeatIds.of` to reach C2 (nmethod installed
+  at 65.1 s, count 14,406) and its deterministic board then shows a new entity
+  kind.  A `--device cuda` arm samples a different board and did not meet that
+  case; the defect lives in the compiled method, so any long CPU run on this
+  host that meets it crashes.
+- **The flag.**  `self_play.py --jvm-arg=…` (repeatable; the `=` form keeps a
+  leading `-` from being read as an option) passes the option to the **first**
+  JVM start — `jvm.start()` runs before `_vector()` and a later start is a no-op
+  — and `multiproc.py`, `overlap_compare.py`, `cadence_compare.py` and
+  `learning_horizon.py` forward it.  Cost at 128 lanes: engine step 51.3 →
+  106.9 ms (+55.6, +108 %); at 8 rows 5.6 → 4.4–8.9 ms (noise).  The 128-lane
+  CUDA trainer runs under C2, so the cost is paid only by a CPU-updating
+  producer.
+- **The card's training gate closes.**  4 lanes × 2 seats × 3 segments × 24
+  decisions, CPU producer + CUDA server, `--verify-decision-server`,
+  `--jvm-arg=-XX:TieredStopAtLevel=1`: 576 lane-decisions, 24 ACT (4.4 %),
+  0 illegal, 0 rejected, gate pass, and the push chain labels each segment:
+  `04a50b… → fb4acf…`, `c198425… → b878470…`, `4a043a… → 2b167a…` (raw digest →
+  the `policy_state_id` it hashes to with the checkpoint id).  Push cost:
+  74,153,397 bytes, pack 44–51 ms, round trip 1.17 s, apply 519–545 ms.
+- **The 1-process CUDA trainer is re-verified.**  128 lanes × 2 seats × 3 × 32,
+  full graph, lane minibatch 16: 24,358 lane-decisions, 710 ACT (2.91 %),
+  308–344 ld/s, 9.2–10.5 s per update, 0 illegal, 0 rejected, gate pass.  That
+  is the session-38 shape on torch 2.12.1.
+- **Gate:** bridge suite **177 passed** (3 new: two JVM-option forwarding
+  tests and the multiproc forwarding test); ruff check clean on the touched
+  files.  Evidence in `runs/crforge-c4/s49/`.
 
 ### 2026-11-18 (session 48) — the card prices the server, and the push lets it train
 
