@@ -7018,7 +7018,7 @@ Evidence: `runs/crforge-c4/s49/crash-evidence.txt`, `crash-c2-producer.log`,
 `c1-producer.log`, `jvm-c2.json`, `jvm-c1.json`,
 `ds-train-{producer,server}.json`, `cuda-train128.json`.
 
-### 3.86 `SeatIds.of` miscompile: reproducer written, and this laptop is a recorded negative (2026-11-18)
+### 3.86 `SeatIds.of` miscompile: reproducer written, and this laptop and a fresh Thunder base are negatives (2026-11-18)
 
 §3.85 named the C2 defect on one rented host and left two holes: the evidence was
 one box, and the workaround (`-XX:TieredStopAtLevel=1`) costs **+108 %** of the
@@ -7064,9 +7064,33 @@ with the engine bytecode = negative, a timeout and a crashing control do not
 count, and the compiled body is still the engine's).  ruff clean (E,F) on the
 tool and the test.
 
-The hand-off for the next host: run
-`tools/crforge/hotspot_repro.py --mode soak --seconds 70 --repeats 2` on the
-affected box class, keep `-XX:+LogCompilation` and (ideally) an `hsdis`
-disassembly of the miscompiled body, and file at <https://bugreport.java.com>
-with `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.  Evidence:
-`runs/crforge-c4/hotspot-seatids.json` and `hotspot-seatids-soak.json`.
+The hand-off for the next host: a host only counts if
+`tools/crforge/hotspot_repro.py --mode soak --seconds 70 --new-every 20000`
+returns **0** (reproduced); keep `-XX:+LogCompilation`, **record `lscpu`**, and
+(ideally) an `hsdis` disassembly of the miscompiled body, then file at
+<https://bugreport.java.com> with `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.
+Evidence: `runs/crforge-c4/hotspot-seatids.json`,
+`hotspot-seatids-soak.json` and `s50-thunder/`.
+
+**A fresh Thunder `base` is a second negative, and it narrows the trigger to the
+CPU.**  The first box of the same class was rented again (6 vCPU, 1×A6000, kernel
+`6.12.115-thunder-sandbox`, Ubuntu 22.04.5) and it carries **the same JDK build
+as the affected host** — `21.0.13.0.3+1-1-22.04.1-Ubuntu` — so this run holds the
+JDK, the kernel, the bytecode, the tier and the trigger shape fixed.  Its CPU is
+an **Intel Xeon @ 2.10 GHz with AVX2 and no AVX-512**, and `of` compiles at level
+4 and is correct: quick 6/6 clean, soak 70 s clean, and a 70 s soak with **1,000
+new kinds** (a fresh null slot every 20,000 calls, `--new-every 20000`) clean in
+both the inlined and the `-XX:CompileCommand=dontinline` arms, plus a C2-only
+(`-Xbatch -XX:-TieredCompilation`) arm.  That rules out the JDK build, the
+kernel, the tier and the method; **the affected host's CPU is the remaining
+variable**, and session 49 did not record `lscpu` in `crash-evidence.txt`.  So
+"Thunder `base`" is a class of hosts, not a fixed CPU, and renting it again is
+not a reproduction path: `hotspot_repro.py` is the probe that finds a host that
+has it.  Evidence: `runs/crforge-c4/s50-thunder/` (`host.txt`, `D.*`, `E.*`,
+`soak1.*`).
+
+**One driver defect, found by the box.**  The soak driver's id is
+`kind * 1_000_000` in an `int`, so asking for 2,147 kinds overflowed it and the
+run died in `ids[seat]` with `ArrayIndexOutOfBoundsException: Index -2146` — the
+driver's bug, not the JVM's, and it hid the case under test.  The driver caps at
+**1,000 kinds** now.

@@ -1,10 +1,12 @@
 # HotSpot C2 miscompile of `org.crforge.env.SeatIds.of(II)I` — report and reproducer
 
-Status: **report drafted, reproducer written, affected host not re-run yet.**
-Evidence for the defect is one rented 6-vCPU host (2026-11-18, session 49); every
-other host tried, including this laptop, compiles the method correctly. This file
-is the text for a JDK bug report, the reproducer that has to be run on an affected
-host to make it filed, and the negative already recorded here.
+Status: **report drafted, reproducer written, two hosts recorded negative, the
+affected host not found again.**  Evidence for the defect is one rented 6-vCPU
+host (2026-11-18, session 49).  A second Thunder `base` — same kernel family and
+the same JDK build as the affected host — compiles the same bytecode at level 4
+and does not crash, so the trigger narrowed to the host CPU.  This file is the
+text for a JDK bug report, the reproducer that has to be run on an affected host,
+and both negatives.
 
 - Producer: `tools/crforge/hotspot_repro.py`
 - Reproducer: `tools/crforge/hotspot/SeatIdsOfRepro.java`
@@ -62,7 +64,8 @@ indices differ). The driver has two modes:
   kinds are read for the first time;
 - `soak [seconds] [newEvery]` — random ids over the live kinds for `seconds`, a
   new kind every `newEvery` calls (the affected host crashed 65.1 s in, so the
-  default is 70 s).
+  default is 70 s); the kind count is capped at 1,000 because the id is
+  `kind * 1_000_000` in an `int`.
 
 `tools/crforge/hotspot_repro.py` compiles it with each JDK and runs three arms,
 every one with `-XX:+PrintCompilation`:
@@ -157,13 +160,13 @@ new kind (`of` just created, `n == 0`, previous `byKind.length >= 1`) falls thro
 to `of.length`/`of[0]` on a null reference. Reading the length of a null `int[]`
 faults at offset 12, which is `segfault at c`.
 
-## 6. Negative on the development host (recorded)
+## 6. Negatives recorded (two hosts)
 
-Same JVMs, same 194-byte method, same machine check — no crash:
+**A. This laptop.** Same JVMs, same 194-byte method, same machine check — no crash:
 
 | Field | Value |
 | --- | --- |
-| CPU | 12th Gen Intel Core i5-1235U (Alder Lake), 12 threads |
+| CPU | 12th Gen Intel Core i5-1235U (Alder Lake), 12 threads, AVX2 |
 | Kernel | `7.0.0-43-generic` |
 | JDKs | `21.0.13` and `25.0.5` (the `.resource` Temurin trees) |
 | `of` bytecode vs engine jar | identical (117 instruction slots, opcodes match) |
@@ -172,22 +175,49 @@ Same JVMs, same 194-byte method, same machine check — no crash:
 | control arms (`c1`, `-Xint`) | 0 crashes |
 | soak, 70 s per arm | 0 crashes (artifact `runs/crforge-c4/hotspot-seatids-soak.json`) |
 
-So the defect is **host- or build-specific**, not universal: the same JDK major
-version, the same bytecode, the same tier level. It looks like an ISA or
-code-generation difference between the affected x86 host and this Alder Lake
-laptop, or a build difference (`Temurin 25.0.5` crashed there — for the record,
-both 21 and 25 crash *there* and neither crashes *here*).
+**B. A fresh Thunder `base` (2026-11-18).** 6 vCPU, 1×A6000 (unused), kernel
+`6.12.115-thunder-sandbox`, Ubuntu 22.04.5, **the exact JDK build of the
+affected host** (`21.0.13.0.3+1-1-22.04.1-Ubuntu`):
+
+| Field | Value |
+| --- | --- |
+| CPU | Intel Xeon @ 2.10 GHz, 6 vCPU, AVX2 **without** AVX-512 |
+| `of` compiled at level 4 | yes, in every arm (`PrintCompilation` grep) |
+| quick (200k rounds, 2 kinds) | 6/6 runs clean |
+| soak 70 s (a new kind every 2M calls) | 2/2 clean |
+| soak 70 s, **1000 new kinds** (`--new-every 20000`) | 2/2 clean, inlined and `-XX:CompileCommand=dontinline` |
+| C2-only (`-Xbatch -XX:-TieredCompilation`) | clean |
+
+Evidence: `runs/crforge-c4/s50-thunder/` (`host.txt`, `D.*`, `E.*`, `soak1.*`).
+
+**What B rules out.** The JDK build (identical), the kernel (identical family),
+the tier (`level 4` confirmed), the method (bytecode-checked), the trigger shape
+(1000 fresh null slots, non-inlined). What is left is the **CPU**: the affected
+host's microarchitecture was not recorded in `crash-evidence.txt`, and this
+Thunder `base` is a different one (AVX2 Xeon). So "Thunder `base`" is a class of
+hosts, not a fixed CPU, and renting that class again does not reproduce it.
+
+One tooling defect surfaced while doing this: the soak driver's
+`kind * IDS_PER_KIND` is an `int`, so 2,147 new kinds overflowed it and threw an
+`ArrayIndexOutOfBoundsException` before the bug could be reached. The driver now
+caps at 1,000 kinds; the throw was the driver's, not the JVM's.
 
 ## 7. What would make the report filable
 
-1. Re-run `hotspot_repro.py --mode soak` on a host that has the defect (the same
-   Thunder class), and get exit 0 with the crash captured in the artifact.
-2. Attach `-XX:+LogCompilation` and, if possible, `-XX:CompileCommand=print,org.crforge.env.SeatIds::of`
-   (or `hsdis` disassembly) from that run: the report needs the C2 IR or the
-   assembly of the miscompiled body, not just the fault address.
-3. File at <https://bugreport.java.com> with the summary in §1, the environment in
+1. Find a host that has the defect. It is not this laptop and not a
+   Thunder `base` with an Intel Xeon 2.10 GHz (both recorded negatives), so
+   `hotspot_repro.py --mode soak --seconds 70 --new-every 20000` is the probe:
+   exit 0 means that host crashes and the artifact carries the evidence.
+2. Record `lscpu` (model name and flags) with every run — the one field session
+   49 did not keep, and now the one that matters.
+3. On a reproducing host, attach `-XX:+LogCompilation` and, if possible,
+   `-XX:CompileCommand=print,org.crforge.env.SeatIds::of` (or an `hsdis`
+   disassembly): the report needs the C2 IR or the assembly of the miscompiled
+   body, not only the fault address.
+4. File at <https://bugreport.java.com> with the summary in §1, the environment in
    §2, the reproducer in §3 and the evidence in §4.
 
 Do **not** read "not reproduced here" as "the flag is unnecessary": the workaround
 in `self_play.py` is kept until the defect is fixed upstream, because the affected
 host is the one the production card runs on.
+

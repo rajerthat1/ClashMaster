@@ -13,9 +13,10 @@ jar's, 117 slots) and `tools/crforge/hotspot_repro.py` runs it in three arms
 (default flags, C1, `-Xint`) and only counts a pass when
 `-XX:+PrintCompilation` shows the **194-byte level-4** nmethod.  On this laptop
 both `.resource` JDKs (21.0.13, 25.0.5) compile it at level 4 and **nothing
-crashes** — quick 6/6 and a 70 s soak — so the defect is host/build-specific and
-the report still needs the affected box's run.  The flag stays: the card is the
-affected host class.
+crashes** — quick 6/6 and a 70 s soak — and a fresh Thunder `base` with **the
+affected host's exact JDK** (21.0.13 Ubuntu) is clean too, even with 1,000 new
+kinds: the trigger has narrowed to the **host CPU**, which session 49 did not
+record.  The flag stays: the card is the affected host class.
 
 1. **The reproducer is checked, not eyeballed.**  `of` is the crforge body
    verbatim (`SeatIds.java` at `c4721bd9`, `IDS_PER_KIND` = 1,000,000); the tool
@@ -34,14 +35,31 @@ affected host class.
    70 s per arm clean as well.  Same JDK majors and same bytecode as the box, so
    the difference is host or build; the affected host is Temurin 25.0.5 **and**
    Ubuntu 21.0.13, this one is Temurin 21.0.13 **and** 25.0.5.
-4. **Gate:** `test_hotspot_repro.py` **8 passed**; ruff clean (E,F) on the tool
-   and the test.  Evidence: `runs/crforge-c4/hotspot-seatids.json`,
-   `hotspot-seatids-soak.json`.
-5. **Next on this thread:** run `hotspot_repro.py --mode soak --seconds 70
-   --repeats 2` on the affected box class with `-XX:+LogCompilation` (plus an
-   `hsdis` disassembly if available) and file at bugreport.java.com using
-   `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.
-6. **Still open:** the box run of the reproducer, NVIDIA MPS, the 8-vCPU
+4. **A fresh Thunder `base` is a second negative, and the CPU is now the
+   suspect.**  The same class of box was rented again (6 vCPU, kernel
+   `6.12.115-thunder-sandbox`, Ubuntu 22.04.5) and it runs **the affected host's
+   exact JDK** (`21.0.13.0.3+1-1-22.04.1-Ubuntu`): quick 6/6 clean, soak 70 s
+   clean, and a 70 s soak with **1,000 new kinds** (a fresh null slot every
+   20,000 calls) clean both inlined and with `-XX:CompileCommand=dontinline`,
+   plus a C2-only arm.  Its CPU is an **Intel Xeon @ 2.10 GHz, AVX2, no
+   AVX-512**.  That fixes the JDK build, the kernel, the tier, the bytecode and
+   the trigger shape, so the host CPU is what is left — and session 49 did not
+   record `lscpu`.  The box was deleted after the run (evidence in
+   `runs/crforge-c4/s50-thunder/`).
+5. **One driver defect, found by the box.**  `kind * 1_000_000` is an `int`, so
+   2,147 kinds overflowed and the soak died with
+   `ArrayIndexOutOfBoundsException: Index -2146` before reaching the case under
+   test.  The driver caps at 1,000 kinds; the throw was the driver's, not the
+   JVM's.
+6. **Gate:** `test_hotspot_repro.py` **8 passed**, bridge suite **185 passed**;
+   ruff clean (E,F) on the tool and the test.  Evidence:
+   `runs/crforge-c4/hotspot-seatids.json`, `hotspot-seatids-soak.json`,
+   `s50-thunder/`.
+7. **Next on this thread:** find a host that reproduces it (`hotspot_repro.py
+   --mode soak --seconds 70 --new-every 20000`, exit 0 = found), **record
+   `lscpu`**, then capture `-XX:+LogCompilation` + an `hsdis` disassembly and file
+   at bugreport.java.com from `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`.
+8. **Still open:** a reproducing host for the C2 report, NVIDIA MPS, the 8-vCPU
    question, the A6000 overlapped-loop gate, the native parity cadence, and
    whether to pad a producer's width to the server's ladder.
 
@@ -175,7 +193,7 @@ See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
 
 ## Decisions — what changed
 
-### 2026-11-18 (session 50) — the C2 miscompile gets a reproducer, and this host is its negative
+### 2026-11-18 (session 50) — the C2 miscompile gets a reproducer, and both hosts tried are negatives
 
 Session 49 named the defect on one rented box and left it there: no reproducer, no
 second observation, and a workaround that costs +108 % of the engine step.  This
@@ -195,13 +213,23 @@ session turns the finding into something runnable and records the negative.
   the output; a timeout, an uncompiled method, a crashing control arm or a failed
   bytecode check makes the run `inconclusive`.  Exit 0/1/2 = reproduced/negative/
   inconclusive, so a CI or a rented box can treat it as a gate.
-- **The negative, measured.**  On this laptop (i5-1235U, kernel `7.0.0-43`) with
-  JDK 21.0.13 and 25.0.5, **6/6** default-flag arms reached level 4 and **0
-  crashed**; C1 and `-Xint` pass; the 70 s soak passes in all six arms.  So the
-  same JDK majors, the same bytecode and the same tier do not reproduce it here:
-  the difference is the host or the build, which is exactly what the reproducer
-  is for.  The `--jvm-arg=-XX:TieredStopAtLevel=1` workaround stays — the card is
-  the affected host class.
+- **Two negatives, and the second one narrows the trigger.**  This laptop
+  (i5-1235U, kernel `7.0.0-43`) is clean with JDK 21.0.13 and 25.0.5: **6/6**
+  default-flag arms reached level 4, **0 crashed**, and the 70 s soak is clean.
+  A fresh Thunder `base` (6 vCPU, kernel `6.12.115-thunder-sandbox`, Ubuntu
+  22.04.5, **the affected host's exact JDK build** `21.0.13.0.3+1-1-22.04.1-Ubuntu`)
+  is clean too: quick 6/6, soak 70 s, and a 70 s soak with **1,000 new kinds**
+  both inlined and `-XX:CompileCommand=dontinline`, plus a C2-only arm.  That
+  fixes the JDK build, the kernel, the tier, the bytecode and the trigger shape,
+  so the remaining variable is the **CPU** (that box: Intel Xeon 2.10 GHz, AVX2,
+  no AVX-512) — and session 49 did not keep `lscpu`, so the affected host's model
+  is unknown.  "Thunder `base`" is a host class, not a CPU: renting it again is
+  not a reproduction path, `hotspot_repro.py` is the probe.  The box was deleted
+  after the run; evidence in `runs/crforge-c4/s50-thunder/`.
+- **The box found a driver defect.**  `kind * 1_000_000` overflows an `int`, so
+  2,147 kinds threw `ArrayIndexOutOfBoundsException: Index -2146` in `ids[seat]`
+  before the case under test was reached.  The driver caps at 1,000 kinds; the
+  throw was the driver's, not the JVM's.
 - **The report is drafted, not filed.**  `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`
   holds the text (summary, environment, reproducer, `dmesg`/`nmethod` evidence,
   the bytecode listing, the flags that do not clear it, and the local negative)
