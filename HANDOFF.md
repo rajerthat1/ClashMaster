@@ -4,53 +4,113 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Bottom line (2026-11-17, session 46)
+## Bottom line (2026-11-17, session 47)
 
-The next term paid, but not the way session 45 named it.  The packed channel
-write is a loss in every form; the child and gather terms fell because the 35 row
-gathers stopped rebuilding a two-array advanced index.
+The multiproc/decision-server lever is built and gated; the CPU half of it is
+measured and negative, and the GPU half needs the card.
 
-1. **The packed channel write loses.**  Child features write 11 columns of 72.
-   The current strided writes are **0.116 ms** against **0.146** for a stacked
-   packed block, **0.175** for an empty-allocate packed write, and **0.322** for
-   the transposed form (128 lanes, both seats, 50 repeats).  The arithmetic is
-   0.043 and the zeros 0.030; a packed write adds a pass.  The group slab orders
-   the same way (**0.126 against 0.157**).  The last-axis write stays.
-2. **The row gather is one index now.**  The 35 gathers per pair build each paid
-   for NumPy's two-array advanced index.  One flat index
-   (`lane * width + column`) makes the 35 gathers **0.310 → 0.058 ms** in
-   isolation (5.3×) and the pair **1.655 → 1.461 ms** in an alternating
-   same-process A/B (**0.195 ms**, 11.7 %); in the build the split reads
-   `group_gathers` 0.213 → 0.111 and child feature assembly 0.482 → 0.334.  The
-   row scatters take the same edit: **0.0031 → 0.0015 ms** per call and
-   `entity_rows` **0.643 → 0.55**.
-3. **The pair build is 1.925 → 1.577 ms** (two builds → one, 18.0 %) at 128
-   lanes; the phase sum is **1.366 ms, 95.0 %** of a same-loop wall.  The largest
-   remaining term is `_entity_rows` (0.306); the gathers are 0.186 + 0.067.  At
-   the producer's width the pair is **0.940 → 0.635 ms** at 8 lanes and
-   **1.321 → 0.907** at 16; the 8-lane gather saving (0.056 paired mean) is at
-   this host's noise floor.
-4. **The record is bit-identical.**  `batched_tensorize.py --seats 0 1`
-   **3,008/3,008** lane-decisions, 0 mismatches, 5,196 micro-actions, **0.0282
-   ms/lane-decision** (21.2×), end to end **0.0441**; seed 2 **3,008/3,008**,
-   5,361 actions, **0.0317** (21.4×), 0.0469.  The `--ppo-update` probe
-   reproduces session 45 exactly: KL **1.90e-3 / −5.85e-3**, clip **2.08 % /
-   1.56 %**, returns 0.338085 / 0.2, 18/375 ACT, checkpoint 277
-   reload-identical, 2/2 on-policy, 0 stale, gate pass, 0 illegal / 0 rejected.
-   Bridge suite **148 passed**; ruff clean.
-5. **One tooling change.**  `cpu_half_micro.py` now records the phase share
-   against a wall timed in the same loop — this host's drift made a separately
-   timed wall read 56–115 % — and records the gather-form alternating A/B and
-   the isolated scatter A/B beside the phase table.
-6. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot
-   lost 19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %,
-   p = 0.15); `A-hog26-v738` is 49–1 against the seed and is a canary, not the
-   learner's bar.  The A6000 width question from session 43 is still open.
+1. **One batched decision server, gated on the wire.**  A server module
+   (`crforge_bridge/decision_server.py`) serves every waiting producer's
+   tensorized batch in one forward: live widths are padded to a ladder bucket
+   (`1/2/4/…/48` groups, `1/4/…/160` children), the row axis to the next
+   power-of-two multiple of the producer's rows, and the request/response cross a
+   length-framed socket as one row-major buffer per dtype.  The handshake refuses
+   a server built from other weights (checkpoint sha256 + weights digest).
+   `self_play.py --decision-server … --verify-decision-server` samples the warmup
+   batch through the server under a fixed seed and compares it with the same
+   checkpoint's eager path.
+2. **The gate is exact and rollout storage crosses it.**  Real checkpoint, 8
+   rows: all six action fields equal, log-prob/entropy/value deltas **0.0**; the
+   round pads the live axes, so this also proves the padding is inert.  A
+   two-segment run with rollout storage through the server is gate-pass (48 time
+   steps, 8 episode starts, 34 reward-bearing rows, boundary value included).
+   Bridge suite **168 passed** (148 + 12 server + 8 harness tests; 20 new).
+3. **A real bug, found by the four-producer arm.**  A seeded verification request
+   sharing the wait window with a training request made the round refuse, killed
+   the server and broke the other producers.  A queue is now split into plain and
+   seeded groups (each seeded request its own forward), and a failed round replies
+   an error and keeps serving.  Regression test included.
+4. **On this CPU-only host the shared server's aggregate is one forward's
+   throughput, flat in N: 0.95× at two producers and 0.97× at four.**  At two it
+   served **68 requests in 68 rounds** (`requests_per_round 1.0`) because a
+   decision is ~40 ms of CPU half after a ~180 ms forward, so the next request
+   never lands in the 2 ms window; raising the window is the measured negative of
+   §3.40.  At four the schedule overlaps — **136 requests in 71 rounds,
+   `requests_per_round 1.92`, max 4** — but the forward grows with the joined
+   rows: **210 ms per request against 187 ms unbatched**, so the aggregate stays
+   at ~40 ld/s.  Per-process forwards (the multiproc lever) keep **1.42× at two**
+   and **2.01× at four**.  Unpinned, the server's forward inflates to 233 ms and
+   the aggregate falls to 0.67×; the harness now pins `OMP_NUM_THREADS` for every
+   process.
+5. **What the card has to show.**  The A6000 forward is flat in rows (141 ms at
+   256, 88.5 at 16), so the GPU gate is `requests_per_round > 1` **and**
+   `forward_ms_per_request` below the single-request forward.  The CPU arm prices
+   the wire (round-trip **108 ms** at 8 rows on torch's default thread count,
+   **187 ms** pinned, `assemble` 1.4 ms, client pack 1.0 ms) and proves the gate,
+   not the win — and it shows the linear-in-rows shape the card has to break.
+6. **Weight push is the missing piece for training behind the server.**
+   `--ppo-update`/`--overlap-update` are refused with `--decision-server` until
+   the server can be given the updated weights: sampling old weights while
+   storing a rollout labelled with the new policy state would be stale data.
+7. **The native gate is unchanged: negative, nothing rented.**  The s39 pilot lost
+   19–30 to its seed on 50 mirror-X-Bow games (38.8 %, CI 26.4–52.8 %, p = 0.15).
+   The A6000 width question is still open.
 
-See `FINDINGS.md` §3.80 (this session), §3.79 (session 45) and §3.74 (native
+See `FINDINGS.md` §3.81 (this session), §3.80 (session 46) and §3.74 (native
 gate).
 
 ## Decisions — what changed
+
+### 2026-11-17 (session 47) — the server is one host's forward, and its gate is the action
+
+Session 46 named two levers: the A6000 width question (needs a rental) and the
+multiproc/decision-server path.  This session builds the second one, gates it,
+and measures what a CPU-only host can measure.
+
+- **Shape, not a fixed record.**  The producer sends live width (session 43), so
+  the server pads every request in a round to the widest ladder bucket
+  (`GROUP_BUCKETS`/`CHILD_BUCKETS`/`RELATION_BUCKETS`/`EFFECT_BUCKETS`) and the
+  joined row axis to the next power-of-two multiple of the producer's rows.  A
+  run therefore captures a handful of graphs, not one per board, and the join is
+  one `torch.cat`.  The live-prefix copy is the only extra work on the server
+  (`assemble_ms` **1.4 ms** at 8 rows, both seats).
+- **The wire is one buffer per dtype.**  `PackedRecord` packs a nested record
+  into row-major buffers with a schema that restores views; the payloads are one
+  send per dtype and the receiver restores views into the received bytes.  A
+  decision at 8 rows round-trips in **108 ms** at torch's default thread count
+  (**187 ms** pinned; the forward is the whole cost), with client pack
+  **1.0 ms** and unpack **0.4 ms**.  A plain pickle of tensors was not used: it
+  allocates a tensor per field on every decision.
+- **Two gates, both behavioural.**  Identity: the handshake compares the
+  checkpoint sha256 and the weight digest, so a stale server cannot label samples
+  with this run's policy state.  Sampling: `--verify-decision-server` seeds the
+  server's round and requires the same action sequence from the eager path; the
+  round pads live widths, so equality also proves the bucket padding is inert.
+  Measured: all six action fields equal, numeric deltas 0.0.
+- **The state is the client's.**  The server keeps no carry: the request carries
+  the recurrent state and the reply replaces it, so a round mixes producers
+  without mixing episodes.  A `next_state` is advanced in place only by the
+  caller, exactly as the in-process table is.
+- **One request per round at two producers; a linear forward at four.**  The
+  producers are anti-phased (the CPU half is short, the forward is long), so at
+  two producers requests do not share the 2 ms window and the server serialises
+  them; at four the window does coalesce (**1.92 requests/round, max 4**, row
+  buckets 8/16/32) and the round's forward grows with the rows it joined
+  (**210 ms/request against 187**).  The aggregate is ~40 ld/s at every N — one
+  forward's throughput.  That is the measured negative of §3.40 again: do not
+  raise the window.  On the card the same round is flat in rows, which is the
+  only shape where this design pays.
+- **Thread pinning is part of the measurement.**  Unpinned, each process opens a
+  12-thread torch pool on this host and the two-producer aggregate falls from
+  **0.95× to 0.67×** while the server's 8-row forward inflates 187 → 233 ms.
+  `multiproc.py --omp-threads` (default 1) pins every process; on the card it
+  matters less, but the arm must not read a thread-pool fight as the
+  architecture.
+- **The seeded-window bug.**  A seeded request must be served alone; when it
+  shared a queue with other producers the round was refused and the server died.
+  The queue is split into plain and seeded groups, and a failed round now replies
+  errors to its clients and keeps serving.  Regression test: two clients behind
+  one barrier, one seeded.
 
 ### 2026-11-17 (session 46) — the channel write stays; the row index was the cost
 

@@ -6601,3 +6601,97 @@ Evidence: `runs/crforge-c4/cpu-half-micro-s46.json` (128 lanes),
 `runs/crforge-c4/batched-tensorize-s46.json`,
 `runs/crforge-c4/batched-tensorize-s46-seed2.json`,
 `runs/crforge-c4/self-play-s46-flat-rows.json`.
+
+### 3.81 The batched decision server: exact on the wire, not a CPU win (2026-11-17)
+
+Session 46 closed the group section and named the next levers: the open A6000
+width question and the multiproc/decision-server path in `ROADMAP_CRFORGE.md` §4.
+This session lands the server and measures the half of the scale-out question
+that does not need a card.  It does not rent one.
+
+**What landed.** `crforge_bridge/decision_server.py` (server + its client),
+`tools/crforge/decision_server.py` (the process), `tools/crforge/multiproc.py`
+(the N-producer harness with a baseline and an aggregate), and
+`self_play.py --decision-server/--verify-decision-server` (producer wiring).
+Twenty tests: twelve on the server and eight on the harness.
+
+- **Shape buckets.**  A producer sends the group/child sections at the board's
+  live width (session 43), so two producers' boards differ.  A round pads every
+  request to the smallest ladder entry that holds the widest live width —
+  groups `1/2/4/8/12/16/24/32/48`, children `1/4/8/16/32/64/96/160`, relations
+  `0/4/…/2048`, effects `0/4/…/512` — and the row axis to the next power-of-two
+  multiple of the producer's row count.  The join is then one `torch.cat` and the
+  forward sees a stable graph vocabulary instead of one capture per board.
+- **Wire.**  Length-framed socket (Unix path or `host:port`), one row-major
+  buffer per dtype with a schema that restores views, so a decision is copied
+  once on each side and a small face is not re-allocated per field.
+- **Gates.**  The handshake compares the checkpoint sha256 *and* a digest of the
+  sampling weights, so a server started from other weights is refused before a
+  decision is served.  A request may carry a seed; the server seeds its generator
+  immediately before that round and serves it alone, and
+  `--verify-decision-server` runs the warmup batch through the server and through
+  the same checkpoint's eager path on the same seed.  The recurrent state is the
+  client's: it is sent with the request and replaced by the reply's
+  `next_state`, so two producers cannot leak a carry into each other.
+
+**The verification is exact.**  Real checkpoint, 8 rows, CPU: all six action
+fields equal, log-prob/entropy/value deltas **0.0** on the warmup batch.  The
+round pads the live axes to its bucket, so the action match is also the proof
+that the bucket padding is inert — the same claim session 43 made for the build.
+
+**The bug the four-producer arm found.**  A seeded verification request that
+shared the wait window with a training request made `run_round` refuse the mixed
+round; the server took the whole process down and the other producers' sockets
+broke.  A queue is now split into plain and seeded groups (each seeded request
+gets its own forward), and a failed round replies an error to that group and
+keeps serving.  Regression: two clients behind one barrier, one seeded, both
+answered, `failed_rounds 0`.
+
+**The CPU-only measurement** (this host, 4 lanes × 2 seats, 32 decisions,
+`OMP_NUM_THREADS=1` for every process, `multiproc.py`):
+
+| arm | 1 process | 2 processes | 4 processes |
+| --- | ---: | ---: | ---: |
+| each producer forwards in-process | 43.7 ld/s | **62.1 (1.42×)** | **81.8 (2.01×)** |
+| one batched decision server | 41.9 ld/s | **42.3 (0.95×)** | **39.2 (0.97×)** |
+
+- **Multiproc is the CPU lever.**  Two producers keep 0.71 of ideal scaling and
+  four keep 0.50, which is the roadmap's "a process is one core + one forward"
+  with this laptop's core count, not a new finding.
+- **The shared server's aggregate is one forward's throughput, flat in N.**  At
+  two producers the arm served **68 requests in 68 rounds**
+  (`requests_per_round 1.0`, `max 1`): a decision is ~40 ms of CPU half after a
+  ~180 ms forward, so their next requests never land inside the 2 ms window, and
+  raising the window is the measured negative of §3.40.  With four producers the schedule finally
+  overlaps — **136 requests in 71 rounds, `requests_per_round 1.92`, max 4**,
+  row buckets 8/16/32 — and the forward simply grows with the rows it joined:
+  **401 ms per round for 1.92 requests = 210 ms per request**, no better than the
+  187 ms an unbatched round costs.  The aggregate never moves off ~40 ld/s,
+  because on the CPU the forward is linear in rows.
+- **The forward's own CPU cost is the other half.**  Pinned, the 8-row forward is
+  **187 ms** on the server against **173–183 ms** in-process — the wire and the
+  joined-batch staging add a few percent — and `assemble` is **1.4 ms**.  Unpinned (torch's default, one thread per core), the server's
+  forward inflates to **233 ms** and the aggregate falls to **0.67×** — the
+  harness now pins `OMP_NUM_THREADS` for every process so a thread-pool fight is
+  not read as the architecture.
+- **What makes it pay is the card, not the host.**  The forward is flat in rows
+  on the A6000 (141 ms at 256 rows against 88.5 at 16), so the round that grew
+  187 → 401 ms here for two requests would grow by a few percent there.  The GPU
+  arm's gate is therefore `requests_per_round > 1` **and** `forward_ms_per_request`
+  falling below the single-request forward; the CPU arm can only price the wire
+  and prove the gate — and it shows the shape the card has to beat.
+
+**What is still missing.**  A weight push, so a training loop can update behind
+the server.  `self_play.py` refuses `--decision-server` together with
+`--ppo-update`/`--overlap-update` until then: a collector sampling the server's
+old weights while storing a rollout labelled with the new policy state would be
+stale data, not a measurement.
+
+Evidence: `runs/crforge-c4/multiproc-server-s47-2.json`,
+`runs/crforge-c4/multiproc-server-s47-2-unpinned.json`,
+`runs/crforge-c4/multiproc-local-s47-2.json`,
+`runs/crforge-c4/multiproc-local-s47-4.json`,
+`runs/crforge-c4/decision-server-s47.json`,
+`runs/crforge-c4/self-play-server-s47-rollout.json` (24 decisions × 2 segments,
+rollout storage through the server: 48 time steps, 8 episode starts, 34
+reward-bearing rows, gate pass).
