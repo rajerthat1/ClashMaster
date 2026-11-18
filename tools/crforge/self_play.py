@@ -101,7 +101,8 @@ import numpy as np
 import torch
 
 from crforge_bridge.catalog import Catalog
-from crforge_bridge.fast_forward import FastForwardV4
+from crforge_bridge.decision_server import DecisionClient
+from crforge_bridge.fast_forward import DEFAULT_TOLERANCE, FastForwardV4
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
 from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, PotentialShapingReward, rollout_statistics
@@ -257,6 +258,83 @@ def _seat_rows(actions: ActionSequenceV4, index: int, seats: int) -> ActionSeque
 
 def _candidate_record(section: Any) -> Any:
     return getattr(section, "candidates", section)
+
+
+def _verify_decision_server(
+    client: DecisionClient,
+    model: Any,
+    batch: Any,
+    state: RecurrentPolicyStateV4,
+    episode_start: torch.Tensor,
+    *,
+    seed: int,
+    greedy: bool,
+    validate: bool,
+    device: torch.device,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> dict[str, Any]:
+    """Compare one seeded server sample with this checkpoint's eager path.
+
+    The server seeds its generator immediately before the round, so the same
+    seed here must produce the same action sequence.  The server also pads the
+    batch's live group/child/relation widths to its round's bucket, so an exact
+    action match is the proof that the bucket padding is inert as well as the
+    proof that the wire carried the batch it claims to.
+    """
+
+    server_output = client.decide(
+        batch,
+        state,
+        episode_start=episode_start,
+        mode="greedy" if greedy else "sample",
+        seed=int(seed),
+    )
+    # The eager check gets its own state copy: a sampled decision must not move
+    # the caller's carry, and this runs before the first real decision.
+    probe = RecurrentPolicyStateV4(hidden=state.hidden.detach().clone(), cell=state.cell.detach().clone())
+    torch.manual_seed(int(seed))
+    with torch.inference_mode():
+        if greedy:
+            expected = model.act(
+                batch.to_model_input(device), probe, episode_start=episode_start, validate=validate
+            )
+        else:
+            expected = model.sample_for_ppo_rollout(
+                batch.to_model_input(device), probe, episode_start=episode_start, validate=validate
+            )
+    action_fields = (
+        "gate",
+        "micro_action_count",
+        "candidate_index",
+        "candidate_uid",
+        "target_cell",
+        "delay_offset_bin",
+    )
+    mismatches = {
+        name: int(
+            (
+                getattr(server_output.actions, name).detach().cpu()
+                != getattr(expected.actions, name).detach().cpu()
+            ).sum()
+        )
+        for name in action_fields
+    }
+    deltas = {
+        "log_prob": float((expected.log_prob.detach().cpu() - server_output.log_prob.detach().cpu()).abs().max()),
+        "entropy": float((expected.entropy.detach().cpu() - server_output.entropy.detach().cpu()).abs().max()),
+        "value": float((expected.value.detach().cpu() - server_output.value.detach().cpu()).abs().max()),
+    }
+    actions_equal = not any(mismatches.values())
+    return {
+        "rows": int(batch.batch_size),
+        "mode": "greedy" if greedy else "sample",
+        "seed": int(seed),
+        "actions_equal": actions_equal,
+        "action_mismatches": mismatches,
+        "max_abs_delta": deltas,
+        "tolerance": float(tolerance),
+        "passed": bool(actions_equal and max(deltas.values()) <= float(tolerance)),
+    }
 
 
 def _force_second_micro_actions(
@@ -512,6 +590,28 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--checkpoint", type=Path, default=Path(".resource/RoyaleFish/models/B-general-v275.pt"))
+    parser.add_argument(
+        "--decision-server",
+        default=None,
+        help=(
+            "send each decision to a batched decision server (unix:/path or host:port) instead of "
+            "forwarding here; start it with tools/crforge/decision_server.py"
+        ),
+    )
+    parser.add_argument(
+        "--decision-server-timeout",
+        type=float,
+        default=300.0,
+        help="seconds to wait for one decision round-trip before failing the run",
+    )
+    parser.add_argument(
+        "--verify-decision-server",
+        action="store_true",
+        help=(
+            "before the run, sample the warmup batch through the server under a fixed seed and compare "
+            "it action for action with this checkpoint's eager path; abort on a mismatch"
+        ),
+    )
     parser.add_argument("--no-validate", action="store_true", help="skip the per-decision record validation")
     parser.add_argument(
         "--profile-collection",
@@ -660,6 +760,29 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--full-cuda-graph is a --fast-forward setting")
     if args.full_cuda_graph and args.no_cuda_graphs:
         raise SystemExit("--full-cuda-graph is the captured path; drop --no-cuda-graphs")
+    if args.decision_server is not None:
+        if args.fast_forward:
+            raise SystemExit(
+                "--fast-forward is the server's forward: pass those flags to "
+                "tools/crforge/decision_server.py, not to the producer"
+            )
+        if args.ppo_update or args.overlap_update:
+            raise SystemExit(
+                "--decision-server is collection-only for now: an update would leave the server sampling "
+                "the previous weights while the rollout claims the new policy state"
+            )
+        if str(args.device) != "cpu":
+            raise SystemExit(
+                "--decision-server keeps the producer on the CPU half; the forward is the server's "
+                "(drop --device or pass --device cpu)"
+            )
+        if args.decision_server_timeout <= 0.0:
+            raise SystemExit("--decision-server-timeout must be positive")
+    if args.verify_decision_server:
+        if args.decision_server is None:
+            raise SystemExit("--verify-decision-server compares a server round; pass --decision-server")
+        if args.no_warmup_forward:
+            raise SystemExit("--verify-decision-server needs the warmup batch; drop --no-warmup-forward")
     reward_config = CrforgeRewardConfig(shaping_beta=float(args.shaping_beta))
     training_config = None
     if args.ppo_update:
@@ -731,6 +854,21 @@ def main(argv: list[str] | None = None) -> int:
     state = model.initial_state(args.count * len(seats), device=device)
     fast = None
     fast_verification = None
+    server_verification = None
+    decision_client = None
+    if args.decision_server is not None:
+        # The handshake binds this producer to the server's sampling weights: a
+        # server started from another checkpoint is a different policy, and its
+        # samples would be labelled with this run's policy state.
+        decision_client = DecisionClient(
+            args.decision_server,
+            timeout=float(args.decision_server_timeout),
+            identity={
+                "checkpoint_sha256": policy.checkpoint_sha256,
+                "weights_digest": weights_digest(model),
+            },
+        )
+        print(json.dumps({"event": "decision_server", **decision_client.server}), flush=True)
     if args.fast_forward:
         fast = FastForwardV4(
             model,
@@ -832,7 +970,14 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with torch.inference_mode():
                 warm_starts = torch.zeros(args.count * len(seats), dtype=torch.bool, device=device)
-                if fast is not None:
+                if decision_client is not None:
+                    output = decision_client.decide(
+                        warm_batch,
+                        state,
+                        episode_start=warm_starts,
+                        mode="greedy" if args.greedy else "sample",
+                    )
+                elif fast is not None:
                     output = fast.sample(warm_batch, state, episode_start=warm_starts)
                 else:
                     output = model.sample_for_ppo_rollout(
@@ -858,6 +1003,25 @@ def main(argv: list[str] | None = None) -> int:
                             f"{fast_verification['action_mismatches']} "
                             f"{fast_verification['max_abs_delta']} tol {fast_verification['tolerance']}"
                         )
+                if decision_client is not None and args.verify_decision_server:
+                    server_verification = _verify_decision_server(
+                        decision_client,
+                        model,
+                        warm_batch,
+                        state,
+                        warm_starts,
+                        seed=int(args.seed) + 7919,
+                        greedy=bool(args.greedy),
+                        validate=not args.no_validate,
+                        device=device,
+                    )
+                    if not server_verification["passed"]:
+                        raise SystemExit(
+                            "decision-server verification failed: "
+                            f"{server_verification['action_mismatches']} "
+                            f"{server_verification['max_abs_delta']} tol {server_verification['tolerance']}"
+                        )
+                    print(json.dumps({"event": "decision_server_verified", **server_verification}), flush=True)
             if fast is not None:
                 # A sampled decision advances the table; the warmup must not, or
                 # the first real decision would start from a fictitious turn.
@@ -980,7 +1144,14 @@ def main(argv: list[str] | None = None) -> int:
                 # so leaving it on makes a fast forward look slower than the CPU's.
                 validate_rows = not args.no_validate
                 with torch.inference_mode():
-                    if fast is not None:
+                    if decision_client is not None:
+                        output = decision_client.decide(
+                            stacked,
+                            state,
+                            episode_start=episode_start,
+                            mode="greedy" if args.greedy else "sample",
+                        )
+                    elif fast is not None:
                         output = (
                             fast.act(stacked, state, episode_start=episode_start)
                             if args.greedy
@@ -1171,8 +1342,13 @@ def main(argv: list[str] | None = None) -> int:
                 boundary_batch = interleave_rows([boundary_stacks[seat] for seat in seats])
                 with torch.inference_mode():
                     boundary_starts = torch.zeros(args.count * len(seats), dtype=torch.bool, device=device)
-                    if fast is not None:
+                    if decision_client is not None:
+                        boundary_value = decision_client.value(
+                            boundary_batch, state, episode_start=boundary_starts
+                        )
+                    elif fast is not None:
                         context = fast.forward(boundary_batch, state, episode_start=boundary_starts)
+                        boundary_value = context.value
                     else:
                         context = model.forward(
                             boundary_batch.to_model_input(device),
@@ -1180,7 +1356,8 @@ def main(argv: list[str] | None = None) -> int:
                             episode_start=boundary_starts,
                             validate=not args.no_validate,
                         )
-                rollout = rollout_store.finalize(boundary_value=context.value.detach().float())
+                        boundary_value = context.value
+                rollout = rollout_store.finalize(boundary_value=boundary_value.detach().float())
                 segment_rollout = rollout_statistics(
                     rollout, gamma=reward_config.shaping_gamma, gae_lambda=float(args.gae_lambda)
                 )
@@ -1498,6 +1675,7 @@ def main(argv: list[str] | None = None) -> int:
                 "engine_decision_ticks": 1,
                 "validated_every_decision": not args.no_validate,
                 "sampled": not args.greedy,
+                "decision_server": args.decision_server,
                 "rollout_storage": rollout_enabled,
                 "forced_second_micro": args.force_second_micro,
                 "training": bool(args.ppo_update),
@@ -1523,10 +1701,28 @@ def main(argv: list[str] | None = None) -> int:
             "inference": {
                 "fast_forward": fast.describe() if fast is not None else {"enabled": False},
                 "verification": fast_verification,
+                "decision_server": (
+                    None
+                    if decision_client is None
+                    else {
+                        "address": args.decision_server,
+                        "sampling": (
+                            "server-global RNG: the producer's seed does not reproduce the action "
+                            "stream, and a round's rows share one forward"
+                        ),
+                        "server": dict(decision_client.server),
+                        "request": decision_client.request_stats(),
+                        "verification": server_verification,
+                    }
+                ),
                 "sampling": (
-                    "graph-replayed full call (encode + core + decode)"
-                    if fast is not None and fast.full_cuda_graph
-                    else ("eager outside the captured graph" if fast is not None and fast.cuda_graphs else "eager")
+                    "batched decision server (one forward per round of waiting producers)"
+                    if decision_client is not None
+                    else (
+                        "graph-replayed full call (encode + core + decode)"
+                        if fast is not None and fast.full_cuda_graph
+                        else ("eager outside the captured graph" if fast is not None and fast.cuda_graphs else "eager")
+                    )
                 ),
                 "steady_state": _inference_steady_state(segments),
             },
@@ -1669,6 +1865,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     finally:
+        if decision_client is not None:
+            decision_client.close()
         vector.close()
     return 0 if artifact["gate"]["pass"] else 1
 
