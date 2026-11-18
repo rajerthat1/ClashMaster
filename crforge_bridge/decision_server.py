@@ -41,12 +41,18 @@ The gates are behavioural, in the same spirit as ``FastForwardV4.verify``:
 3. **State.**  The recurrent state is the client's, sent with the request and
    replaced by the response's ``next_state``; the server keeps no state of its
    own between rounds, so two producers cannot leak a carry into each other.
+4. **Weights.**  A training producer pushes its updated state dict at every
+   segment boundary (``DecisionClient.push_weights``).  The push names the
+   weights the client last sampled with and the digest of the new ones, the
+   server copies them into its own parameters **in place** (so captured graphs
+   and staging stay valid) and re-hashes the result, and a push that does not
+   hash to the client's policy, or that arrives against a server whose weights
+   moved first, is refused.  A producer that trains behind the server therefore
+   samples the weights its rollout is labelled with (``FINDINGS.md`` §3.82).
 
-The one thing this module deliberately does **not** do is update weights behind
-the client's back: ``self_play.py`` refuses ``--decision-server`` together with
-``--ppo-update``/``--overlap-update`` until the weight-push path exists, because
-a collector sampling from a server's old weights while storing the new policy
-state would be stale data, not a measurement.
+The gate the push protects is the stale-data one: the rollout store binds the
+sampling weights' digest, so a push that silently failed would mislabel every
+row it collected afterwards.
 """
 
 from __future__ import annotations
@@ -58,7 +64,7 @@ import socket
 import struct
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any, Self
 
@@ -76,6 +82,7 @@ from native_runner.training.v4.tensors import (
 )
 
 from .fast_forward import FastForwardV4
+from .training import state_digest, weights_digest
 from .vector_rows import pad_group_record
 
 SCHEMA = "crforge-decision-server.v1"
@@ -261,6 +268,12 @@ class PackedRecord:
             if isinstance(value, Tensor):
                 if value.ndim < 1:
                     raise ValueError("a packed tensor needs a batch axis")
+                if int(value.numel()) == 0:
+                    # An empty catalog buffer carries no bytes; the schema is its
+                    # whole content, so the receiver rebuilds it into the same
+                    # tensor rather than skipping a named field (the weight hash
+                    # names it, so the record has to carry it).
+                    return ("empty", value.dtype, tuple(int(size) for size in value.shape))
                 rows = int(value.shape[0])
                 if batch_size is None:
                     batch_size = rows
@@ -361,6 +374,9 @@ class PackedRecord:
                 _kind, dtype, tail, offset, width = item
                 flat = self.buffers[dtype][:, int(offset) : int(offset) + int(width)]
                 return flat.reshape((self.batch_size, *tail))
+            if kind == "empty":
+                _kind, dtype, shape = item
+                return torch.empty(tuple(int(size) for size in shape), dtype=dtype)
             if kind == "dataclass":
                 return item[1](**{name: restore(child) for name, child in item[2]})
             if kind == "tuple":
@@ -374,6 +390,58 @@ class PackedRecord:
             raise ValueError(f"unknown packed record node {kind!r}")
 
         return restore(self.schema)
+
+
+def pack_state_dict(model: Any) -> PackedRecord:
+    """One model's parameters and buffers as a single packed record.
+
+    Every tensor is flattened to one row so the record has a single batch axis
+    and one buffer per dtype: the state crosses the wire in one copy per dtype
+    rather than one allocation per parameter.  Each weight's original shape
+    rides in the schema's shape map, so the receiver restores parameters, not
+    byte ranges, and parameters and buffers stay separate so it can hash the
+    incoming bytes exactly as ``weights_digest`` would.
+    """
+
+    def flattened(tensors: Mapping[str, Tensor]) -> dict[str, Any]:
+        values: dict[str, Tensor] = {}
+        shapes: dict[str, tuple[int, ...]] = {}
+        for name, value in tensors.items():
+            values[str(name)] = value.detach().reshape(1, -1) if int(value.numel()) else value.detach()
+            shapes[str(name)] = tuple(int(size) for size in value.shape)
+        return {"values": values, "shapes": shapes}
+
+    parameters = flattened(dict(model.named_parameters()))
+    buffers = flattened(dict(model.named_buffers()))
+    if not parameters["values"]:
+        raise ValueError("cannot push a model with no parameters")
+    return PackedRecord.from_record({"parameters": parameters, "buffers": buffers})
+
+
+def unpack_state_dict(record: object) -> dict[str, Tensor]:
+    """The inverse of :func:`pack_state_dict`: names back to shaped tensors."""
+
+    state: dict[str, Tensor] = {}
+    if not isinstance(record, dict) or not {"parameters", "buffers"} <= set(record):
+        raise TypeError("a weights push must carry parameters and buffers")
+    for part_name in ("parameters", "buffers"):
+        part = record[part_name]
+        if not isinstance(part, dict) or not {"values", "shapes"} <= set(part):
+            raise TypeError(f"a weights push must carry {part_name} values and shapes")
+        values, shapes = part["values"], part["shapes"]
+        if not isinstance(values, dict) or not isinstance(shapes, dict) or set(values) != set(shapes):
+            raise ValueError(f"the pushed {part_name} names and shapes disagree")
+        for name, value in values.items():
+            if not isinstance(value, Tensor):
+                raise TypeError(f"the pushed {part_name} {name!r} is not a tensor")
+            shape = tuple(int(size) for size in shapes[name])
+            expected = 1
+            for size in shape:
+                expected *= size
+            if int(value.numel()) != expected:
+                raise ValueError(f"the pushed {part_name} {name!r} does not hold {shape}")
+            state[str(name)] = value.reshape(shape)
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +561,7 @@ class DecisionServer:
         self.checkpoint_sha256 = checkpoint_sha256
         self.weights_digest = weights_digest
         self.identity = dict(identity or {})
-        self._forwards: dict[int, FastForwardV4] = {}
+        self._forwards: dict[tuple[int, ...], FastForwardV4] = {}
         # The group/child axes are the model's own capacities.  The effect and
         # relation axes have no config capacity: ``FastForwardV4`` pads them to
         # its staging capacities, so these ladders end at the same numbers.
@@ -519,6 +587,7 @@ class DecisionServer:
             "queue_wait_ms_max": 0.0,
             "sequence_ms_sum": 0.0,
             "failed_rounds": 0,
+            "weight_pushes": 0,
             "row_buckets": {},
             "shape_buckets": {},
             "modes": {},
@@ -527,21 +596,41 @@ class DecisionServer:
 
     # -- public surface ------------------------------------------------------
 
-    def forward(self, rows: int) -> FastForwardV4:
-        """The forward built for one padded row bucket (created lazily)."""
+    def forward(self, rows: int, shape: Mapping[str, int] | None = None) -> FastForwardV4:
+        """The forward built for one padded row *and* width bucket.
 
-        rows = int(rows)
-        fast = self._forwards.get(rows)
+        A capture freezes the batch's shape.  The row axis is bucketed, and so is
+        every live width (session 43 sends the board's live group/child width),
+        so the key has to be the whole shape: keying by rows alone lets the first
+        round of a segment fix the graph at an empty board's width and the next
+        round overflow it.  The card's run therefore captures one graph per
+        (rows, groups, children, relations, effects) tuple it visits.
+        """
+
+        bucket = {
+            "groups": int((shape or {}).get("groups", 0)),
+            "children": int((shape or {}).get("children", 0)),
+            "relations": int((shape or {}).get("relations", 0)),
+            "effects": int((shape or {}).get("effects", 0)),
+        }
+        key = (
+            int(rows),
+            bucket["groups"],
+            bucket["children"],
+            bucket["relations"],
+            bucket["effects"],
+        )
+        fast = self._forwards.get(key)
         if fast is None:
             fast = FastForwardV4(
                 self.model,
                 device=self.device,
-                rows=rows,
+                rows=int(rows),
                 precision=self.precision,
                 cuda_graphs=self.cuda_graphs,
                 full_cuda_graph=self.full_cuda_graph,
             )
-            self._forwards[rows] = fast
+            self._forwards[key] = fast
         return fast
 
     def run_round(self, requests: Sequence[DecisionRequest]) -> list[DecisionResult]:
@@ -601,7 +690,7 @@ class DecisionServer:
         )
         assemble_ms = (time.perf_counter() - started) * 1000.0
 
-        fast = self.forward(rows)
+        fast = self.forward(rows, shape)
         forward_started = time.perf_counter()
         with torch.inference_mode():
             if mode == "value":
@@ -645,6 +734,89 @@ class DecisionServer:
         self.stats["modes"][mode] = self.stats["modes"].get(mode, 0) + 1
         return results
 
+    def apply_weights(
+        self,
+        state: Mapping[str, Tensor],
+        *,
+        checkpoint_sha256: str | None,
+        base_digest: str | None,
+        digest: str | None = None,
+    ) -> dict[str, Any]:
+        """Copy a client's updated weights into the served model, in place.
+
+        In place is the whole point: the captured forwards, the staging buffers
+        and the pinned mirrors hold this model's ``Parameter`` objects, so a new
+        set of values keeps every graph valid while the *identity* changes.  The
+        push is refused unless the client's checkpoint and its view of the
+        server's current weights both match, and the copy is then re-hashed and
+        required to equal the client's digest — a push is either exactly the
+        client's policy bytes or it does not land.
+        """
+
+        if not self.checkpoint_sha256 or checkpoint_sha256 != self.checkpoint_sha256:
+            raise ValueError(
+                "weights push refused: the server serves checkpoint "
+                f"{self.checkpoint_sha256!r}, the client has {checkpoint_sha256!r}"
+            )
+        if self.weights_digest is None:
+            raise ValueError("weights push refused: the server was not given a weight identity")
+        if base_digest != self.weights_digest:
+            raise ValueError(
+                "weights push refused: the client sampled "
+                f"{base_digest!r} but the server holds {self.weights_digest!r} — its weights moved "
+                "under the client; reconnect and resample"
+            )
+        parameters = dict(self.model.named_parameters())
+        buffers = dict(self.model.named_buffers())
+        # ``state_dict`` omits non-persistent buffers; the identity hash does not,
+        # so the push carries every named parameter and buffer and the target set
+        # is that union, not the persistent state.
+        target = {**parameters, **buffers}
+        if set(state) != set(target):
+            missing = sorted(set(state) - set(target))
+            extra = sorted(set(target) - set(state))
+            raise ValueError(f"weights push refused: missing {missing[:4]}, unexpected {extra[:4]}")
+        # Validate every shape and dtype, and hash the incoming bytes, before the
+        # first store: a refused push must not leave half of a policy in the model.
+        for name, value in state.items():
+            expected = target[name]
+            if tuple(value.shape) != tuple(expected.shape):
+                raise ValueError(
+                    f"weights push refused: {name} is {tuple(value.shape)} in the push, "
+                    f"{tuple(expected.shape)} in the server"
+                )
+            if value.dtype != expected.dtype:
+                raise ValueError(
+                    f"weights push refused: {name} is {value.dtype} in the push, {expected.dtype} in the server"
+                )
+        incoming = state_digest(
+            {name: state[name] for name in parameters}, {name: state[name] for name in buffers}
+        )
+        if digest is not None and incoming != digest:
+            raise ValueError(
+                "weights push refused: the pushed weights hash to "
+                f"{incoming!r}, the client's policy is {digest!r}"
+            )
+        started = time.perf_counter()
+        with torch.no_grad():
+            for name, value in state.items():
+                expected = target[name]
+                expected.copy_(value.to(device=expected.device))
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        measured = weights_digest(self.model)
+        apply_ms = (time.perf_counter() - started) * 1000.0
+        if measured != incoming:  # defensive: the copy is why the digest is the identity
+            raise RuntimeError(f"weights push lost bytes: the server hashes to {measured!r}, the push to {incoming!r}")
+        self.weights_digest = measured
+        self.stats["weight_pushes"] += 1
+        return {
+            "kind": "weights",
+            "checkpoint_sha256": self.checkpoint_sha256,
+            "weights_digest": measured,
+            "apply_ms": apply_ms,
+        }
+
     def describe(self) -> dict[str, Any]:
         rounds = max(int(self.stats["rounds"]), 1)
         requests = max(int(self.stats["requests"]), 1)
@@ -659,8 +831,12 @@ class DecisionServer:
             "full_cuda_graph": self.full_cuda_graph,
             "wait_ms": self.wait_seconds * 1000.0,
             "max_requests": self.max_requests,
-            "captured_row_counts": sorted(self._forwards),
-            "forwards": [self._forwards[rows].describe() for rows in sorted(self._forwards)],
+            "captured_row_counts": sorted({key[0] for key in self._forwards}),
+            "captured_shapes": [
+                {"rows": key[0], "groups": key[1], "children": key[2], "relations": key[3], "effects": key[4]}
+                for key in sorted(self._forwards)
+            ],
+            "forwards": [self._forwards[key].describe() for key in sorted(self._forwards)],
             "rounds": int(self.stats["rounds"]),
             "requests": int(self.stats["requests"]),
             "rows": int(self.stats["rows"]),
@@ -677,18 +853,25 @@ class DecisionServer:
             "shape_buckets": dict(self.stats["shape_buckets"]),
             "modes": dict(self.stats["modes"]),
             "failed_rounds": int(self.stats["failed_rounds"]),
+            "weight_pushes": int(self.stats["weight_pushes"]),
             "identity": self.identity,
         }
 
-    def handshake(self, header: dict[str, Any]) -> dict[str, Any]:
-        """Refuse a client that was not built from this server's weights."""
+    def handshake(self, header: dict[str, Any], *, require_weights: bool = True) -> dict[str, Any]:
+        """Refuse a client that was not built from this server's weights.
+
+        A ``stats`` reader only needs the checkpoint: counters are read-only and
+        cannot sample, so the weight digest is not required there (a supervisor
+        that opened before a push would otherwise be locked out of a server it
+        is supervising).
+        """
 
         if header.get("checkpoint_sha256") != self.checkpoint_sha256:
             raise ValueError(
                 "checkpoint hash mismatch: the server serves "
                 f"{self.checkpoint_sha256!r}, the client has {header.get('checkpoint_sha256')!r}"
             )
-        if header.get("weights_digest") != self.weights_digest:
+        if require_weights and header.get("weights_digest") != self.weights_digest:
             raise ValueError("weights digest mismatch: the server's sampling weights are not this checkpoint's")
         return {
             "kind": "hello",
@@ -798,7 +981,31 @@ class DecisionServer:
             # The supervisor snapshots this around its concurrent arm, so the
             # server's round shape is reported for the measurement, not for its
             # whole life (the baseline arm shares the process).
+            try:
+                self.handshake(header, require_weights=False)
+            except ValueError as error:
+                send_frame(sock, {"kind": "error", "error": str(error)})
+                clients.discard(sock)
+                _close(sock)
+                return None
             send_frame(sock, {"kind": "stats", "stats": self.describe()})
+            return None
+        if kind == "weights":
+            try:
+                packed = PackedRecord.from_payload(header["packed"], payloads, device=self.device)
+                state = unpack_state_dict(packed.record())
+                applied = self.apply_weights(
+                    state,
+                    checkpoint_sha256=header.get("checkpoint_sha256"),
+                    base_digest=header.get("base_weights_digest"),
+                    digest=header.get("weights_digest"),
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                send_frame(sock, {"kind": "error", "id": header.get("id"), "error": f"{type(error).__name__}: {error}"})
+                clients.discard(sock)
+                _close(sock)
+                return None
+            send_frame(sock, {**applied, "id": header.get("id")})
             return None
         if kind != "decide":
             send_frame(sock, {"kind": "error", "error": f"unknown request kind {kind!r}"})
@@ -907,6 +1114,7 @@ class DecisionClient:
             "unpack_ms_sum": 0.0,
             "queue_wait_ms_sum": 0.0,
             "round_trip_ms_max": 0.0,
+            "weight_pushes": 0,
         }
         self._socket: socket.socket | None = None
         self._next_id = 0
@@ -983,6 +1191,7 @@ class DecisionClient:
             "round_trip_ms_max": float(self.stats["round_trip_ms_max"]),
             "unpack_ms_mean": float(self.stats["unpack_ms_sum"]) / requests,
             "queue_wait_ms_mean": float(self.stats["queue_wait_ms_sum"]) / requests,
+            "weight_pushes": int(self.stats["weight_pushes"]),
             "server": dict(self.server),
         }
 
@@ -992,11 +1201,85 @@ class DecisionClient:
         if self._socket is None:
             self.connect()
         assert self._socket is not None
-        send_frame(self._socket, {"kind": "stats"})
+        send_frame(self._socket, {"kind": "stats", **self.identity})
         reply, _payloads = recv_frame(self._socket)
         if reply.get("kind") != "stats" or not isinstance(reply.get("stats"), dict):
             raise RuntimeError(f"decision server refused a stats request: {reply.get('error')}")
         return dict(reply["stats"])
+
+    # -- weight push ---------------------------------------------------------
+
+    def push_weights(
+        self,
+        model: Any,
+        *,
+        checkpoint_sha256: str | None = None,
+        digest: str | None = None,
+    ) -> dict[str, Any]:
+        """Give the server this model's weights and require it to hold exactly them.
+
+        The push names the weights the client last sampled with, so a server
+        that moved first refuses instead of silently jumping a version (a lost
+        update is stale data, and this is the gate that stops it).  The reply's
+        digest must equal the client's own, which is the behaviour identity the
+        next segment's rollout will be labelled with.
+        """
+
+        if self._socket is None:
+            self.connect()
+        assert self._socket is not None
+        local = str(digest) if digest is not None else weights_digest(model)
+        pack_started = time.perf_counter()
+        packed = pack_state_dict(model)
+        payloads = packed.payloads()
+        pack_ms = (time.perf_counter() - pack_started) * 1000.0
+        identity = self._next_id
+        self._next_id += 1
+        header = {
+            "kind": "weights",
+            "id": identity,
+            "checkpoint_sha256": checkpoint_sha256 or self.identity.get("checkpoint_sha256"),
+            "base_weights_digest": self.server.get("weights_digest"),
+            "weights_digest": local,
+            "packed": packed.descriptor(),
+            "bytes": tuple(len(payload) for payload in payloads),
+            "rows": packed.batch_size,
+        }
+        started = time.perf_counter()
+        send_frame(self._socket, header, payloads)
+        reply, _payloads = recv_frame(self._socket)
+        round_trip_ms = (time.perf_counter() - started) * 1000.0
+        if reply.get("kind") != "weights":
+            raise RuntimeError(f"decision server refused the weights push: {reply.get('error')}")
+        acked = str(reply.get("weights_digest"))
+        if acked != local:
+            raise RuntimeError(f"decision server accepted {acked!r}, this producer's policy is {local!r}")
+        self.server["weights_digest"] = acked
+        self.identity["weights_digest"] = acked
+        self.stats["weight_pushes"] += 1
+        return {
+            "weights_digest": acked,
+            "checkpoint_sha256": reply.get("checkpoint_sha256"),
+            "bytes": sum(int(size) for size in header["bytes"]),
+            "pack_ms": pack_ms,
+            "round_trip_ms": round_trip_ms,
+            "apply_ms": reply.get("apply_ms"),
+        }
+
+    def ensure_weights(
+        self,
+        model: Any,
+        *,
+        checkpoint_sha256: str | None = None,
+        digest: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Push only if the server's weights are not this model's; ``None`` if in step."""
+
+        local = str(digest) if digest is not None else weights_digest(model)
+        if self._socket is not None and local == self.server.get("weights_digest"):
+            return None
+        return self.push_weights(model, checkpoint_sha256=checkpoint_sha256, digest=local)
+
 
     def _request(
         self,

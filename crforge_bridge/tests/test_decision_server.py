@@ -27,9 +27,12 @@ from crforge_bridge.decision_server import (
     PackedRecord,
     bucket_for,
     canonical_batch,
+    pack_state_dict,
     pad_rows,
     row_bucket,
+    unpack_state_dict,
 )
+from crforge_bridge.training import state_digest, weights_digest
 from native_runner.tests.test_training_v4_model import _batch, _model
 from native_runner.training.v4.tensors import BattleGroupSetV4, RelationEdgesV4, UniversalSemanticBatchV4
 
@@ -367,3 +370,154 @@ def test_the_wire_carries_a_decision_and_refuses_other_weights(tmp_path: Any) ->
     assert described["rounds"] == 2
     assert described["requests"] == 2
     assert described["modes"] == {"sample": 1, "value": 1}
+
+
+# ---------------------------------------------------------------------------
+# the weight push: training behind the server
+# ---------------------------------------------------------------------------
+
+
+def _server_with_real_identity(**kwargs: Any) -> DecisionServer:
+    """A server whose digest is its model's, so a push can be verified against it."""
+
+    torch.manual_seed(3)
+    model = _model().eval()
+    return DecisionServer(
+        model,
+        device="cpu",
+        precision="fp32",
+        cuda_graphs=False,
+        checkpoint_id="fixture",
+        checkpoint_sha256="fixture-sha",
+        weights_digest=weights_digest(model),
+        **kwargs,
+    )
+
+
+def _perturbed_model(scale: float = 0.05) -> Any:
+    """The fixture's weights after one optimizer step, as a second object."""
+
+    torch.manual_seed(11)
+    model = _model().eval()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.add_(torch.randn_like(parameter) * scale)
+    return model
+
+
+def test_the_weight_record_round_trips_to_the_same_identity() -> None:
+    """The push's packing must preserve both the shapes and the hash."""
+
+    model = _model().eval()
+    parameters = dict(model.named_parameters())
+    buffers = dict(model.named_buffers())
+    packed = pack_state_dict(model)
+    restored = unpack_state_dict(packed.record())
+    assert set(restored) == set(parameters) | set(buffers)
+    for name, value in {**parameters, **buffers}.items():
+        assert tuple(restored[name].shape) == tuple(value.shape), name
+        assert torch.equal(restored[name].reshape(-1), value.detach().reshape(-1)), name
+    assert state_digest(
+        {name: restored[name] for name in parameters}, {name: restored[name] for name in buffers}
+    ) == weights_digest(model)
+
+
+def _weight_state(model: Any) -> dict[str, torch.Tensor]:
+    """Every named parameter and buffer, the set a push carries."""
+
+    return {**dict(model.named_parameters()), **dict(model.named_buffers())}
+
+
+def test_a_weight_push_lands_exactly_and_the_forward_reads_it(tmp_path: Any) -> None:
+    """The push is byte identity, and the next decision is the new policy's.
+
+    The digest equality is the strong claim (the server holds the client's
+    bytes); the value comparison is the behavioural one (the forward reads them
+    instead of a cached copy).  ``--ppo-update`` behind the server rests on both.
+    """
+
+    server = _server_with_real_identity(max_requests=4, wait_ms=1.0)
+    old_digest = weights_digest(server.model)
+    updated = _perturbed_model()
+    new_digest = weights_digest(updated)
+    assert new_digest != old_digest
+    path = tmp_path / "decision.sock"
+    identity = {"checkpoint_sha256": "fixture-sha", "weights_digest": old_digest}
+    ready = threading.Event()
+    stop = threading.Event()
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            server.serve(f"unix:{path}", stop=stop.is_set, on_ready=lambda _info: ready.set())
+        except Exception as error:  # noqa: BLE001 - surfaced by the assertion below
+            failures.append(error)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(10.0)
+        batch = _batch(2)
+        state = updated.initial_state(2, device="cpu")
+        starts = torch.ones(2, dtype=torch.bool)
+        with DecisionClient(f"unix:{path}", identity=identity, timeout=30.0) as client:
+            # The server still holds the old weights, so this is what a segment
+            # sampled before the boundary would see.
+            before = client.value(batch, state, episode_start=starts)
+            pushed = client.push_weights(updated, checkpoint_sha256="fixture-sha")
+            assert pushed["weights_digest"] == new_digest
+            assert client.server["weights_digest"] == new_digest
+            after = client.value(batch, state, episode_start=starts)
+            # A second call is a no-op: the client is in step with the server.
+            assert client.ensure_weights(updated, checkpoint_sha256="fixture-sha") is None
+            # A supervisor opened with the old digest can still read counters.
+            stats = client.server_stats()
+        eager = updated.forward(batch, state, episode_start=starts, validate=False)
+        assert weights_digest(server.model) == new_digest
+        assert torch.allclose(after, eager.value.detach().float(), atol=1e-4)
+        assert not torch.allclose(before, after, atol=1e-6)
+        assert stats["weight_pushes"] >= 1
+    finally:
+        stop.set()
+        thread.join(10.0)
+    assert not thread.is_alive()
+    assert not failures, failures
+
+
+def test_a_weight_push_is_refused_when_the_server_moved_first() -> None:
+    """A lost update is stale data, so the base digest is part of the contract."""
+
+    server = _server_with_real_identity()
+    updated = _perturbed_model()
+    with pytest.raises(ValueError, match="weights push refused"):
+        server.apply_weights(
+            _weight_state(updated),
+            checkpoint_sha256="fixture-sha",
+            base_digest="a-digest-the-client-sampled",
+            digest=weights_digest(updated),
+        )
+    assert weights_digest(server.model) == server.weights_digest
+
+
+def test_a_weight_push_is_refused_unless_it_hashes_to_the_client_policy() -> None:
+    server = _server_with_real_identity()
+    before = weights_digest(server.model)
+    updated = _perturbed_model()
+    with pytest.raises(ValueError, match="weights push refused"):
+        server.apply_weights(
+            _weight_state(updated),
+            checkpoint_sha256="fixture-sha",
+            base_digest=before,
+            digest="not-the-pushed-bytes",
+        )
+    # Validation happens before the first store: a refused push changes nothing.
+    assert weights_digest(server.model) == before
+    assert server.weights_digest == before
+    with pytest.raises(ValueError, match="weights push refused"):
+        server.apply_weights(
+            _weight_state(updated),
+            checkpoint_sha256="another-checkpoint",
+            base_digest=before,
+            digest=weights_digest(updated),
+        )
+    assert weights_digest(server.model) == before

@@ -11,11 +11,45 @@ and the log-probs against eager fp32.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 
 from crforge_bridge.fast_forward import FastForwardV4, resolve_precision
 from native_runner.tests.test_training_v4_model import _batch, _model
+
+
+def _wider_children(batch: object, children: int) -> object:
+    """The same board with extra masked child slots (a wider live width).
+
+    Padding on the *last* axis keeps every token address valid, which is what
+    makes this a fair test of the staging key rather than of the fixture.
+    """
+
+    record = batch.groups
+    extra = int(children) - int(record.child_mask.shape[1])
+    if extra < 1:
+        raise ValueError("the wider board needs at least one extra child slot")
+
+    def pad(value: torch.Tensor) -> torch.Tensor:
+        tail = torch.zeros(
+            (value.shape[0], extra, *value.shape[2:]), dtype=value.dtype, device=value.device
+        )
+        return torch.cat((value, tail), dim=1)
+
+    widened = replace(
+        record,
+        child_archetype_id=pad(record.child_archetype_id),
+        child_group_index=pad(record.child_group_index),
+        child_type=pad(record.child_type),
+        child_features=pad(record.child_features),
+        child_position=pad(record.child_position),
+        child_extent=pad(record.child_extent),
+        child_radius=pad(record.child_radius),
+        child_mask=pad(record.child_mask),
+    )
+    return replace(batch, groups=widened)
 
 
 def _setup(rows: int = 2) -> tuple[torch.nn.Module, object, object, torch.Tensor]:
@@ -134,6 +168,30 @@ def test_verify_reports_bf16_against_fp32() -> None:
         assert any(report["action_mismatches"].values())
     else:
         assert report["max_abs_delta"]["log_prob"] >= 0.0
+
+
+def test_a_board_that_widens_gets_its_own_staging() -> None:
+    """The board's live width changes inside a segment; the staging must follow.
+
+    The A6000 session-48 arm found this as ``staging axis 3 exceeds capacity 1``:
+    the first decision after warmup is an almost empty board, the next has
+    troops, and a row-keyed staging slot overflowed its group axis.
+    """
+
+    model, batch, _state, starts = _setup()
+    fast = FastForwardV4(model, device="cpu", rows=2, precision="fp32", cuda_graphs=False)
+    wide = _wider_children(batch, children=8)
+    narrow_stage = fast._stage(batch)
+    wide_stage = fast._stage(wide)
+    assert narrow_stage is not wide_stage
+    # The old row-keyed staging refused the wider board; each width now gets its
+    # own slot, and the wider one holds the board it was built for.
+    with pytest.raises(ValueError, match="exceeds capacity"):
+        narrow_stage.fill(wide, starts)
+    wide_stage.fill(wide, starts)
+    assert int(wide_stage.batch.groups.child_mask.shape[1]) == 8
+    assert torch.equal(wide_stage.batch.groups.child_mask, wide.groups.child_mask)
+    assert sorted(key[2] for key in fast._staged) == [5, 8]
 
 
 def test_rows_mismatch_is_refused() -> None:

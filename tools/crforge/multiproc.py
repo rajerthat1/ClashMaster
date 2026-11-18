@@ -21,6 +21,14 @@ with ``--server-device cuda`` (plus the server's ``--inference-precision`` /
 ``--full-cuda-graph``); ``--server auto`` refuses a non-cpu producer device
 because the producer no longer owns a forward.
 
+The **in-process** arm (``--server none``) owns its forward, so it passes
+``--fast-forward`` and the same ``--inference-precision`` / graph flags the
+server would get.  Both arms then differ in batching, not in precision or
+capture; an eager fp32 floor against an fp16 graph server would price the
+precision change and call it the architecture.  On the card, also pass
+``--no-validate``: per-decision contract validation syncs the device on every
+value it inspects and measures Python, not the forward (``FINDINGS.md`` §3.62).
+
 The aggregate is the sum of the producers' own collection rates, exactly as
 ``cloud_capacity.py --sweep-procs`` computes it: each producer keeps its own
 ``collection_wall_s``, so no cross-process clock is needed, and a shared
@@ -89,6 +97,17 @@ def producer_command(args: argparse.Namespace, *, output: Path, address: str | N
         command.append("--no-validate")
     if args.no_warmup_forward:
         command.append("--no-warmup-forward")
+    if args.fast_forward:
+        # The in-process arm owns its forward here: give it the same fp16/graph
+        # forward the server uses, so the two arms differ in batching, not in
+        # precision or capture.
+        command.append("--fast-forward")
+        if args.inference_precision is not None:
+            command.extend(("--inference-precision", str(args.inference_precision)))
+        if args.no_cuda_graphs:
+            command.append("--no-cuda-graphs")
+        if args.full_cuda_graph:
+            command.append("--full-cuda-graph")
     if address is not None:
         command.extend(("--decision-server", address))
         if args.verify_decision_server:
@@ -339,6 +358,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-requests", type=int, default=8)
     parser.add_argument("--wait-ms", type=float, default=2.0)
     parser.add_argument("--inference-precision", default=None, choices=("auto", "fp32", "fp16", "bf16"))
+    parser.add_argument(
+        "--fast-forward",
+        action="store_true",
+        help=(
+            "the in-process arm's producers own their forward and use the ported forward "
+            "(--fast-forward), with the same precision/graph flags as the server; refused "
+            "with --server auto, where the forward is the server's"
+        ),
+    )
     parser.add_argument("--no-cuda-graphs", action="store_true")
     parser.add_argument("--full-cuda-graph", action="store_true")
     parser.add_argument("--verify-decision-server", action="store_true")
@@ -375,6 +403,11 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "--server auto keeps the producers on the cpu half: pass --device cpu (the forward is "
             "the server's) and --server-device for the card"
+        )
+    if args.fast_forward and args.server == "auto":
+        raise SystemExit(
+            "--fast-forward is the producer's own forward; with --server auto the server owns it "
+            "(pass --inference-precision for the server instead)"
         )
     if args.procs > (os.cpu_count() or 1):
         print(f"note: {args.procs} producers on {os.cpu_count()} CPUs; the CPU half will queue", file=sys.stderr)

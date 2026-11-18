@@ -38,6 +38,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "max_requests": 8,
         "wait_ms": 2.0,
         "inference_precision": None,
+        "fast_forward": False,
         "no_cuda_graphs": False,
         "full_cuda_graph": False,
         "omp_threads": 1,
@@ -74,6 +75,20 @@ def test_the_producer_command_forwards_validation_flags() -> None:
     )
     assert "--no-validate" in command
     assert "--no-warmup-forward" in command
+
+
+def test_the_in_process_arm_carries_the_same_forward_settings() -> None:
+    """The floor must differ from the server arm in batching, not in precision."""
+
+    command = multiproc.producer_command(
+        _args(fast_forward=True, inference_precision="fp16", no_cuda_graphs=True),
+        output=Path("o"),
+        address=None,
+    )
+    assert "--fast-forward" in command
+    assert command[command.index("--inference-precision") + 1] == "fp16"
+    assert "--no-cuda-graphs" in command
+    assert "--fast-forward" not in multiproc.producer_command(_args(), output=Path("o"), address=None)
 
 
 def test_the_server_command_binds_the_address_and_the_forward_settings() -> None:

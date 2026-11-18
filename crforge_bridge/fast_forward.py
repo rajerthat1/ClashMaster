@@ -317,9 +317,15 @@ class FastForwardV4:
             raise ValueError("pinned staging needs CUDA")
         self.effect_capacity = int(effect_capacity)
         self.relation_capacity = int(relation_capacity)
-        self._graphs: dict[int, _GraphSlot] = {}
-        self._full_graphs: dict[tuple[int, bool], _GraphSlot] = {}
-        self._staged: dict[int, _StagedBatch] = {}
+        # A capture freezes the batch's shape, and the producer's group/child
+        # width is the board's live width (session 43), which grows and shrinks
+        # inside a segment as troops spawn and die.  The key is therefore the
+        # full shape, not the row count: one graph per (rows, groups, children)
+        # the run actually visits, so a wider board allocates its own graph
+        # instead of overflowing the first one's staging.
+        self._graphs: dict[tuple[int, int, int], _GraphSlot] = {}
+        self._full_graphs: dict[tuple[tuple[int, int, int], bool], _GraphSlot] = {}
+        self._staged: dict[tuple[int, int, int], _StagedBatch] = {}
         self.rng_gate: dict[str, Any] | None = None
         state = model.initial_state(self.rows, device=self.device)
         # The table is fp32 even under autocast: it is the canonical carry between
@@ -338,11 +344,17 @@ class FastForwardV4:
         dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
         return torch.autocast(device_type=self.device.type, dtype=dtype)
 
-    def _stage(self, host_batch: UniversalSemanticBatchV4) -> _StagedBatch:
+    def _shape_key(self, host_batch: UniversalSemanticBatchV4) -> tuple[int, int, int]:
+        """(rows, live groups, live children): the staging/graph identity."""
+
         rows = int(host_batch.batch_size)
         if rows != self.rows:
             raise ValueError(f"fast-forward was built for {self.rows} rows, got {rows}")
-        stage = self._staged.get(rows)
+        return (rows, int(host_batch.groups.mask.shape[1]), int(host_batch.groups.child_mask.shape[1]))
+
+    def _stage(self, host_batch: UniversalSemanticBatchV4) -> _StagedBatch:
+        key = self._shape_key(host_batch)
+        stage = self._staged.get(key)
         if stage is None:
             stage = _StagedBatch(
                 host_batch,
@@ -351,29 +363,28 @@ class FastForwardV4:
                 relation_capacity=self.relation_capacity,
                 pin_memory=self.pin_memory,
             )
-            self._staged[rows] = stage
+            self._staged[key] = stage
         return stage
 
     def _slot(self, host_batch: UniversalSemanticBatchV4) -> _GraphSlot:
-        rows = int(host_batch.batch_size)
-        slot = self._graphs.get(rows)
+        key = self._shape_key(host_batch)
+        slot = self._graphs.get(key)
         if slot is None:
             stage = self._stage(host_batch)
-            stage.fill(host_batch, torch.zeros(rows, dtype=torch.bool, device=self.device))
+            stage.fill(host_batch, torch.zeros(key[0], dtype=torch.bool, device=self.device))
             slot = _GraphSlot(self.model, self.device, stage, self._table, self._autocast)
-            self._graphs[rows] = slot
+            self._graphs[key] = slot
             self.captures += 1
         return slot
 
     def _full_slot(self, host_batch: UniversalSemanticBatchV4, *, sample: bool) -> _GraphSlot:
-        """The captured forward + decode for this row count and decode mode."""
+        """The captured forward + decode for this shape and decode mode."""
 
-        rows = int(host_batch.batch_size)
-        key = (rows, bool(sample))
+        key = (self._shape_key(host_batch), bool(sample))
         slot = self._full_graphs.get(key)
         if slot is None:
             stage = self._stage(host_batch)
-            stage.fill(host_batch, torch.zeros(rows, dtype=torch.bool, device=self.device))
+            stage.fill(host_batch, torch.zeros(key[0][0], dtype=torch.bool, device=self.device))
             slot = _GraphSlot(
                 self.model, self.device, stage, self._table, self._autocast, full=True, sample=sample
             )
@@ -510,12 +521,16 @@ class FastForwardV4:
                 if any(slot.rng_generator_registered for slot in self._full_graphs.values())
                 else ("torch-managed" if self.full_cuda_graph else None)
             ),
-            "captured_shapes": sorted(self._graphs),
+            "captured_shapes": [
+                {"rows": rows, "groups": groups, "children": children}
+                for rows, groups, children in sorted(self._graphs)
+            ],
             "captured_full_shapes": [
-                {"rows": rows, "sample": sample} for rows, sample in sorted(self._full_graphs)
+                {"rows": shape[0], "groups": shape[1], "children": shape[2], "sample": sample}
+                for shape, sample in sorted(self._full_graphs)
             ],
             "state_table": "fp32 device table",
-            "staging": "padded layout reused per row count",
+            "staging": "padded layout reused per (rows, groups, children)",
             "pinned_staging": self.pin_memory,
             "effect_capacity": self.effect_capacity,
             "relation_capacity": self.relation_capacity,

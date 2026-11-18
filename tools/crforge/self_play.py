@@ -766,11 +766,6 @@ def main(argv: list[str] | None = None) -> int:
                 "--fast-forward is the server's forward: pass those flags to "
                 "tools/crforge/decision_server.py, not to the producer"
             )
-        if args.ppo_update or args.overlap_update:
-            raise SystemExit(
-                "--decision-server is collection-only for now: an update would leave the server sampling "
-                "the previous weights while the rollout claims the new policy state"
-            )
         if str(args.device) != "cpu":
             raise SystemExit(
                 "--decision-server keeps the producer on the CPU half; the forward is the server's "
@@ -1087,6 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
     faults_before = dict(vector.fault_counts())
     reset_mask = np.ones(args.count, dtype=bool)
     flushed_partial_wave = 0
+    weight_pushes: list[dict[str, Any]] = []
     pipeline_started = time.perf_counter()
     profiler = cProfile.Profile() if args.profile_collection else None
     if profiler is not None:
@@ -1111,6 +1107,18 @@ def main(argv: list[str] | None = None) -> int:
             rollout_store = None
             segment_policy_state_id = None
             boundary_wall = 0.0
+            if decision_client is not None and trainer is not None:
+                # The server serves this segment, so it has to hold this
+                # segment's weights.  The push happens at the boundary, before
+                # any row is labelled with the new policy state, and it is
+                # refused if the server moved first (a lost push is stale data,
+                # not a version to paper over).
+                pushed = decision_client.ensure_weights(
+                    model, checkpoint_sha256=policy.checkpoint_sha256
+                )
+                if pushed is not None:
+                    weight_pushes.append({"segment": int(segment), **pushed})
+                    print(json.dumps({"event": "weights_pushed", "segment": segment, **pushed}), flush=True)
             if rollout_enabled:
                 segment_policy_state_id = policy_state_id(model, str(policy.checkpoint_id))
                 rollout_store = CrforgeRolloutStore(
@@ -1713,6 +1721,12 @@ def main(argv: list[str] | None = None) -> int:
                         "server": dict(decision_client.server),
                         "request": decision_client.request_stats(),
                         "verification": server_verification,
+                        "weight_pushes": weight_pushes,
+                        "final": {
+                            "collection_weights_digest": weights_digest(model),
+                            "server_weights_digest": decision_client.server.get("weights_digest"),
+                            "pushes": len(weight_pushes),
+                        },
                     }
                 ),
                 "sampling": (

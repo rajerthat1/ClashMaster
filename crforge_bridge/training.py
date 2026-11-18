@@ -52,13 +52,13 @@ import json
 import math
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 from native_runner.training.v4.checkpoint import CHECKPOINT_SCHEMA_V4, load_actor_critic_checkpoint
 from native_runner.training.v4.distributed_ppo import distributed_ppo_update_v4
@@ -68,27 +68,38 @@ from native_runner.training.v4.tensors import RecurrentPolicyStateV4
 STATE_POLICIES = ("carry", "reset", "wave")
 
 
-def _weight_bytes(model: nn.Module) -> list[tuple[str, bytes]]:
-    """Named parameter/buffer bytes in a stable order, for identity hashes."""
+def _chunk_bytes(name: str, tensor: Tensor) -> bytes:
+    value = tensor.detach().to(device="cpu")
+    if value.is_floating_point():
+        value = value.to(torch.float32)
+    return value.contiguous().numpy().tobytes()
 
-    chunks: list[tuple[str, bytes]] = []
-    for group, tensors in (("parameter", model.named_parameters()), ("buffer", model.named_buffers())):
-        for name, tensor in sorted(tensors):
-            value = tensor.detach().to(device="cpu")
-            if value.is_floating_point():
-                value = value.to(torch.float32)
-            chunks.append((f"{group}:{name}", value.contiguous().numpy().tobytes()))
-    return chunks
+
+def _digest_of(groups: Sequence[tuple[str, Mapping[str, Tensor]]]) -> str:
+    digest = hashlib.sha256()
+    for group, tensors in groups:
+        for name in sorted(tensors):
+            digest.update(f"{group}:{name}".encode())
+            digest.update(_chunk_bytes(name, tensors[name]))
+    return digest.hexdigest()[:32]
 
 
 def weights_digest(model: nn.Module) -> str:
     """Hash the parameter and buffer bytes, the behaviour's real identity."""
 
-    digest = hashlib.sha256()
-    for name, payload in _weight_bytes(model):
-        digest.update(name.encode("utf-8"))
-        digest.update(payload)
-    return digest.hexdigest()[:32]
+    return state_digest(dict(model.named_parameters()), dict(model.named_buffers()))
+
+
+def state_digest(parameters: Mapping[str, Tensor], buffers: Mapping[str, Tensor]) -> str:
+    """The same identity, computed from a state that has not been loaded yet.
+
+    The weight push needs the incoming bytes' digest *before* they land, so a
+    push that does not hash to the client's policy can be refused without
+    touching the server's parameters.  ``weights_digest`` is this function over
+    a model's own parameters and buffers, so the two agree byte for byte.
+    """
+
+    return _digest_of((("parameter", parameters), ("buffer", buffers)))
 
 
 def policy_state_id(model: nn.Module, checkpoint_id: str) -> str:
