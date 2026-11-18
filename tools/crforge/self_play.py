@@ -52,7 +52,10 @@ the behaviour weights for ``--wave-segments`` segments before applying their
 updates and resetting.  Every update appends a reward/return trace row, and the
 training gate needs **two consecutive finite updates** — one update proves the
 mechanics, not the loop.  ``--save-checkpoint`` writes a V4 checkpoint (weights,
-persistent optimizer, loop counters) and reloads it to verify the weight bytes.
+persistent optimizer, loop counters) and reloads it to verify the weight bytes;
+``--checkpoint-every N`` also writes ``<stem>-step-<n><suffix>`` every N updates,
+so ``tools/native_analysis/parity_curve.py`` can gate the run *while it trains*
+instead of only at its end (the parity cadence).
 
 ``--overlap-update`` pipelines the loop: the trainer owns a second model and a
 worker thread, so segment ``k``'s update runs while segment ``k+1`` collects.  The
@@ -527,6 +530,21 @@ def _save_checkpoint(
     }
 
 
+def _cadence_checkpoint_path(base: Path, update_step: int) -> Path:
+    """A mid-run checkpoint's path: next to ``--save-checkpoint``, named by its step."""
+
+    return base.with_name(f"{base.stem}-step-{update_step}{base.suffix}")
+
+
+def _validate_cadence(every: int, save_checkpoint: Path | None) -> None:
+    """Refuse a cadence that has nowhere to write, before the loop starts."""
+
+    if every < 0:
+        raise SystemExit("--checkpoint-every cannot be negative")
+    if every > 0 and save_checkpoint is None:
+        raise SystemExit("--checkpoint-every writes copies of --save-checkpoint; pass --save-checkpoint")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=8)
@@ -729,11 +747,21 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="write a V4 checkpoint (weights + the persistent optimizer) and reload it to verify",
     )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=0,
+        help=(
+            "also write <--save-checkpoint stem>-step-<n><suffix> every N updates, so the native "
+            "parity gate has checkpoints to read mid-run (0: only the final checkpoint)"
+        ),
+    )
     parser.add_argument("--output", type=Path, default=Path("runs/crforge-c4/self-play.json"))
     args = parser.parse_args(argv)
 
     if args.count < 1 or args.segments < 1 or args.decisions_per_segment < 1:
         raise SystemExit("--count, --segments and --decisions-per-segment must be positive")
+    _validate_cadence(args.checkpoint_every, args.save_checkpoint)
     if args.force_second_micro != "off" and not args.no_rollout:
         raise SystemExit(
             "--force-second-micro replaces the sampled action, so it cannot be stored as a "
@@ -1097,6 +1125,8 @@ def main(argv: list[str] | None = None) -> int:
     reset_mask = np.ones(args.count, dtype=bool)
     flushed_partial_wave = 0
     weight_pushes: list[dict[str, Any]] = []
+    cadence_checkpoints: list[dict[str, Any]] = []
+    last_cadence_step = 0
     pipeline_started = time.perf_counter()
     profiler = cProfile.Profile() if args.profile_collection else None
     if profiler is not None:
@@ -1416,6 +1446,29 @@ def main(argv: list[str] | None = None) -> int:
                                 state = fast.state
 
             wall = time.perf_counter() - segment_started
+            cadence_save_s = 0.0
+            if (
+                trainer is not None
+                and args.checkpoint_every > 0
+                and trainer.updates
+                and trainer.updates % args.checkpoint_every == 0
+            ):
+                cadence_step = int(trainer.base_update_step) + trainer.updates
+                if cadence_step != last_cadence_step:
+                    cadence_started = time.perf_counter()
+                    cadence_info = _save_checkpoint(
+                        _cadence_checkpoint_path(args.save_checkpoint, cadence_step),
+                        trainer.model,
+                        trainer,
+                        policy=policy,
+                        args=args,
+                        reward_config=reward_config,
+                    )
+                    cadence_save_s = time.perf_counter() - cadence_started
+                    cadence_info["wall_s"] = cadence_save_s
+                    cadence_checkpoints.append(cadence_info)
+                    last_cadence_step = cadence_step
+                    print(json.dumps({"event": "checkpoint_cadence", **cadence_info}), flush=True)
             update_wall = sum(float(update["wall_s"]) for update in segment_updates)
             collection_wall = max(wall - update_wall, 0.0)
             if overlap is not None:
@@ -1433,6 +1486,7 @@ def main(argv: list[str] | None = None) -> int:
                 "update_wall_s": update_wall,
                 "collection_wall_s": collection_wall,
                 "boundary_wall_s": boundary_wall,
+                "checkpoint_cadence_s": cadence_save_s,
                 "decisions": counts["decisions"],
                 "lane_decisions": counts["lane_decisions"],
                 "lane_decisions_per_s": counts["lane_decisions"] / wall if wall else 0.0,
@@ -1654,6 +1708,10 @@ def main(argv: list[str] | None = None) -> int:
                 "trace": trainer.trace,
                 "partial_wave_segments_flushed": flushed_partial_wave,
                 "checkpoint": checkpoint_info,
+                "checkpoint_cadence": {
+                    "every": int(args.checkpoint_every),
+                    "checkpoints": cadence_checkpoints,
+                },
                 "resume": resume_block,
                 "pipeline": None if pipeline_block is None else {
                     key: pipeline_block[key]
@@ -1706,6 +1764,7 @@ def main(argv: list[str] | None = None) -> int:
                 "update_state_policy": args.update_state_policy,
                 "wave_segments": (args.wave_segments if args.update_state_policy == "wave" else 1),
                 "save_checkpoint": None if args.save_checkpoint is None else str(args.save_checkpoint),
+                "checkpoint_every": int(args.checkpoint_every),
             },
             "substrate": {
                 "release": release,
