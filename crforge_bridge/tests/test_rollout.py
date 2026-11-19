@@ -334,6 +334,9 @@ def test_store_masks_the_frozen_opponent_rows_from_the_update() -> None:
     rollout = store.finalize(boundary_value=torch.zeros(lanes * seats))
     assert bool(rollout.valid_mask[:, 0::seats].all())
     assert not bool(rollout.valid_mask[:, 1::seats].any())
+    # A mask that trails the data device breaks the league update's index_select:
+    # every gate run before the league had all rows valid, so it never indexed.
+    assert rollout.valid_mask.device == rollout.episode_start.device == store.device
     assert rollout_statistics(rollout, gamma=0.9997, gae_lambda=0.98)["valid_rows"] == lanes * steps
 
 

@@ -375,13 +375,15 @@ def distributed_ppo_update_v4(
                         flat_actions = flat_actions.to(device)
                         episode_start = selected_episode_start[time_start:time_end]
                         if not all_lanes_active:
-                            episode_start = episode_start.index_select(1, active_lanes)
+                            episode_start = episode_start.index_select(1, active_lanes.to(episode_start.device))
                         episode_start = episode_start.to(device)
                         active_lanes_device = active_lanes.to(device)
                         chunk_state = state if all_lanes_active else state.index_select(active_lanes_device)
                         conditioned_gate_mask = selected_forced_gate[time_start:time_end]
                         if not all_lanes_active:
-                            conditioned_gate_mask = conditioned_gate_mask.index_select(1, active_lanes)
+                            conditioned_gate_mask = conditioned_gate_mask.index_select(
+                                1, active_lanes.to(conditioned_gate_mask.device)
+                            )
                         conditioned_gate_mask = conditioned_gate_mask.to(device)
                         assembly_seconds += time.perf_counter() - assembly_started
 
@@ -412,15 +414,15 @@ def distributed_ppo_update_v4(
                             (evaluated_log_prob, evaluated_entropy, evaluated_value, final_state) = sequence_evaluation
                             valid = chunk_valid
                             if not all_lanes_active:
-                                valid = valid.index_select(1, active_lanes)
+                                valid = valid.index_select(1, active_lanes.to(valid.device))
                             valid = valid.to(device)
                             advantage = selected_advantages[time_start:time_end]
                             if not all_lanes_active:
-                                advantage = advantage.index_select(1, active_lanes)
+                                advantage = advantage.index_select(1, active_lanes.to(advantage.device))
                             advantage = advantage.to(device=device, dtype=evaluated_log_prob.dtype)
                             old_log_prob = selected_behavior_log_prob[time_start:time_end]
                             if not all_lanes_active:
-                                old_log_prob = old_log_prob.index_select(1, active_lanes)
+                                old_log_prob = old_log_prob.index_select(1, active_lanes.to(old_log_prob.device))
                             old_log_prob = old_log_prob.to(device=device, dtype=evaluated_log_prob.dtype)
                             log_ratio = evaluated_log_prob - old_log_prob
                             ratio = torch.exp(log_ratio.clamp(-20.0, 20.0))
@@ -430,14 +432,14 @@ def distributed_ppo_update_v4(
 
                             target_return = selected_returns[time_start:time_end]
                             if not all_lanes_active:
-                                target_return = target_return.index_select(1, active_lanes)
+                                target_return = target_return.index_select(1, active_lanes.to(target_return.device))
                             target_return = target_return.to(device=device, dtype=evaluated_value.dtype)
                             if actual.value_clip_range is None:
                                 raw_value = (evaluated_value - target_return).square()
                             else:
                                 old_value = selected_behavior_value[time_start:time_end]
                                 if not all_lanes_active:
-                                    old_value = old_value.index_select(1, active_lanes)
+                                    old_value = old_value.index_select(1, active_lanes.to(old_value.device))
                                 old_value = old_value.to(device=device, dtype=evaluated_value.dtype)
                                 clipped_value = old_value + (evaluated_value - old_value).clamp(
                                     -actual.value_clip_range, actual.value_clip_range

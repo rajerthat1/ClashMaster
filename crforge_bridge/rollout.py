@@ -449,7 +449,10 @@ class CrforgeRolloutStore:
             observations=tuple(self.observations),
             actions=tuple(self.actions),
             episode_start=torch.stack(self._episode_start),
-            valid_mask=self.train_rows.unsqueeze(0).expand_as(terminated).clone(),
+            # The mask is an index in the PPO update, so it has to live beside the
+            # tensors it masks: a CPU mask over CUDA rows made the league's
+            # learner-only update index a CUDA tensor with a CPU index.
+            valid_mask=self.train_rows.to(self.device).unsqueeze(0).expand_as(terminated).clone(),
             behavior_log_prob=torch.stack(self._log_prob),
             behavior_value=values,
             next_value=next_values,
