@@ -101,14 +101,20 @@ tools/native_analysis/native_block_run.sh n4-vs-seed \
     101 150 10 runs/native-n4-gate
 .venv/bin/python tools/native_analysis/native_block.py --name n4-vs-seed \
     --output runs/native-n4-gate/block.json runs/native-n4-gate/n4-vs-seed-seeds*
+.venv/bin/python tools/native_analysis/promotion_gate.py \
+    --block runs/native-n4-gate/block.json \
+    --output runs/native-n4-gate/gate.json
 ```
 
 Read `win_rate_a.ci_low`, `by_a_owner` and the illegal/rejected totals from
-`block.json`; do not promote on the crforge run. `xbow-vs-hog26-evo.json` is the
-form-faithful A-hog26 deck (`cannon-ev1`, `skeletons-ev1`, `musketeer-hero`);
-the older `xbow-vs-hog26.json` keeps the base forms.
+`block.json`; do not promote on the crforge run. `promotion_gate.py` applies the
+≥55 % point estimate, the Wilson lower bound above 0.5, a 0.45 seat floor, zero
+illegal/rejected and a 2 % truncation cap, and exits **0 / 1 / 2** for
+PASS / FAIL / INSUFFICIENT. `xbow-vs-hog26-evo.json` is the form-faithful
+A-hog26 deck (`cannon-ev1`, `skeletons-ev1`, `musketeer-hero`); the older
+`xbow-vs-hog26.json` keeps the base forms.
 
-Gate: 28 targeted tests, 215 in the bridge suite, ruff clean. Still open: a
+Gate: 36 targeted tests, 223 in the bridge suite, ruff clean. Still open: a
 two-model decision-server arm, per-lane opponents, and per-segment decks (the
 engine keeps a lane's deck across autoresets, so a league must share one deck).
 

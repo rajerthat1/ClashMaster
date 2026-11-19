@@ -300,12 +300,25 @@ schedule. Rows now record `decks_by_owner`, because the evaluator swaps the
 decks *with the policy*: A keeps `deck0` at either seat, so `identity.match`
 alone cannot say which deck a policy played.
 
+`promotion_gate.py` turns that block into the N4 decision:
+
+```bash
+.venv/bin/python tools/native_analysis/promotion_gate.py \
+    --block runs/native-n4-gate/block.json \
+    --output runs/native-n4-gate/gate.json
+```
+
+It requires at least 150 decisive games, zero illegal/rejected actions, at most
+2 % truncations, a ≥55 % point estimate with the Wilson lower bound above 0.5,
+no seat below 0.45, and no block warnings. It exits 0 / 1 / 2 for
+PASS / FAIL / INSUFFICIENT.
+
 The committed gate configs are `match-configs/xbow-vs-hog26.json` (the locked
 X-Bow at seat 0, Hog 2.6 at seat 1) and `match-configs/mirror-xbow.json` (the
 locked X-Bow on both seats, the policy gate). `match-configs/xbow-vs-hog26-evo.json`
-is the form-faithful A-hog26 variant (evolved Cannon/Skeletons, Hero Musketeer). A fixed-deck policy comparison
-confounds deck with policy — session 40's 4–0 smoke is the example — so compare
-two checkpoints on the mirror.
+is the form-faithful A-hog26 variant (evolved Cannon/Skeletons, Hero Musketeer).
+A fixed-deck policy comparison confounds deck with policy — session 40's 4–0
+smoke is the example — so compare two checkpoints on the mirror.
 
 ## Ghidra scripts
 
