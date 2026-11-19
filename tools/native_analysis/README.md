@@ -302,7 +302,8 @@ alone cannot say which deck a policy played.
 
 The committed gate configs are `match-configs/xbow-vs-hog26.json` (the locked
 X-Bow at seat 0, Hog 2.6 at seat 1) and `match-configs/mirror-xbow.json` (the
-locked X-Bow on both seats, the policy gate). A fixed-deck policy comparison
+locked X-Bow on both seats, the policy gate). `match-configs/xbow-vs-hog26-evo.json`
+is the form-faithful A-hog26 variant (evolved Cannon/Skeletons, Hero Musketeer). A fixed-deck policy comparison
 confounds deck with policy — session 40's 4–0 smoke is the example — so compare
 two checkpoints on the mirror.
 

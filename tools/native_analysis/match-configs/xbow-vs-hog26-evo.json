@@ -1,0 +1,15 @@
+{
+  "deck0": [26000001, 26000084, 28000000, 26000000, 26000010, 27000006, 28000011, 27000008],
+  "deck1": [27000000, 28000000, 26000021, 26000038, 26000030, 26000014, 26000010, 28000011],
+  "deck0_form_availability": [1, 0, 0, 2, 0, 1, 0, 0],
+  "deck1_form_availability": [1, 0, 0, 0, 0, 2, 1, 0],
+  "tower_troop0_id": 159000000,
+  "tower_troop1_id": 159000000,
+  "game_mode": 72000006,
+  "arena": 54000001,
+  "location": 15000199,
+  "level_cap": 0,
+  "minimum_card_level": 0,
+  "king_tower_level": null,
+  "end_tick": 7200
+}

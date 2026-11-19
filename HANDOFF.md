@@ -89,21 +89,24 @@ python tools/crforge/self_play.py --count 64 --segments 50 --decisions-per-segme
     --output runs/crforge-n4/run.json
 ```
 
-Then the C6 block (150 paired games, both seats). The config must put X-Bow on
-`deck0` and the Hog 2.6 deck on `deck1`; the checked-in
-`match-config-mirror-xbow.json` is the seed-only plumbing config, not this gate.
+Then the C6 block (150 paired games, both seats). The committed gate config
+puts the locked X-Bow at seat 0 and Hog 2.6 at seat 1; the mirror config is the
+seed-only plumbing gate, not this one.
 
 ```bash
 tools/native_analysis/native_block_run.sh n4-vs-seed \
     runs/crforge-n4/ck-step-325.pt \
     .resource/RoyaleFish/models/B-general-v275.pt \
-    <xbow-vs-hog-config.json> 101 150 10 runs/native-n4-gate
+    tools/native_analysis/match-configs/xbow-vs-hog26-evo.json \
+    101 150 10 runs/native-n4-gate
 .venv/bin/python tools/native_analysis/native_block.py --name n4-vs-seed \
     --output runs/native-n4-gate/block.json runs/native-n4-gate/n4-vs-seed-seeds*
 ```
 
 Read `win_rate_a.ci_low`, `by_a_owner` and the illegal/rejected totals from
-`block.json`; do not promote on the crforge run.
+`block.json`; do not promote on the crforge run. `xbow-vs-hog26-evo.json` is the
+form-faithful A-hog26 deck (`cannon-ev1`, `skeletons-ev1`, `musketeer-hero`);
+the older `xbow-vs-hog26.json` keeps the base forms.
 
 Gate: 28 targeted tests, 215 in the bridge suite, ruff clean. Still open: a
 two-model decision-server arm, per-lane opponents, and per-segment decks (the
