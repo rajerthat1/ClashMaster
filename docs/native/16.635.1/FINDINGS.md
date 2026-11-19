@@ -7255,3 +7255,67 @@ is steady.  Two hosts: the A6000 above and an L40 (6 vCPU, AMD EPYC, $0.79/h).
 rejected, 0 failed rounds; no crash in any short run.  Evidence:
 `runs/crforge-c4/s51-sweep-summary.json`, `s51-a6000/sweep-lanes*.json`,
 `s51-l40/sweep-lanes*.json` and their logs.
+
+### 3.90 The C2 reproducer reaches the engine's compile sequence — and the fault body is a recompile with no null guard (2026-11-19)
+
+Session 51 left the report one gap: the stand-alone driver was clean on a host
+whose engine crashes 3/3, because its first C2 body was 3968 bytes where the
+engine's was 2848. This session makes the driver reproduce the engine's *compile
+history* rather than just its board, and reads the faulting body's fast path from
+the assembly already in `runs/crforge-c4/s51-a6000/print.log`.
+
+**The engine's history.**  Read from `hotspot-pid5285.log`: `of` is compiled by C2
+at **1528 bytes** at 24.989 s (count 8604), made not entrant by
+`unstable_if action='reinterpret'`, recompiled by C1 at 5296 bytes at 34.002 s
+(`decompiles='1' unstable_if_traps='1'`), and recompiled by C2 at **2848 bytes**
+at 65.488 s (count 15093); the crash follows in that second C2 body on the next
+new kind.  The first body was compiled while every guard was one-sided — that is
+what makes all four of them uncommon traps in a 1528-byte body.
+
+**The faulting body has no null guard.**  Disassembling compile 2922 from
+`print.log` (main code at `0x…ece0`) shows the fast path loading `of =
+byKind[kind]` at `0x…ed82`, then `mov 0xc(%r12,%r9,8),%ebp` (`of.length`) at
+`0x…ed87`, with **no test in between**.  The guards that are compiled are
+uncommon traps at `0x…efa8` (`kind >= byKind.length`) and `0x…efd0`
+(`n >= of.length`).  A null `of` reaches the length load, and because no
+implicit-exception entry covers that pc the process takes SIGSEGV at `0xc`
+instead of an NPE or a trap.  This is the whole defect: bci 54's `of == null`
+guard is dropped from the recompiled body.
+
+**The driver now reaches the sequence.**  `SeatIdsOfRepro phased` seeds the id
+tables directly (so `of` has never taken either guard when it is first compiled),
+warms assigned slots across both seats and 8 kinds, waits for the one-sided body,
+flips `kind >= byKind.length` with the first new kind, then warms in short chunks
+spaced by 20 ms so the compiler thread installs the C1 body and C2 recompiles it,
+and only after that body has installed shows it new kinds.  Measured, 3/3 with
+each `.resource` JDK, 0 crashes:
+
+| JDK | first C2 body | recompiled body |
+| --- | --- | --- |
+| Temurin 21.0.13 | **1528** | 4096 / 4104 |
+| Temurin 25.0.5 | 872 | 2888 / 2896 |
+
+The first number is the engine's 1528 exactly on 21.0.13, and the second body is
+a recompilation — the previous `quick`/`soak` drivers compiled 3968/4064 as a
+*first* body and never recompiled, which is why they could not reach the defect.
+The local recompiled bodies keep the bci-54 trap (the LogCompilation parse shows
+`uncommon_trap bci='54' reason='unstable_if'`), so the new kind deopts instead of
+faulting; the affected host's 2848 body is the same point in the history with the
+guard missing.  Nmethod size alone is not comparable across JDK builds (this
+laptop's 25.0.5 first body is 872), so the report compares the body's guard, not
+just its size.
+
+**The tool records the bodies, not just the crash.**  `hotspot_repro.py --mode
+phased` (`--phased-n`, `--phased-settle-ms`, `--rounds`, `--kinds`) adds
+`-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation` and writes every compilation
+of `of` per arm (`c2_nmethods`: compile id, compiler, level, nmethod size, count,
+install stamp).  The artifact gains `phased.c2_bodies` (the size list per C2 arm)
+and `phased.reached_recompile`; `--log-compilation` turns the record on for the
+other modes.  A clean phased run can now say *which* compilation it reached, so
+`exit 1` cannot be read as "this host is clean" when the second body never
+installed — the gap session 51 had to discover by hand.
+
+**Gate:** `test_hotspot_repro.py` **13 passed** (4 new: the phased sequence is in
+the source, the nmethod reader takes `size` not the bytecode's `bytes`, phased
+arguments, both bodies); ruff (E,F) clean on the tool and the test.  Evidence:
+`runs/crforge-c4/s52/hotspot-phased.json`.

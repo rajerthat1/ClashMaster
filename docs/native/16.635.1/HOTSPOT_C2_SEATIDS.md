@@ -7,18 +7,23 @@ and the engine crashed **3/3** with the same signature, at the *same offset*
 (`0x277`) in the level-4 nmethod of `SeatIds.of` (2848 bytes, installed 62–65 s
 in), and `-XX:CompileCommand=print` gives the faulting instruction: a length load
 of a null `int[]`.  The stand-alone driver (`SeatIdsOfRepro`) compiles `of` at
-level 4 on that same host and does **not** crash: its compiled body is 3968 bytes
+level 4 on that same host and does **not** crash: its `soak` body is 3968 bytes
 where the engine's is 2848, so it does not exercise the engine's compilation
 shape.  Session 50's "the trigger is the host CPU" is therefore withdrawn — the
 second host it tested was almost certainly affected and only the probe was
-negative.  This file is the text for a JDK bug report, the engine reproduction
-that is the working reproducer, and the probe that is not one.
+negative.  Session 52 gives the driver a `phased` mode that reaches the engine's
+*compile sequence* — a one-sided 1528-byte body, an `unstable_if` reinterpret, a
+recompile — deterministically on both local JDKs; locally the recompile keeps the
+null guard, so the miscompiled body is still observed only on the affected host.
+This file is the text for a JDK bug report, the engine reproduction that is the
+working reproducer, and the probe that is not one.
 
-- Producer: `tools/crforge/hotspot_repro.py` (probe — see §6.3, it is not the
-  reproducer)
-- Reproducer: the engine run in §3.2; the method under test is
+- Producer: `tools/crforge/hotspot_repro.py` (the probe — §6 C; its `phased` mode
+  reaches the compile sequence — §6 D)
+- Reproducer: the engine run in §3.1; the method under test is
   `tools/crforge/hotspot/SeatIdsOfRepro.java`
-- Finding: [`FINDINGS.md`](FINDINGS.md) §3.85 (the crash) and §3.86 (this reproducer)
+- Finding: [`FINDINGS.md`](FINDINGS.md) §3.85 (the crash), §3.86 (the driver) and
+  §3.90 (the compile sequence and the dropped guard)
 - Workaround in the tree: `--jvm-arg=-XX:TieredStopAtLevel=1` on `self_play.py` and
   the harnesses that forward it
 
@@ -40,11 +45,12 @@ if (of == null || n >= of.length) {      // <- bci 52 .. 62
 return of[n] - 1;
 ```
 
-On the affected host, once the method is a **level-4 (C2) nmethod**, the compiled
-body compares `n` against the *previous* `byKind.length` instead of `of.length`
-and dereferences a **null** `of` when a new entity kind appears (the slot
-`byKind[kind]` that `Arrays.copyOf` just created). The JVM takes `SIGSEGV` with
-`segfault at c` — offset 12, the array-length slot of a null `int[]`.
+On the affected host, once the method has been **recompiled** at level 4, its
+compiled body loads `of = byKind[kind]` and then `of.length` with **no null test
+in between** — the bytecode's `of == null` guard (bci 54) is gone. A new entity
+kind hands it the slot `byKind[kind]` that `Arrays.copyOf` just created, still
+null, and the length load faults at offset 12: `segfault at c`. The `n >=
+of.length` comparison itself is correct; the missing guard is the defect (§4.3).
 
 The bytecode is correct (see §5); the interpreted and C1 code are correct. This is
 a C2 defect, not a crforge bug.
@@ -104,7 +110,7 @@ nmethod's assembly when `hsdis` is installed at `$JAVA_HOME/lib/hsdis-amd64.so`
 `BattleEntity.IDS_PER_KIND` inlined as `1_000_000`, a public class, and the driver
 in the same file. Its `of` instruction stream is checked against the built engine
 jar on every run: same 117 instruction slots, same opcodes (only constant-pool
-indices differ). The driver has two modes:
+indices differ). The driver has three modes:
 
 - `quick [rounds] [kinds]` — kinds `0..kinds-1` are warm for `rounds`, then new
   kinds are read for the first time;
@@ -112,13 +118,20 @@ indices differ). The driver has two modes:
   new kind every `newEvery` calls (the affected host crashed 65.1 s in, so the
   default is 70 s); the kind count is capped at 1,000 because the id is
   `kind * 1_000_000` in an `int`.
+- `phased [kinds] [n] [rounds] [settleMs]` — the engine's **compile sequence**
+  (§4.3): the id tables are seeded directly, so `of` has never taken a guard when
+  C2 first compiles it; assigned slots are warmed, the one-sided body is allowed
+  to install, a guard is flipped with the first new kind (an `unstable_if`
+  reinterpret), the method is warmed again so C2 recompiles it, and only then is
+  the recompiled body shown new kinds. This is the sequence the crash lives in;
+  `quick` and `soak` never recompile `of` and so cannot reach it.
 
 `tools/crforge/hotspot_repro.py` compiles it with each JDK and runs three arms,
 every one with `-XX:+PrintCompilation`:
 
 | arm | flags | expectation |
 | --- | --- | --- |
-| `c2` | none | crashes on a host with the defect — **it does not** (see §6.3) |
+| `c2` | none | crashes on a host with the defect — **the `quick`/`soak` modes do not** (see §6 C); `phased` reaches the recompilation (§6 D) |
 | `c1` | `-XX:TieredStopAtLevel=1` | passes |
 | `interpreter` | `-Xint` | passes |
 
@@ -128,6 +141,24 @@ every one with `-XX:+PrintCompilation`:
     --mode soak --seconds 70 --repeats 2 \
     --output runs/crforge-c4/hotspot-seatids-soak.json
 ```
+
+The mode that reaches the engine's compile sequence is `phased`:
+
+```bash
+.venv/bin/python tools/crforge/hotspot_repro.py \
+    --jdks .resource/jdk21/jdk-21.0.13+9 .resource/jdk25/jdk-25.0.5+8 \
+    --mode phased --output runs/crforge-c4/hotspot-seatids-phased.json
+```
+
+In `phased` mode the tool always adds
+`-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation` and records every
+compilation of `of` in each arm (`c2_nmethods`: compile id, compiler, level,
+**nmethod size**, count, install stamp); `--log-compilation` turns the same
+record on for the other modes. The artifact's `phased.c2_bodies` is the size list
+per C2 arm and `phased.reached_recompile` says whether any arm installed a second
+body. The engine's list is `[1528, 2848]`; a run whose only body is the first
+one, or whose second body keeps the null guard, has not exercised the defect and
+must not be reported as "this host is clean".
 
 Exit status: **0** reproduced, **1** every arm passed, **2** inconclusive. An arm
 is only counted as a pass if its `PrintCompilation` output shows the level-4
@@ -207,11 +238,40 @@ body. The faulting instruction is at `0x00007ff7e605ed84+3`:
 Byte `43 8b 6c cc 0c` = `mov 0xc(%r12,%r9,8),%ebp`: the **`.length` load of a
 null `int[]`** (heap base `r12`, null narrow-oop in `r9`, so the faulting address
 is `0xc` — `segfault at c`). The null check the bytecode has at bci 54 is not
-honoured on this path.
+honoured on this path; §4.3 shows the fast path has no test of `of` at all.
 
 A C1 arm (`-XX:TieredStopAtLevel=1`) completes all 3 segments on the same host:
 gate pass, 563 eligible lane-decisions, 28 ACT (4.97 %), **0 illegal, 0
 rejected**; so the workaround is confirmed on the second host as well.
+
+### 4.3 The 2848-byte body's fast path has no null guard
+
+The full disassembly of compile 2922 (`print.log`, base `0x…ece0`) makes the
+defect one instruction sequence. The fast path computes `kind`, `n`, loads
+`byKind = ids[seat]`, checks `kind < byKind.length` (the taken side is an
+uncommon trap at `0x…efa8`), loads `of = byKind[kind]`, and then loads
+`of.length`:
+
+```
+0x…ed5e  mov    0x10(%r9,%rdx,4),%edi     ; byKind = ids[seat]
+0x…ed63  mov    0xc(%r12,%rdi,8),%ebp     ; byKind.length
+0x…ed68  cmp    %ebp,%ecx                  ; kind vs byKind.length
+0x…ed6a  jge    0x…efa8                    ; taken -> {uncommon trap}
+0x…ed82  mov    0x10(%r9,%rax,4),%r9d      ; of = byKind[kind]
+0x…ed87  mov    0xc(%r12,%r9,8),%ebp      ; of.length          <- fault PC, offset 0x277
+0x…ed8c  cmp    %ebp,%r11d                 ; n vs of.length
+0x…ed8f  jge    0x…efd0                    ; taken -> {uncommon trap}
+```
+
+There is **no test of `of` between `0x…ed82` and `0x…ed87`**, and no
+implicit-exception entry covers the load: a null `of` faults at `0xc` and the
+process dies instead of taking an NPE or an uncommon trap. The two compiled
+guards that remain are `kind >= byKind.length` and `n >= of.length`; the bytecode
+guard `of == null` at bci 54 is the one that was dropped. The other C2 body
+(1528 bytes, installed at 24.989 s) was compiled while every guard was
+one-sided, and the 2848 body is the **recompilation** that followed the
+`unstable_if` reinterpret — so a reproducer has to reach that recompilation, not
+just a hot `of`.
 
 ## 5. The bytecode is correct
 
@@ -235,12 +295,11 @@ rejected**; so the workaround is confirmed on the second host as well.
      120: ifne          186
 ```
 
-Both guards are present and both load from `of`. In the compiled body the
-`n >= …` comparison used the value the compiler had loaded for
-`kind >= byKind.length`, and the null check was not honoured on that path — so a
-new kind (`of` just created, `n == 0`, previous `byKind.length >= 1`) falls through
-to `of.length`/`of[0]` on a null reference. Reading the length of a null `int[]`
-faults at offset 12, which is `segfault at c`.
+Both guards are present and both load from `of`. In the compiled body the fast
+path drops the `of == null` test (bci 54) and keeps `n >= of.length`, so a new
+kind (`of` just created, `n == 0`) loads a length through a null `of`. Reading
+the length of a null `int[]` faults at offset 12, which is `segfault at c`; the
+disassembly in §4.3 shows the missing test.
 
 ## 6. Hosts the *driver* did not crash — and why that is not evidence
 
@@ -272,13 +331,14 @@ affected host** (`21.0.13.0.3+1-1-22.04.1-Ubuntu`):
 
 Evidence: `runs/crforge-c4/s50-thunder/` (`host.txt`, `D.*`, `E.*`, `soak1.*`).
 
-**What B rules out — and what session 51 overturned.** B's bytes, kernel, tier and
-trigger shape are ruled out for the *driver*; but session 51 ran the driver on a
-host whose engine crashes 3/3 and the driver was clean there too (2/2 C2 arms at
-level 4, bytecode identical). So B's negative says nothing about the host. The
-driver's own level-4 body is **3968 bytes**, the engine's is **2848** — a
-different compilation of the same method — so the driver does not reach the
-compilation shape that is miscompiled. **The trigger is not the host CPU.**
+**What B rules out — and what sessions 51–52 overturned.** B's bytes, kernel, tier
+and trigger shape are ruled out for the *driver*; but session 51 ran the driver
+on a host whose engine crashes 3/3 and the driver was clean there too (2/2 C2
+arms at level 4, bytecode identical). So B's negative says nothing about the
+host. The `soak` driver's own level-4 body is **3968 bytes**, the engine's is
+**2848** — a different compilation of the same method — so that mode does not
+reach the compilation shape that is miscompiled. The `phased` mode reaches the
+recompilation (§6 D). **The trigger is not the host CPU.**
 
 One tooling defect surfaced while doing this: the soak driver's
 `kind * IDS_PER_KIND` is an `int`, so 2,147 new kinds overflowed it and threw an
@@ -291,7 +351,19 @@ caps at 1,000 kinds; the throw was the driver's, not the JVM's.
 while the engine crashed 3/3 on that same box. Evidence:
 `runs/crforge-c4/s51-a6000/hotspot-repro.json`.
 
-## 7. What would make the report filable — and what session 51 closed
+**D. The two local JDKs, driven by `--mode phased` (a negative for the body, not
+for the sequence).** `short soak` reaches the method but not the recompilation;
+`phased` reaches the recompilation. 3/3 C2 arms on each JDK, 0 crashes:
+Temurin `21.0.13` compiles `of` at **1528** bytes, then at **4096–4104**;
+Temurin `25.0.5` at **872**, then **2888**. The first body is the engine's 1528
+on 21.0.13 — the driver now compiles the same one-sided body — and the second is
+a recompilation, which the `quick`/`soak` bodies (3968/4064 as a *first* body)
+never were. What differs is the body: on both local JDKs the recompiled arm keeps
+a null-check trap at bci 54, so the new kind deopts as it should, while the
+affected host's 2848 body has no guard (§4.3). Evidence:
+`runs/crforge-c4/s52/hotspot-phased.json` (`phased.c2_bodies`).
+
+## 7. What would make the report filable — and what session 52 closed
 
 1. ~~Find a host that has the defect.~~ **Done:** session 51's Thunder A6000,
    3/3 engine crashes (§4.2).
@@ -300,18 +372,24 @@ while the engine crashed 3/3 on that same box. Evidence:
    artifact.
 3. ~~Attach `-XX:+LogCompilation` and an `hsdis` disassembly.~~ **Done:** fault
    PC → level-4 nmethod at offset `0x277`, and the faulting instruction
-   (`mov 0xc(%r12,%r9,8),%ebp`, a null `int[]` length) (§4.2).
-4. **Still open — a stand-alone reproducer.** The engine run is the reproducer
-   today; a self-contained one would have to reach the engine's 2848-byte
-   compilation of `of`, and the current driver compiles a 3968-byte body and
-   stays clean. Until that is closed, file with §3.1 as the reproduction, the
-   `of` listing in §5 and the assembly in §4.2, and state the driver negative
-   explicitly so a triager does not read it as "cannot reproduce".
+   (`mov 0xc(%r12,%r9,8),%ebp`, a null `int[]` length) (§4.2), with the whole
+   fast path showing the dropped guard (§4.3).
+4. **Narrowed — a stand-alone reproducer now reaches the engine's compile
+   sequence.** `--mode phased` deterministically compiles the one-sided body
+   (the engine's 1528 bytes on 21.0.13), flips a guard, and recompiles; locally
+   the second body keeps the null guard. The remaining step is one run of that
+   mode on an affected host: `phased.reached_recompile: true` plus a crash makes
+   it self-contained. Until then file with §3.1 as the reproduction, the `of`
+   listing in §5 and the assembly in §4.2/§4.3, and state both driver negatives
+   (§6 C and D) explicitly so a triager does not read them as "cannot
+   reproduce".
 5. File at <https://bugreport.java.com> with the summary in §1, the environment in
    §2, the reproduction in §3.1 and the evidence in §4.
 
 Do **not** read "the probe is clean" as "the host is clean": the probe is a false
 negative on a host that crashes the engine 3/3. The flag stays on for every CPU
 producer that meets a new entity kind after `of` has been recompiled at level 4,
-and the host class is not narrowed.
+and the host class is not narrowed. Read a phased run by its bodies: only a run
+that installed the second C2 body can be a negative for the defect, and only a
+crash in that body is the reproduction.
 

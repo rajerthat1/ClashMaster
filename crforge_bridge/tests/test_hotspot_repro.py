@@ -93,3 +93,59 @@ def test_the_engine_method_is_the_one_this_tool_compiles() -> None:
     assert "if (of == null || n >= of.length) {" in source
     assert "IDS_PER_KIND = 1_000_000" in source
     assert hotspot_repro.METHOD == "SeatIdsOfRepro::of (194 bytes)"
+
+
+def test_the_phased_mode_keeps_the_engine_s_compile_sequence() -> None:
+    # The driver is only a reproducer if it seeds the tables without calling `of`,
+    # flips a guard after the one-sided C2 body is installed, and warms again so C2
+    # recompiles the method before a new kind is shown to it.
+    source = (Path(_TOOL_DIR) / "hotspot" / "SeatIdsOfRepro.java").read_text(encoding="utf-8")
+    phased = source[source.index("private static long phased("):]
+    phased = phased[: phased.index("public static void main")]
+    assert "ids.seed(kinds, n);" in phased
+    assert "sleep(settleMs);" in phased
+    assert "ids.of(0, kinds * IDS_PER_KIND)" in phased
+    assert "warm(ids, kinds, n, 1, kinds)" in phased
+    seed = source[source.index("private void seed("):]
+    assert "ids[seat] = byKind;" in seed[: seed.index("\n  }")]
+
+
+def test_the_nmethod_reader_records_the_body_sizes_not_the_bytecode_size() -> None:
+    log = """
+<nmethod compile_id='110' compiler='c1' level='3' entry='0x1' size='5296' address='0x2'
+         method='SeatIdsOfRepro of (II)I' bytes='194' count='9692' stamp='0.031'/>
+<nmethod compile_id='111' compiler='c2' level='4' entry='0x3' size='1528' address='0x4'
+         method='SeatIdsOfRepro of (II)I' bytes='194' count='417857' stamp='0.036'/>
+<nmethod compile_id='112' compiler='c2' level='4' entry='0x5' size='2848' address='0x6'
+         method='java.util.Arrays copyOf ([II)[I' bytes='33' count='2' stamp='0.037'/>
+"""
+    parsed = hotspot_repro._nmethods(log)
+    assert [(entry["compile_id"], entry["size"]) for entry in parsed] == [(110, 5296), (111, 1528)]
+    assert parsed[1]["compiler"] == "c2"
+    assert parsed[1]["level"] == 4
+    assert parsed[1]["installed"] == 0.036
+
+
+def test_phased_mode_passes_its_own_knobs_and_defaults() -> None:
+    class Args:
+        mode = "phased"
+        kinds = 8
+        rounds = 12
+        phased_n = 512
+        phased_settle_ms = 300
+
+    assert hotspot_repro._mode_args(Args()) == ["phased", "8", "512", "12", "300"]
+
+
+def test_a_phased_run_must_show_both_c2_bodies() -> None:
+    one = {"arm": "c2", "timed_out": False, "c2_nmethods": [{"size": 1528}]}
+    two = {
+        "arm": "c2",
+        "timed_out": False,
+        "c2_nmethods": [{"size": 1528}, {"size": 4096}],
+    }
+    control = {"arm": "c1", "timed_out": False, "c2_nmethods": []}
+    summary = hotspot_repro._phased_summary([one, control])
+    assert summary["c2_bodies"] == [[1528]]
+    assert not summary["reached_recompile"]
+    assert hotspot_repro._phased_summary([one, two, control])["reached_recompile"]
