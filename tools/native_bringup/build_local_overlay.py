@@ -2,7 +2,7 @@
 """Build a startable *local overlay* of a published cr-native-linux-bionic bundle.
 
 The published ``runtime-150535029`` bundle cannot cold-start (see
-``docs/native/PHASE0_BRINGUP.md``).  This tool patches a copy of that bundle
+the bring-up notes).  This tool patches a copy of that bundle
 under ``builds/`` and rewrites the manifest so ``verify-bundle``/``install``
 accept the patched archives:
 

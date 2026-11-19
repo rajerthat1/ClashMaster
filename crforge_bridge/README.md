@@ -5,7 +5,7 @@ A Python process that makes **crforge** stand in for FirstLight's native runner 
 sends, so `BattleEnvV1`, `ObservationV1`, the evaluator and the trainer stay
 unchanged.
 
-Design: optional fallback/CI path in [`ROADMAP_CRFORGE.md`](../ROADMAP_CRFORGE.md); the primary plan is [`ROADMAP.md`](../ROADMAP.md).
+Design: optional fallback and CI path; the native engine is the primary training path.
 
 > **Same contract, no wire:** `native_runner/crforge_resident.py` presents the
 > identical `NativeClashEnv` surface over an in-process `Engine`, calling this
@@ -107,7 +107,7 @@ input the batched V4 row build will consume; the bridge's per-lane
 ```
 
 Measured 2026-11-18: **0.0317 ms/lane**, 4.8x the per-lane decoders, equivalence
-pass (`docs/native/16.635.1/FINDINGS.md` §3.46).
+pass (benchmark output).
 
 ## Batched causal-group row build (C3-B, first section)
 
@@ -119,7 +119,7 @@ a graph walk (the bridge envelope has no causal-group events, so every group is
 a singleton). `VectorGroupBuilder.build_pair` builds both actor seats' sections
 in one pass: they differ only in position, velocity sign and group owner, so it
 shares the row core, orders, targeted mask and ranks and assembles once at
-`2 × lanes` (`FINDINGS.md` §3.79). The per-lane tensorizer stays the oracle:
+`2 × lanes` (benchmark output). The per-lane tensorizer stays the oracle:
 `reference_entities` + `oracle_groups` run the stock `_groups` on
 `EntityStateV1` rows projected from the same facts.
 
@@ -130,7 +130,7 @@ shares the row core, orders, targeted mask and ranks and assembles once at
 ```
 
 Measured 2026-11-19: **0.0539 ms/lane** vs the 0.2207 per-lane oracle (**4.09x**),
-equivalence pass over 40 decisions (`docs/native/16.635.1/FINDINGS.md` §3.47).
+equivalence pass over 40 decisions (benchmark output).
 
 ## Batched card and relation row build (C3-B, next sections)
 
@@ -153,7 +153,7 @@ tower, pending-action and entity rows from the same facts, so the stock
 The gate reads the checkpoint's own `contract.model_config` (21 card columns
 for `B-general-v275`), not the default 16-column schema. Measured 2026-11-19:
 cards **0.00161 ms/lane** vs 0.0718 (**44.5x**), relations **0.00984** vs 0.0522
-(**5.30x**), equivalence pass over 40 decisions (`FINDINGS.md` §3.48). Section
+(**5.30x**), equivalence pass over 40 decisions (benchmark output). Section
 only: candidates, towers, scalars, spatial planes and the empty effects/events
 are still per-lane, and a facts-only `tensorize` must land before the C3 gate.
 
@@ -172,4 +172,4 @@ pinned attestation, configure/observe shape, a short stepped episode, native
 
 The bridge is the **optional fallback/CI** seam, not the primary training path. If crforge is
 activated for bulk PPO, move the same writer into a `multi-*` resident vector inside a JVM
-process; the wire contract does not change. See [`ROADMAP_CRFORGE.md`](../ROADMAP_CRFORGE.md).
+process; the wire contract does not change.

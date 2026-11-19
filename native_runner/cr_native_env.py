@@ -2541,7 +2541,7 @@ class NativeClashEnv:
         """Return the replay wire id for a card play on the connected client.
 
         15.535.13 uses ``ct`` 86; 16.635.1 uses 153
-        (``docs/capture_format.md`` §2.3). The probe reports its client version
+        in the replay wire format. The probe reports its client version
         in ``status`` so one harness can drive both builds.
         """
 

@@ -22,7 +22,7 @@ DECK = (26000000, 26000001, 26000005, 28000001, 28000000, 26000003, 26000014, 26
 TOWER_TROOP = 159000000
 FORM_AVAILABILITY = (0, 0, 0, 0, 0, 0, 0, 0)
 
-# The locked X-Bow learner deck (HANDOFF.md 2026-11-15).  Forms are slot flags on
+# The locked X-Bow learner deck (the session notes 2026-11-15).  Forms are slot flags on
 # the base card: Tesla and Archer evolved, Knight hero.  Kept here beside DECK so
 # a tool cannot invent a fifth spelling of the learner deck.
 LEARNER_DECK = (27000008, 27000006, 26000001, 26000000, 26000010, 26000084, 28000000, 28000011)

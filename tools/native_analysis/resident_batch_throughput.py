@@ -2,7 +2,7 @@
 """Measure resident batch throughput on one or more connected probe engines.
 
 The single-connection control API pays one TCP/adb round trip per command
-(~19 ms measured, FINDINGS §3.18). The resident batch channel (`batch-v1`)
+(~19 ms measured, the native notes). The resident batch channel (`batch-v1`)
 amortizes that: one framed request advances every resident slot a fixed number
 of ticks, which is how the training harness is meant to run.
 

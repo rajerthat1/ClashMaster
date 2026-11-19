@@ -2,13 +2,13 @@
 
 The C4 producer owns one ``VectorBattle`` and one forward per process.  On a GPU
 box that is one core and one copy of the model per producer, and the card serves
-about four of them at the full-graph share (``ROADMAP_CRFORGE.md`` §4).  The
+about four of them at the full-graph share (the crforge plan).  The
 scale-out step past that is the shape the field uses: keep the collectors on the
 CPU half and serve every waiting collector's batch in **one forward call** from a
 process that owns the card.
 
 This module is that server, plus the client the producer uses.  It does not port
-``ever_server``'s protocol (``FINDINGS.md`` §3.72): the wire here carries the
+``ever_server``'s protocol (the native notes): the wire here carries the
 producer's already-tensorized batch, the recurrent state and the episode-start
 flags, and comes back with the sampled action sequence, log-probability,
 entropy, value and next state — exactly the ``PolicyOutputV4`` the in-process
@@ -21,7 +21,7 @@ Two things make the batch joinable at all:
   so the server pads every request in a round to the widest bucket the ladder
   offers (``GROUP_BUCKETS`` and friends) before joining them.  The bucket is part
   of the forward's shape, so a run reuses a handful of graphs instead of
-  capturing one per board (``FINDINGS.md`` §3.77).
+  capturing one per board (the native notes).
 * **The row axis is bucketed too.**  ``k`` requests of ``R`` rows join to
   ``k × R`` and pad up to the next power-of-two multiple of ``R``, so the forward
   sees a stable set of row counts (the same trick as ``FastForwardV4``'s graph
@@ -48,7 +48,7 @@ The gates are behavioural, in the same spirit as ``FastForwardV4.verify``:
    and staging stay valid) and re-hashes the result, and a push that does not
    hash to the client's policy, or that arrives against a server whose weights
    moved first, is refused.  A producer that trains behind the server therefore
-   samples the weights its rollout is labelled with (``FINDINGS.md`` §3.82).
+   samples the weights its rollout is labelled with (the native notes).
 
 The gate the push protects is the stale-data one: the rollout store binds the
 sampling weights' digest, so a push that silently failed would mislabel every
@@ -153,7 +153,7 @@ def canonical_batch(
     """Project one producer's live-width batch onto a round's bucket widths.
 
     Only the four variable axes move: the group/child axes (live width,
-    ``FINDINGS.md`` §3.76–§3.79) and the active-effect/relation axes (already
+    the native notes§3.79) and the active-effect/relation axes (already
     padded by ``FastForwardV4`` for a graph).  Every other axis is the model's
     fixed capacity and must already match, which is what makes two requests
     joinable with ``concatenate_tensor_records``.

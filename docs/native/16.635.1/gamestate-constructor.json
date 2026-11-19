@@ -12,7 +12,7 @@
     "allocation_size": "0x240",
     "runner_call": "0xd9ae7c (manager, 1, contextA, contextB, 0)"
   },
-  "note": "Store map read from the constructor bodies. 'role' names are inferred from the constructor arguments and the immediately following accessors; they are not yet confirmed by live goldens. The old handoff's '+0xa0 -> +0xa4' and the FINDINGS '+0x9c -> +0xa0' notes are BOTH correct but refer to different things: 0x9c->0xa0 is the initialised int, 0xa0->0xa4 is the embedded sub-object base.",
+  "note": "Store map read from the constructor bodies. 'role' names are inferred from the constructor arguments and the immediately following accessors; they are not yet confirmed by live goldens. The '+0xa0 -> +0xa4' and '+0x9c -> +0xa0' notes are both correct but refer to different things: 0x9c->0xa0 is the initialised int, 0xa0->0xa4 is the embedded sub-object base.",
   "fields": [
     {
       "role": "embedded_sub_object",

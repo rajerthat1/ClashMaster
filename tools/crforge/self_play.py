@@ -21,7 +21,7 @@ Shape choices, all recorded on the artifact:
   exactly those lanes.
 * **The previous action is recorded every decision** (``record_action``), so the
   model consumes the same training-shaped record a PPO update would.
-* **Deploy candidates only** (the bridge envelope; ``FINDINGS.md`` §3.56): no
+* **Deploy candidates only** (the bridge envelope; the native notes): no
   ability source and no Mirror runtime yet.
 
 This tool is the C4 producer.  It measures the packet the C4 gate asks for —
@@ -158,7 +158,7 @@ def _timing_buckets(samples: dict[str, list[float]]) -> dict[str, dict[str, floa
 
     The wall is a mean and a bucket's median is not: a cold first decision can
     be seconds and still leave every median untouched.  Summing medians against
-    a mean wall is what produced the "unattributed ms" in ``FINDINGS.md`` §3.62;
+    a mean wall is what produced the "unattributed ms" in the native notes;
     the means and the residual are the reconciling statistics.
     """
 
@@ -190,10 +190,10 @@ def _inference_steady_state(segments: Sequence[dict[str, Any]]) -> dict[str, Any
     """The forward's share of a decision and the CPU half beside it.
 
     The last segment is the steady state (the warmup is on by default and the
-    first decisions are cold, FINDINGS.md §3.67).  ``inference_ms`` is the model
+    first decisions are cold, the native notes).  ``inference_ms`` is the model
     forward *plus its per-call overhead*; the CPU half is what has to fall for a
     faster forward to pay, so the artifact reports both rather than the forward
-    alone (ROADMAP_CRFORGE.md §4).
+    alone (the crforge plan).
     """
 
     if not segments:
@@ -791,7 +791,7 @@ def main(argv: list[str] | None = None) -> int:
             "--jvm-arg=-XX:TieredStopAtLevel=1 so a leading '-' is not read as "
             "an option.  A rented A6000 host's HotSpot C2 compiler miscompiles "
             "SeatIds.of once it is hot and the producer segfaults on a new "
-            "entity kind; C1-only runs pass (FINDINGS.md 3.85)"
+            "entity kind; C1-only runs pass (the native notes)"
         ),
     )
     parser.add_argument(
@@ -799,7 +799,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "profile the collection loop with cProfile and record the top functions by cumulative and own "
-            "time; attribution for the CPU-half work that has to fall (ROADMAP_CRFORGE.md §4)"
+            "time; attribution for the CPU-half work that has to fall (the crforge plan)"
         ),
     )
     parser.add_argument("--greedy", action="store_true", help="argmax instead of sampling (debug only)")
@@ -1237,7 +1237,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_warmup_forward:
         # The engine warmup above never runs the model.  On CUDA the first
         # sampled decision pays the RNN's lazy setup and the allocator's first
-        # growth — a fixed ~5-7 s at every batch size (FINDINGS.md §3.67) —
+        # growth — a fixed ~5-7 s at every batch size (the native notes) —
         # which lands in decision 0's bucket and inflates a mean rate while every
         # median stays blind to it.  Prime the exact sampled path here, then put
         # the RNG back so the action stream is byte-identical to a cold run.

@@ -145,7 +145,7 @@ class VectorTensorizer:
         ``timings`` is an optional millisecond accumulator: when given, each
         builder's share of the decision is added to it under its own name.  The
         producer's CPU-half probe uses it to name the section that has to fall
-        (``ROADMAP_CRFORGE.md`` §4); the returned record is identical either way.
+        (the crforge plan); the returned record is identical either way.
 
         ``groups`` supplies a section that was already built — the producer
         builds both actor seats' groups in one pass (:func:`tensorize_seats`),

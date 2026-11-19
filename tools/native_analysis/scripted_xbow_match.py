@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run one deterministic scripted X-Bow 3.0 self-play match on the native probe.
 
-This is the Phase 1 "scripted X-Bow v0" scaffold (HANDOFF NEXT ACTION item 1,
-ROADMAP Phase 1): a small, inspectable ``observe -> action`` policy split into
+This is the Phase 1 "scripted X-Bow v0" scaffold (the session notes NEXT ACTION item 1,
+the project plan Phase 1): a small, inspectable ``observe -> action`` policy split into
 defense / cycle / offense / spell modules, played through the same two-sided
 decision loop the training harness will use.
 

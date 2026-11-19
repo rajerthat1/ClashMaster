@@ -1,4 +1,4 @@
-"""The native half of the one-action-per-tick rule (FINDINGS.md §3.96)."""
+"""The native half of the one-action-per-tick rule (the native notes)."""
 
 import pytest
 

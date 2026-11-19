@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify one Hero Knight ability action on the native probe.
 
-This is the Phase 1 ability gate (HANDOFF NEXT ACTION item 2). It deploys the
+This is the Phase 1 ability gate (the session notes NEXT ACTION item 2). It deploys the
 X-Bow deck's Hero Knight, reads the probe's live Champion controller dump, and
 activates the ready ability through ``AbilityAction``. The engine receipts are
 checked, not assumed:
@@ -56,7 +56,7 @@ KNIGHT_HERO_ID = next(
 KNIGHT_ABILITY_NAME = "Knight_hero_Ability"
 KNIGHT_ABILITY_MANA_COST = 2
 # One decision advances 20 ticks (~1 s) of single elixir; use the upper regen
-# bound already measured on this build (FINDINGS §3.17).
+# bound already measured on this build (the native notes).
 MAX_REGEN_PER_TICK = 0.06
 READY_STATES = {2, 4}
 ALL_CHARGES_CONSUMED = 6

@@ -26,7 +26,7 @@ with, at the 128-lane, two-seat gate shape:
   decision wall: the producer's median ``inference_ms / decision_ms``.  At the
   recorded A6000 gate shape this is ``157.4 / 646.8 = 0.243``, i.e. **4.1
   processes fill one A6000** — the same "run ~4 without changes" result in
-  ``ROADMAP_CRFORGE.md`` §4.
+  the crforge plan
 * ``T`` — steady-state seconds per decision round: ``collection_wall_s /
   decisions`` on the last warm segment.
 
@@ -40,7 +40,7 @@ depend on ``0.211`` or ``T``.
 Two rate conventions coexist in the repo and differ by 2×.  This tool's primary
 ``matches/s`` is the **1,214** convention (both actor seats' lane-decisions are
 counted as match decisions), which is what the equation and
-``ROADMAP_CRFORGE.md`` §4 use.  Every report also carries the **2,428**
+the crforge plan use.  Every report also carries the **2,428**
 convention (a physical match: one seat), which is what the producer artifact's
 own ``matches_per_s`` field uses.  Quote the convention with the number.
 
@@ -1091,7 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
         "notes": [
             (
                 "matches/s is the 1,214-lane-decision convention used by the equation and "
-                "ROADMAP_CRFORGE.md §4; the 2,428 convention (one seat per match) is half and is "
+                "the crforge plan; the 2,428 convention (one seat per match) is half and is "
                 "what the producer artifact's own matches_per_s field uses"
             ),
             (

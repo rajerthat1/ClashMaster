@@ -12,7 +12,7 @@
 # /usr/lib/x86_64-linux-gnu/libhsdis.so.0.0.0 to $JAVA_HOME/lib/hsdis-amd64.so.
 #
 # MPS was not run: the base template has no nvidia-cuda-mps-control (it ships
-# with the driver, not the toolkit).  See HANDOFF.md (session 51b).
+# with the driver, not the toolkit).  See the session notes (session 51b).
 set -u
 
 cd "$HOME/clashmaster"
@@ -31,7 +31,7 @@ cat "$RUNS/host.txt"
 # ---------------------------------------------------------------------------
 # A. The engine reproduction — this is the working reproducer for the C2 defect
 #    (the stand-alone hotspot_repro.py probe is a false negative on this host;
-#    see FINDINGS.md 3.88).  Exit 139 and `segfault at c` in dmesg, no hs_err.
+#    see the native notes).  Exit 139 and `segfault at c` in dmesg, no hs_err.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== A: engine reproduction (default C2) ==="

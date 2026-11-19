@@ -59,7 +59,7 @@ class PolicyService:
         decision = self.session.decide(observation)
         # One action per seat per tick: space colliding micro-actions before a
         # client can queue them, or the engine leaves the later card in hand
-        # (FINDINGS.md §3.96).
+        # (the native notes).
         actions, shifted, dropped = separate_micro_action_ticks(
             decision.decoded.actions, window=POLICY_DECISION_TICKS
         )

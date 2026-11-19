@@ -1,6 +1,6 @@
 """The resident crforge environment: ``NativeClashEnv`` with no wire under it.
 
-Stage C2 of [`ROADMAP_CRFORGE.md`](../ROADMAP_CRFORGE.md) moves the bulk path
+Stage C2 of [`the crforge plan`](../the crforge plan) moves the bulk path
 off the loopback socket.  The bridge already speaks FirstLight's
 ``cr-native-control.v1`` line protocol, and :class:`NativeClashEnv` is a thin
 client over it: every public method (`create_match`, `observe`,

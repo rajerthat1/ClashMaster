@@ -4,7 +4,7 @@ The engine takes **one** action per seat per tick, while a V4 decision may carry
 two micro-actions, each with its own ``execute_offset_ticks`` (``1 + delay
 bin``).  Two micro-actions that land on the same tick lose one: the engine runs
 the first and leaves the other card in its hand slot, which the bridge then
-attests as ``card_still_in_slot`` (FINDINGS.md §3.96).
+attests as ``card_still_in_slot`` (the native notes).
 
 The crforge producer already spaces collisions with
 ``crforge_bridge.vector_actions.plan_window_ticks`` (§3.44/§3.57).  The native

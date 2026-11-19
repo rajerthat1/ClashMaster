@@ -1,6 +1,6 @@
 """The C1 encoder spike: per-lane vs vectorized observation encoding.
 
-The bulk-training plan (``ROADMAP_CRFORGE.md`` stage C1) is gated on one
+The bulk-training plan (the crforge plan stage C1) is gated on one
 measurement: how many lane-decisions per second a crforge ``VectorBattle`` can
 encode for a policy.  The bridge's TCP/JSON path measures 20–30 decisions/s, but
 its in-process fact projection is under a millisecond per lane; the plan's old
@@ -19,7 +19,7 @@ This tool runs one vector and encodes the *same* observations two ways:
 Both write into the same fixed-size ``PolicyFrame`` buffers, so the difference
 is Python work, not allocation.  The tool checks that the two frames agree on a
 tick before reporting.  Times are paired: both encoders run on the same vector
-at the same tick, so host load affects them equally (see ``HANDOFF.md``: this
+at the same tick, so host load affects them equally (see the session notes: this
 host's absolute numbers move ~2x, so paired runs are the only stable
 comparison).
 
@@ -72,7 +72,7 @@ from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.observe import decode_rows, entity_rows, player_facts
 from native_runner.arena import WORLD_HEIGHT, WORLD_WIDTH
 
-# The locked learner deck (HANDOFF.md 2026-11-15).  Evolution/hero forms are
+# The locked learner deck (the session notes 2026-11-15).  Evolution/hero forms are
 # selected by slot flags on the base card, not by naming the form row.
 DECK = ("Xbow", "Tesla", "Archer", "Knight", "Skeletons", "ElectroSpirit", "Fireball", "Log")
 # Evolution slots: Tesla, Archer.  Hero slot: Knight.  X-Bow has no form.
@@ -809,7 +809,7 @@ def _measure_existing_path(
     # soak validates and which the tensorizer classifies completely.  The X-Bow
     # learner deck currently surfaces a public `effect` entity that resolves to
     # UNKNOWN archetype (native_data_global_id=1) and fails closed; that is a C2
-    # item, not a C1 measurement (docs/native/16.635.1/FINDINGS.md §3.44).
+    # item, not a C1 measurement (the native notes).
     environment, observations, sessions, close = build_episode(
         port=port, checkpoint=checkpoint, seed=seed
     )

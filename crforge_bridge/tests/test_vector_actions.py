@@ -27,7 +27,7 @@ from native_runner.training.v4.factory import deck_roles_from_form_availability,
 from native_runner.training.v4.tensorizer import UniversalObservationTensorizerV4
 from native_runner.training.v4.tensors import GATE_ACT, ActionSequenceV4
 
-# The locked X-Bow learner deck (HANDOFF.md 2026-11-15).
+# The locked X-Bow learner deck (the session notes 2026-11-15).
 LEARNER_DECK = (27000008, 27000006, 26000001, 26000000, 26000010, 26000084, 28000000, 28000011)
 LEARNER_FORMS = (0, 1, 1, 2, 0, 0, 0, 0)
 LEARNER_NAMES = ("Xbow", "Tesla", "Archer", "Knight", "Skeletons", "ElectroSpirit", "Fireball", "Log")

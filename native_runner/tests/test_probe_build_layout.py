@@ -31,7 +31,7 @@ TOOLS = REPOSITORY_ROOT / "tools" / "native_analysis"
 # Vtables used to classify objects before any rich hook ring is installed.
 # Both ABI headers must expose the same set of names; the ARM values are pinned
 # to the relocation table below.  A stale entry silently degrades the live
-# observation (FINDINGS §3.35), so drift must fail here instead of on device.
+# observation (the native notes), so drift must fail here instead of on device.
 RICH_VTABLES = (
     "kBuffAssetVtableOffset",
     "kProjectileVtableOffset",
@@ -135,7 +135,7 @@ def test_probe_selects_the_generated_header_and_keeps_defaults_isolated() -> Non
     assert "kLocationTileMapEnsureResolved" in source
     # Rich-classification vtables come from the generated header on every
     # architecture, never only on x86_64 (the A51 observation regression in
-    # FINDINGS §3.35).
+    # the native notes).
     for name in RICH_VTABLES:
         assert f"probe_target::{name}" in source
     assert "CR_PROBE_TARGET_16_635_1) && defined(__x86_64__)" not in source

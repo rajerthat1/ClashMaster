@@ -37,7 +37,7 @@ from native_runner.training.v4.config import ModelConfigV4
 from native_runner.training.v4.factory import deck_roles_from_form_availability, production_semantic_bundle
 from native_runner.training.v4.tensorizer import UniversalObservationTensorizerV4
 
-# The locked X-Bow learner deck (HANDOFF.md 2026-11-15).  Slot flags are the
+# The locked X-Bow learner deck (the session notes 2026-11-15).  Slot flags are the
 # native form mask: 1 is evolved, 2 is hero, 0 is base.
 LEARNER_DECK = (27000008, 27000006, 26000001, 26000000, 26000010, 26000084, 28000000, 28000011)
 LEARNER_FORMS = (0, 1, 1, 2, 0, 0, 0, 0)

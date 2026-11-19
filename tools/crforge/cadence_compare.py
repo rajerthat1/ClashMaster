@@ -33,7 +33,7 @@ the host is not running another producer)::
 The per-run producer artifacts stay under ``--run-dir`` and are named
 ``<policy>-seed<seed>.json``; ``--reuse`` loads an existing one instead of
 re-collecting it.  The artifact is a summary, not a verdict: the cadence
-decision is recorded in ``HANDOFF.md`` and ``FINDINGS.md``.
+decision is recorded in the session notes and the native notes.
 """
 
 from __future__ import annotations

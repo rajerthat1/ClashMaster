@@ -11,6 +11,6 @@
   "content_assets_sha256": "1bac8864ece57cf17edd015fe07cc4debf14d0c6251025d833b493bb752d6d0b",
   "content_manifest_sha1": "b54188c6d2744af7c28adcd436be73f120915c44",
   "combat_ring_hooks": false,
-  "content_adaptation": "Card, effect and projectile catalogs stay on the pinned 15.535.86 release. Live 16.635.1 deck ids, forms and costs match at level 11 (docs/native/16.635.1/FINDINGS.md); Electro Spirit HP differs (215 vs 217). Rebuild the catalogs when 16.635.93 csv_logic assets are available locally.",
-  "evidence": "docs/native/16.635.1/FINDINGS.md sections 3.10, 3.13, 3.34 and 3.36; live attestation on SM-A515U, 2026-11-14. Probe b80f2bdb… carries the 16.635 rich-telemetry vtable anchors so entity/projectile classification matches the x86_64 engine."
+  "content_adaptation": "Card, effect and projectile catalogs stay on the pinned 15.535.86 release. Live 16.635.1 deck ids, forms and costs match at level 11; Electro Spirit HP differs (215 vs 217). Rebuild the catalogs when 16.635.93 csv_logic assets are available locally.",
+  "evidence": "Live attestation on SM-A515U, 2026-11-14. Probe b80f2bdb… carries the 16.635 rich-telemetry vtable anchors so entity/projectile classification matches the x86_64 engine."
 }

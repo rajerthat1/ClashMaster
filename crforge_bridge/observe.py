@@ -205,7 +205,7 @@ def entity_rows(
     which is the frame the model and the native probe use: seat 0's x is
     mirrored and seat 1's y is mirrored in ``Schema.toSeatX/toSeatY``.  Emitting
     the seat frame here made every crforge observation horizontally mirrored
-    relative to the native path (see ``FINDINGS.md`` §3.55).
+    relative to the native path (see the native notes).
     """
 
     if rows is None:

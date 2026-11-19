@@ -94,8 +94,7 @@ tools/native_bringup/run_rootless_worker.sh --slot 0 --port 39031
 ```
 
 Why this exists: the published `150535029` bundle passes `verify-bundle` and
-`doctor` but fails every cold-start check. See
-[`docs/native/PHASE0_BRINGUP.md`](../../docs/native/PHASE0_BRINGUP.md).
+`doctor` but fails every cold-start check.
 
 ## `verify_xbow_determinism.py`
 
@@ -173,13 +172,12 @@ pass, so use it for attribution shares, not throughput.
 # -> builds/native/phase2-<UTC>/profile-w8-fast-steps8.json
 ```
 
-See [`docs/native/PHASE2_BOTTLENECK.md`](../../docs/native/PHASE2_BOTTLENECK.md)
-for the measured results and the host plan.
+Measured results are written under `builds/native/` on the machine that ran
+the profile.
 
 ## `smoke_r0_model.py`
 
-> **Archive only.** R0 is retired from the Null's Royale plan. See
-> [`ROADMAP.md`](../../ROADMAP.md).
+> **Archive only.** R0 is retired from the primary plan.
 
 Runs the sandbox R0 elite-v3 stack on CPU: one synthetic rollout, one real PPO
 update, then a checkpoint save/reload with a bit-exact state-dict check. It

@@ -197,7 +197,7 @@ def _time_replay(
     best = min(totals)
     best_cpu = min(cpu_totals)
     decisions = len(captured)
-    # CPU ms/decision is the portable number on this host (HANDOFF.md: absolute
+    # CPU ms/decision is the portable number on this host (the session notes: absolute
     # wall time moves ~2x with background load, CPU time does not).
     return {
         "decisions": decisions,

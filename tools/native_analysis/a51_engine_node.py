@@ -8,7 +8,7 @@ the engines already run from the cluster APK and are reachable through adb
 forwards on loopback.  This tool performs the node-level checks and writes the
 compatible manifest:
 
-    ./launch_cluster_a51.sh --engines 4
+    # start the device engine cluster before running this helper
     .venv/bin/python tools/native_analysis/a51_engine_node.py \
         --serial R58NA0QTHWV --engines 4 \
         --output runs/a51-node0/engine-node-ready.json
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     if backgrounded:
         raise RuntimeError(
             f"engines {backgrounded} are in Android's background cpuset (CPUs 0-1); "
-            "relaunch with launch_cluster_a51.sh --window-mode visible (FINDINGS §3.30)"
+            "relaunch the engine cluster with visible windows so engines stay out of the background cpuset"
         )
 
     manifest = {

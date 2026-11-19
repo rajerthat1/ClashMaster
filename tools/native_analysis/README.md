@@ -127,14 +127,13 @@ falling back to a 15.535.13 address:
 `champion-layout.json` carries the Champion controller/action/ability vtables
 and the `LogicCharacterAbilityData` field shift. The controller is an EXACT
 static relocation match; the data vtables and field offsets were confirmed from
-live controller objects with the probe's `champion-diag` command (FINDINGS
-§3.22). Passing `--champion ""` skips that block.
+live controller objects with the probe's `champion-diag` command (benchmark output). Passing `--champion ""` skips that block.
 
 ## Live content-ready capture (`capture_content_window.py`)
 
 The probe gates cold `configure` on a single byte at
 `content_context + kContentPostProcessReadyOffset`. The 15.535.13 value is
-`0x6e8`; on 16.635.1 the field moved to `0x720` (FINDINGS §3.13), so the byte is
+`0x6e8`; on 16.635.1 the field moved to `0x720` (benchmark output), so the byte is
 build-pinned through the generated layout header. The probe exposes a bounded,
 read-only `content-window <hex offset> <hex length>` command to locate or verify
 the byte without root; this script drives it across a fresh boot and reports
@@ -174,7 +173,7 @@ the measured regen bound, no command is left queued):
 ```
 
 Pass `--min-ticks 7000` to run the whole regulation match (the engine ends at
-tick 3601 when a tower falls). Recorded results are in FINDINGS §3.17.
+tick 3601 when a tower falls). Recorded results are in the benchmark output
 
 ### `native_match_throughput.py`
 
@@ -188,7 +187,7 @@ decisions/s and actions/s for one probe connection:
 
 `raw` is one `step` per match (engine-bound ceiling), `batch` repeats
 `step --batch-ticks`, and `decision` runs the `multi_decision_match` loop.
-Recorded numbers are in FINDINGS §3.18. One connection is one slot; do not
+Recorded numbers are in the benchmark output One connection is one slot; do not
 extrapolate resident-slot throughput from it.
 
 ### `resident_batch_throughput.py`
@@ -205,7 +204,7 @@ from each slot's capture and sends real `BatchPlayActionV1` receipts every
     --output /tmp/opencode/resident_8x600x5_actions.json
 ```
 
-Real action numbers are in FINDINGS §3.23. With `--ports` it measures several
+Real action numbers are in the benchmark output With `--ports` it measures several
 engine lanes behind a start barrier and reports the lane-sum **capacity**
 matches/s (the training-relevant number) plus the slower makespan floor:
 
@@ -215,7 +214,7 @@ matches/s (the training-relevant number) plus the slower makespan floor:
     --output /tmp/opencode/resident_3x8x6000_actions.json
 ```
 
-Multi-lane numbers and the cpuset/throttling caveats are in FINDINGS §3.25.
+Multi-lane numbers and the cpuset/throttling caveats are in the benchmark output
 The probe control server is single-client; keep the batch channel closed while
 issuing ordinary commands.
 
@@ -232,7 +231,7 @@ checking towers are at the native tower cells with sane HP and that units keep
     --output /tmp/opencode/entity_hp_probe.json
 ```
 
-Recorded results are in FINDINGS §3.19.
+Recorded results are in the benchmark output
 
 ### `scripted_xbow_match.py`
 
@@ -249,7 +248,7 @@ ability as a separate native command:
 ```
 
 Use `--no-abilities` for the card-only baseline. Recorded results are in
-FINDINGS §3.21.
+the benchmark output
 
 ### `ability_action_probe.py`
 
@@ -264,7 +263,7 @@ charges, elixir paid, second activation refused):
 ```
 
 The recovery of the 16.635 Champion vtables and ability-data field shift is in
-FINDINGS §3.22. `champion-diag` is also available directly on the control
+the benchmark output `champion-diag` is also available directly on the control
 socket for a read-only controller dump.
 
 ## Native match blocks (`native_block.py`)

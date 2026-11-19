@@ -12,5 +12,5 @@
   "content_manifest_sha1": "062a11e0500c03cc041f123413b1ef1846b539a4",
   "combat_ring_hooks": false,
   "content_adaptation": "Official 16.635.1 x86_64 engine (`.resource/Clashback/game/engine/libg.so`) with the official 16.635.8 asset pack, hosted on Linux by the crx ELF loader. Card/effect/projectile catalogs stay on the pinned competitive 16.635 release; Null's ARM64 client remains the deployment target and the parity oracle (runs/parity-a51).",
-  "evidence": "docs/native/16.635.1/FINDINGS.md section 3.35 (x86_64 host, scripted parity seeds 1-5 and evaluator gate); probe libcrprobe-16.635.1-x86_64.so built from native_runner/probe with build_16_635_1_layout_x86.h."
+  "evidence": "x86_64 host, scripted parity seeds 1-5 and evaluator gate; probe libcrprobe-16.635.1-x86_64.so built from native_runner/probe with build_16_635_1_layout_x86.h."
 }

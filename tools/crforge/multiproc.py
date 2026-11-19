@@ -27,7 +27,7 @@ server would get.  Both arms then differ in batching, not in precision or
 capture; an eager fp32 floor against an fp16 graph server would price the
 precision change and call it the architecture.  On the card, also pass
 ``--no-validate``: per-decision contract validation syncs the device on every
-value it inspects and measures Python, not the forward (``FINDINGS.md`` §3.62).
+value it inspects and measures Python, not the forward (the native notes).
 
 The aggregate is the sum of the producers' own collection rates, exactly as
 ``cloud_capacity.py --sweep-procs`` computes it: each producer keeps its own

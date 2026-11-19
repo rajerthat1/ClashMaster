@@ -3,7 +3,7 @@
 
 ``self_play.py --save-checkpoint ck.pt --checkpoint-every N`` now writes
 ``ck-step-<n>.pt`` every N updates.  The native engine is the only promotion gate
-(``ROADMAP.md`` N1/N4), and the plan of record asks for **50-150 native matches
+(the project plan N1/N4), and the plan of record asks for **50-150 native matches
 every N updates** — but N was undefined and nothing tied a training run's
 checkpoints to blocks.  This tool is that tie::
 

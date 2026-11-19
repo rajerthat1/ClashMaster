@@ -2,7 +2,7 @@
 """Archive, verify and compare an A51 parity corpus.
 
 The 16.635.1 port is gated on the x86_64 engine reproducing the A51 corpus
-tick-for-tick (HANDOFF step 1.0/1.4, ROADMAP gate 0).  This tool builds the
+tick-for-tick (the session notes step 1.0/1.4, the project plan gate 0).  This tool builds the
 manifest that gate needs:
 
 * hashes every corpus file plus the checkpoint/probe/client artifacts the

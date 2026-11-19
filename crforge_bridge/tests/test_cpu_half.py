@@ -1,7 +1,7 @@
 """The CPU half's shared conversions: one table, one interleaved write.
 
 These are the pieces ``tools/crforge/self_play.py`` uses to keep the per-decision
-Python work off the critical path (``ROADMAP_CRFORGE.md`` §4): the candidate
+Python work off the critical path (the crforge plan): the candidate
 columns are converted once per decision, the action record is written in one
 NumPy pass instead of one tensor op per lane, and the two actor seats are
 interleaved straight into the destination.  None of them needs an engine, so the

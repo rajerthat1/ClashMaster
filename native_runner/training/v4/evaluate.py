@@ -190,7 +190,7 @@ def evaluate(
                             # The engine runs one action per seat per tick; two
                             # micro-actions sampled onto one tick would leave the
                             # second card in hand and be attested as
-                            # ``card_still_in_slot`` (FINDINGS.md §3.96).  Space
+                            # ``card_still_in_slot`` (the native notes).  Space
                             # them first, as the crforge producer does, and keep
                             # the counts so the artifact shows the difference.
                             chosen, shifted, dropped = separate_micro_action_ticks(
@@ -329,7 +329,7 @@ def main(argv=None):
         "--sample",
         action="store_true",
         help="sample from the policy instead of argmax; sparse-action checkpoints "
-        "collapse to WAIT under argmax (docs/native/16.635.1/FINDINGS.md §3.27)",
+        "collapse to WAIT under argmax (the native notes)",
     )
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args(argv)

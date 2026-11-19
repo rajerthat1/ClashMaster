@@ -4,7 +4,7 @@ The multi-lane number is what the engine decision rule uses, so the distinction
 between the lane-sum capacity and the makespan floor must not regress: a phone
 whose top-app lane runs on big cores finishes long before a background lane
 pinned to cpu0-1, and the makespan-only figure used to under-count that case by
-~40% (FINDINGS §3.25).
+~40% (the native notes).
 """
 
 from __future__ import annotations

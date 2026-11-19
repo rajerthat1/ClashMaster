@@ -1,7 +1,7 @@
 /*
  * Stand-alone reproducer for the HotSpot C2 miscompile of
  * org.crforge.env.SeatIds.of(II)I seen on a rented 6-vCPU host
- * (docs/native/16.635.1/FINDINGS.md section 3.85).
+ * (the native notes section 3.85).
  *
  * `of` below is the crforge body verbatim, from
  * .resource/crforge/env/src/main/java/org/crforge/env/SeatIds.java at commit c4721bd9, with

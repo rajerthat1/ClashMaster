@@ -4,7 +4,7 @@
 Used to locate the engine's "content post-process ready" byte on a new build.
 The probe's cold-configure gate reads a single byte at
 ``context + kContentPostProcessReadyOffset``: 0x6e8 on 15.535 and 0x720 on
-16.635 (FINDINGS §3.13). This tool dumps a bounded window of the context over
+16.635 (the native notes). This tool dumps a bounded window of the context over
 time so the byte that actually settles to 1 can be found or verified
 empirically, without root.
 

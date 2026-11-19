@@ -260,8 +260,7 @@ constexpr std::uint32_t kAarch64Nop = 0xd503201fu;
 constexpr std::uintptr_t kGameStateContextRootSlotOffset = 0x019ad878;
 #endif
 // Logic command type ids are part of the replay wire format, not the binary
-// layout: 15.535 uses 86/2 for card/ability, 16.635 uses 153/189
-// (docs/capture_format.md §2.3).
+// layout: 15.535 uses 86/2 for card/ability, 16.635 uses 153/189.
 constexpr int kCardPlayCommandType = kProbeTargetIs16_635_1 ? 153 : 86;
 constexpr int kAbilityCommandType = kProbeTargetIs16_635_1 ? 189 : 2;
 constexpr const char *kMirrorDeployCommandFormat =

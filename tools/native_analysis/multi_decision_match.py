@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive a two-sided decision loop against the native probe on a real device.
 
-This is the Phase 0 multi-decision gate (HANDOFF "NEXT ACTION" item 1). It
+This is the Phase 0 multi-decision gate (the session notes "NEXT ACTION" item 1). It
 configures one fresh :class:`MatchConfig` match, then repeatedly observes both
 engine hands, plays one affordable card per owner, and advances across the
 native command-consumption boundary. Every decision is validated against the

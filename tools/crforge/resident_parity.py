@@ -1,6 +1,6 @@
 """C2: the resident adapter against the bridge, decision for decision.
 
-Stage C2 of [`ROADMAP_CRFORGE.md`](../ROADMAP_CRFORGE.md) replaces the loopback
+Stage C2 of [`the crforge plan`](../the crforge plan) replaces the loopback
 socket between ``BattleEnvV1`` and crforge with an in-process dispatch
 (``native_runner/crforge_resident.py``).  Its gate is two claims:
 
