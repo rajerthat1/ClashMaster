@@ -66,8 +66,9 @@ reused instead of recaptured at every segment. Smoke: `A-hog26-v738` on the
 reset cadence, the same B-general/A-hog league on the Hog 2.6 deck: **8/8 updates
 pass, gate pass**, 32 valid rows/segment (8 decisions × 4 learner rows),
 ACT **27/495 (5.45 %)**, 4 cadence checkpoints (steps 277–283) in
-`runs/crforge-league-smoke/`. The C5 point on `ck-step-277.pt` is the first
-native gate.
+`runs/crforge-league-smoke/`. The C5 point on `ck-step-277.pt` came back
+**3–1 of 4 vs `B-general-v275`**, illegal 0, rejected 0 — a schedule proof, not a
+ranking (4 games).
 
 **Next run — A6000, one process.** Build the league once (both entries share
 one deck), then run:
@@ -87,6 +88,22 @@ python tools/crforge/self_play.py --count 64 --segments 50 --decisions-per-segme
     --save-checkpoint runs/crforge-n4/ck.pt --checkpoint-every 10 \
     --output runs/crforge-n4/run.json
 ```
+
+Then the C6 block (150 paired games, both seats). The config must put X-Bow on
+`deck0` and the Hog 2.6 deck on `deck1`; the checked-in
+`match-config-mirror-xbow.json` is the seed-only plumbing config, not this gate.
+
+```bash
+tools/native_analysis/native_block_run.sh n4-vs-seed \
+    runs/crforge-n4/ck-step-325.pt \
+    .resource/RoyaleFish/models/B-general-v275.pt \
+    <xbow-vs-hog-config.json> 101 150 10 runs/native-n4-gate
+.venv/bin/python tools/native_analysis/native_block.py --name n4-vs-seed \
+    --output runs/native-n4-gate/block.json runs/native-n4-gate/n4-vs-seed-seeds*
+```
+
+Read `win_rate_a.ci_low`, `by_a_owner` and the illegal/rejected totals from
+`block.json`; do not promote on the crforge run.
 
 Gate: 28 targeted tests, 215 in the bridge suite, ruff clean. Still open: a
 two-model decision-server arm, per-lane opponents, and per-segment decks (the
