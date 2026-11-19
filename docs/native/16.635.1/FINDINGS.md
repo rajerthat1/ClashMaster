@@ -7655,3 +7655,52 @@ snapshot were not creatable; four boxes at 16 workers is the measured shape.
 Evidence: `runs/native-n4-gate/block.json`, `runs/native-n4-gate/gate.json`,
 `runs/native-n4-gate/*/*-seeds*/matches.jsonl`,
 `runs/native-n4-c5/curve.json`, `runs/crforge-n4/run.json`.
+
+### 3.97 The native evaluator spaces colliding micro-actions, and seed 101 stops refusing (2026-11-19)
+
+§3.96 named the `card_still_in_slot` refusals but could not attribute them: the
+native `PolicySessionV4` path queued every micro-action at its sampled
+`execute_offset_ticks`, and the engine runs **one action per seat per tick**, so
+two micro-actions sampled onto the same tick lost one.  The card stayed in its
+hand slot and the bridge attested the play as refused.  The crforge producer
+already spaces collisions with `plan_window_ticks` (§3.44/§3.57); the native
+gate path had no equivalent.
+
+- **The fix.** `native_runner/training/v4/action_window.py` adds
+  `separate_micro_action_ticks`, the native counterpart of
+  `plan_window_ticks`.  It rewrites only the **execution** tick of a later
+  colliding micro-action (play or ability), keeps the sampled
+  `policy_delay_offset_bin` so the elixir/legality check stays where the policy
+  sampled it, and returns shift/drop counts.  A full five-tick window drops the
+  action instead of overwriting the first, exactly as crforge does.
+- **Where it runs.** `evaluate.py` applies it before `BattleEnvV1.step` on both
+  seats and records `micro_action_tick_shifts` and `micro_actions_dropped` per
+  game and in `summary.json`; `serve_policy.py` applies the same rule and
+  returns the counts beside the actions, so a client cannot queue a collision.
+- **Attribution.** A rejection row now also carries up to three distinct
+  `rejected_examples` (the full event payload with its
+  `rejection_diagnostic`); repeated observation windows no longer hide which
+  seat, card and hand the refusal came from.
+- **The verification game.** Seed 101, `ck-step-325` vs `B-general-v275` on
+  `xbow-vs-hog26-evo`, sampled: §3.95/§3.96 recorded **1 unique refusal /
+  24 windows**.  The same seed, config and checkpoints after the fix:
+  **0 rejected, 1 tick shift, 0 dropped**, illegal 0, terminated, B wins
+  (`runs/native-two-micro-check/two-micro-fix-seeds101-101/summary.json`).
+  The one shift is seat 1 (the frozen opponent), which is the point: the rule
+  belongs to the command path, not to one policy.
+- **Scope.** The crforge producer already spaced collisions, so the two trainers
+  now agree.  The native-render agent/duel paths (`offline_agent`,
+  `offline_duel`) still submit through `queue_hand_action_next_tick`, which
+  ignores offsets by design; this change does not touch them.
+- **Gate.** New `test_training_v4_action_window.py` **9 passed** (distinct
+  ticks, collision shift, metadata rewrite, gap fill, three-way collision,
+  full-window drop, ability, WAIT, bad input); `test_evaluate_and_serve.py`
+  gained the evaluator and service wiring tests.  The nine related v4 suites
+  (action window, evaluate/serve, policy session, decoding, action contracts,
+  deployment timing, offline agent, offline duel, user interface) are
+  **81 passed**; ruff (E,F) clean.
+
+**What this does not settle.** One seed is a schedule proof, not the 150-game
+gate.  `ck-step-305` still needs its own 150 paired games (seeds 101–250, both
+seats) before any promotion claim; the laptop runs one game in ~25 minutes, so
+that block needs the rented four-box shape, not a serial local run.

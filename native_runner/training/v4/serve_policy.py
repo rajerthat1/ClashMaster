@@ -7,7 +7,8 @@ import sys
 import torch
 
 from ...contracts import EpisodeConfigV1, ObservationV1
-from .expert import FIRST_POLICY_DECISION_TICK
+from .action_window import separate_micro_action_ticks
+from .expert import FIRST_POLICY_DECISION_TICK, POLICY_DECISION_TICKS
 from .factory import build_episode_tensorizer_v4
 from .policy_session import PolicySessionV4, load_policy_v4
 
@@ -56,11 +57,19 @@ class PolicyService:
         if observation.tick < FIRST_POLICY_DECISION_TICK:
             raise ValueError("use observe during the initial warmup ticks")
         decision = self.session.decide(observation)
+        # One action per seat per tick: space colliding micro-actions before a
+        # client can queue them, or the engine leaves the later card in hand
+        # (FINDINGS.md §3.96).
+        actions, shifted, dropped = separate_micro_action_ticks(
+            decision.decoded.actions, window=POLICY_DECISION_TICKS
+        )
         return {
             "ok": True,
             "tick": observation.tick,
-            "actions": [a.to_dict() for a in decision.decoded.actions],
+            "actions": [a.to_dict() for a in actions],
             "inference_ms": decision.inference_ms,
+            "micro_action_tick_shifts": shifted,
+            "micro_actions_dropped": dropped,
         }
 
 

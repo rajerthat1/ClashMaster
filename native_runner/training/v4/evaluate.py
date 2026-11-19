@@ -22,6 +22,7 @@ from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, FIRST_PLAYABLE_TICK, Na
 from ...match_factory import MatchConfig
 from ...rich_telemetry_adapter import RuntimeEffectCatalog
 from ...ruleset import build_native_ruleset_manifest, load_native_build_profile
+from .action_window import separate_micro_action_ticks
 from .expert import FIRST_POLICY_DECISION_TICK, POLICY_DECISION_TICKS
 from .factory import production_semantic_bundle
 from .policy_session import build_policy_session_v4, load_policy_v4
@@ -172,7 +173,10 @@ def evaluate(
                 for owner, session in enumerate(sessions):
                     session.start_episode(observations[owner], initial_elixir=initial_elixir)
                 actions = [0, 0]
+                tick_shifts = [0, 0]
+                dropped_micro_actions = [0, 0]
                 rejected: set[str] = set()
+                rejected_examples: list[dict] = []
                 rejected_total = 0
                 rejected_reasons: dict[str, int] = {}
                 terminated = truncated = False
@@ -183,7 +187,18 @@ def evaluate(
                         observation = observations[owner]
                         chosen = ()
                         if observation.tick >= FIRST_POLICY_DECISION_TICK:
-                            chosen = session.decide(observation).decoded.actions
+                            # The engine runs one action per seat per tick; two
+                            # micro-actions sampled onto one tick would leave the
+                            # second card in hand and be attested as
+                            # ``card_still_in_slot`` (FINDINGS.md §3.96).  Space
+                            # them first, as the crforge producer does, and keep
+                            # the counts so the artifact shows the difference.
+                            chosen, shifted, dropped = separate_micro_action_ticks(
+                                session.decide(observation).decoded.actions,
+                                window=POLICY_DECISION_TICKS,
+                            )
+                            tick_shifts[owner] += shifted
+                            dropped_micro_actions[owner] += dropped
                             actions[owner] += sum(a.kind != ActionKind.WAIT for a in chosen)
                         else:
                             session.tensorizer.tensorize(observation, validate=False)
@@ -217,7 +232,13 @@ def evaluate(
                                         reason = "card_still_in_slot"
                                 reason = str(reason or "unknown")
                                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
-                                rejected.add(json.dumps(payload, sort_keys=True))
+                                key = json.dumps(payload, sort_keys=True)
+                                if key not in rejected and len(rejected_examples) < 3:
+                                    # The same event repeats in every observation
+                                    # window; keep the first few distinct payloads
+                                    # so a refusal names its seat, card and hand.
+                                    rejected_examples.append(payload)
+                                rejected.add(key)
                 terminal = observations[0].terminal
                 winner = None if terminal.winner is None else ("a" if terminal.winner == a_owner else "b")
                 illegal_by_owner: dict[int, int] = {}
@@ -251,6 +272,11 @@ def evaluate(
                     "rejected_actions": len(rejected),
                     "rejected_total": rejected_total,
                     "rejected_reasons": rejected_reasons,
+                    "rejected_examples": rejected_examples,
+                    # Micro-actions moved off a colliding engine tick, and the
+                    # ones a full window could not fit (never silently hidden).
+                    "micro_action_tick_shifts": list(tick_shifts),
+                    "micro_actions_dropped": list(dropped_micro_actions),
                 }
                 rows.append(row)
                 log.write(json.dumps(row) + "\n")
@@ -278,6 +304,8 @@ def evaluate(
                 reason: sum(r["rejected_reasons"].get(reason, 0) for r in rows)
                 for reason in sorted({reason for r in rows for reason in r["rejected_reasons"]})
             },
+            "micro_action_tick_shifts": sum(sum(r["micro_action_tick_shifts"]) for r in rows),
+            "micro_actions_dropped": sum(sum(r["micro_actions_dropped"]) for r in rows),
         }
         (output / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result

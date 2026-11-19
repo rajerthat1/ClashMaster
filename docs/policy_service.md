@@ -18,7 +18,7 @@ each decision. Calling `act` advances the LSTM and previous-action state.
 | --- | --- | --- |
 | `start` | `episode`: EpisodeConfigV1; `observation`: initial FAIR ObservationV1; `initial_elixir`: mapping with keys `"0"`, `"1"` | `ok`, checkpoint ID and SHA-256; resets any previous episode |
 | `observe` | `observation`: FAIR ObservationV1 | Updates the public tracker during initial warmup without choosing an action |
-| `act` | `observation`: FAIR ObservationV1 | `ok`, tick, ActionV1 `actions` list, inference time |
+| `act` | `observation`: FAIR ObservationV1 | `ok`, tick, ActionV1 `actions` list, inference time, micro-action tick shifts/drops |
 | `end` | none | Ends the episode and releases recurrent state |
 
 Episode and observation objects use the existing `to_dict()` contract encoding
@@ -59,7 +59,11 @@ identity = request({
 Send `observe` before `FIRST_POLICY_DECISION_TICK`, then `act` every
 `POLICY_DECISION_TICKS` (five native ticks). Both constants are exported by
 `training/v4/expert.py`. Deserialize returned actions with `ActionV1.from_mapping`
-and submit them to the offline environment; an empty list means WAIT. Rendered
+and submit them to the offline environment; an empty list means WAIT. The
+service already gives each tick-consuming micro-action its own tick (the engine
+takes one action per seat per tick), so submit the returned
+`execute_offset_ticks` unchanged; `micro_action_tick_shifts` and
+`micro_actions_dropped` report that adjustment. Rendered
 interactive callers also apply the native deployment delay, as `offline_agent`
 does. After terminal/truncation, send `end`, or start a new episode.
 

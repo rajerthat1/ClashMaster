@@ -20,6 +20,42 @@
 > few months (decision 2026-11-19). Do not start a 16.635.10/13 port or a replay
 > re-capture; the live client range is out of scope.
 
+## Bottom line (2026-11-19, session 54)
+
+The two-micro `card_still_in_slot` refusal was a **tick collision, not a policy
+defect**, and it is fixed on the native gate path.  A V4 decision can carry two
+micro-actions with the same `execute_offset_ticks`; the engine runs one action
+per seat per tick, so the second play stayed in its hand slot.  The crforge
+producer already spaced collisions (`plan_window_ticks`); the native evaluator
+did not.
+
+1. **The fix.**  `native_runner/training/v4/action_window.py` adds
+   `separate_micro_action_ticks` (shift the later micro-action to the next free
+   tick; keep the sampled delay bin; count shifts and drops).  `evaluate.py`
+   applies it on both seats and records `micro_action_tick_shifts` /
+   `micro_actions_dropped` per game and in `summary.json`; a rejection row now
+   carries up to three distinct `rejected_examples`, so a refusal names its
+   seat, card and hand.  `serve_policy.py` applies the same rule before a
+   client can queue the actions.
+2. **Seed 101 is clean.**  `ck-step-325` vs `B-general-v275`,
+   `xbow-vs-hog26-evo`, sampled: the C5 point recorded **1 unique refusal /
+   24 windows**; the same seed after the fix is **0 rejected, 1 shift,
+   0 dropped**, illegal 0, terminated
+   (`runs/native-two-micro-check/two-micro-fix-seeds101-101/summary.json`).
+   `FINDINGS.md` §3.97.
+3. **Gate:** `test_training_v4_action_window.py` **9 passed** plus the evaluator
+   and service wiring tests (`test_evaluate_and_serve.py` **5 passed**); the
+   nine related v4 suites are **81 passed**; ruff (E,F) clean.
+
+**Next session:** `ck-step-305` still needs its own **150 paired games**
+(seeds 101–250, both seats, `n4-vs-seed` runbook above) before any promotion
+claim — the fix must be in the evaluator that runs it.  A laptop game is ~25
+minutes, so use the rented four-box shape; do not run it serially.  `325` stays
+the recorded negative.  Still open from session 53: the capture lock/pre-capture
+for the overlapped loop, the 1 illegal crforge producer action (still needs
+per-lane attribution in the producer, not the evaluator), NVIDIA MPS, the
+8-vCPU question, and filing the C2 report.
+
 ## Bottom line (2026-11-19, session 53)
 
 The plan executed and the model path is **negative**: the A6000 overlapped loop
