@@ -26,15 +26,16 @@ model's next gate is **N4**, and a long run must not start until two things land
    snapshots) while the learner stays on X-Bow; only the learner's rows enter the
    PPO update. A run that does not do this trains an X-Bow mirror, not a
    specialist.
-3. **First gated run (after the two-model GPU arm).** 50 updates, 64 lanes,
-   `--checkpoint-every 10`, C5 `parity_curve.py` on 4-game blocks, then C6:
+3. **First gated run (the fast league path is now landed).** 50 updates, 64
+   lanes in one process, `--fast-forward --opponent-league ...`, reset cadence,
+   `--checkpoint-every 10`; C5 `parity_curve.py` on 4-game blocks, then C6:
    **≥150 native paired games, both seats**, vs `B-general-v275` (and
    `A-hog26-v738` as a canary). Promote only at **≥55 % with the Wilson lower
    bound above 50 %**, no benchmark more than 3 points below the champion,
    `rejected 0`, and no behaviour regression (ACT rate, plays/game, time at 10
    elixir). Never promote on a crforge metric and never rank a run on the crforge
-   return. The league producer is eager-only today, so a 64-lane run needs either
-   the two-model decision server or a fixed-opponent fast-forward arm first.
+   return. The two-model decision server is a **scale-out** item (multi-process),
+   not a blocker for this single-process run.
 
 Evidence for the plan: `ROADMAP_CRFORGE.md` C4–C6, `ROADMAP.md` N4,
 `docs/native/16.635.1/FINDINGS.md` §3.62–§3.67 and §3.87.
@@ -61,7 +62,33 @@ reused instead of recaptured at every segment. Smoke: `A-hog26-v738` on the
 `hog-rider`, …) — **0 illegal, 1 ACT**; CPU fast-forward enabled (fp32); a
 2-segment league rotated `B-general` → `A-hog` on that deck with the fast path.
 
-Gate: 26 targeted tests, 213 in the bridge suite, ruff clean. Still open: a
+**Local 8-update league smoke (2026-11-20).** 4 lanes × 8 segments × 8 decisions,
+reset cadence, the same B-general/A-hog league on the Hog 2.6 deck: **8/8 updates
+pass, gate pass**, 32 valid rows/segment (8 decisions × 4 learner rows),
+ACT **27/495 (5.45 %)**, 4 cadence checkpoints (steps 277–283) in
+`runs/crforge-league-smoke/`. The C5 point on `ck-step-277.pt` is the first
+native gate.
+
+**Next run — A6000, one process.** Build the league once (both entries share
+one deck), then run:
+
+```bash
+HOG=523b6428074d4689904add37912722f47182bc6a1679dd89c5d50a19292263d3
+python tools/crforge/league.py create --anchor checkpoints/General/checkpoint-step-00000460.pt \
+    --output runs/crforge-n4/league.json
+python tools/crforge/league.py add runs/crforge-n4/league.json \
+    .resource/RoyaleFish/models/B-general-v275.pt --deck-id "$HOG"
+python tools/crforge/league.py add runs/crforge-n4/league.json \
+    .resource/RoyaleFish/models/A-hog26-v738.pt --deck-id "$HOG"
+
+python tools/crforge/self_play.py --count 64 --segments 50 --decisions-per-segment 64 \
+    --opponent-league runs/crforge-n4/league.json --fast-forward --device cuda \
+    --ppo-update --update-state-policy reset \
+    --save-checkpoint runs/crforge-n4/ck.pt --checkpoint-every 10 \
+    --output runs/crforge-n4/run.json
+```
+
+Gate: 28 targeted tests, 215 in the bridge suite, ruff clean. Still open: a
 two-model decision-server arm, per-lane opponents, and per-segment decks (the
 engine keeps a lane's deck across autoresets, so a league must share one deck).
 

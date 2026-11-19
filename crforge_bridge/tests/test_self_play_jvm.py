@@ -120,3 +120,63 @@ def test_vector_uses_per_side_decks_slots_and_towers(monkeypatch) -> None:
     assert args[3] == [0] * 8
     assert args[4] == [1, 0, 0, 0, 0, 2, 1, 0]
     assert seen["kwargs"]["setup1"].towers == "King_CannonTowers"
+
+
+def _deck_spec(deck_id: str) -> dict:
+    return {
+        "deck_id": deck_id,
+        "card_keys": [f"card{index}" for index in range(8)],
+        "card_ids": [26000000 + index for index in range(8)],
+        "form_availability": [0, 1, 0, 2, 0, 0, 1, 0],
+        "tower_key": "tower-princess",
+        "tower_troop_id": 159000000,
+        "uses": 1,
+        "focus_rank": None,
+    }
+
+
+def test_resolve_opponent_deck_accepts_one_shared_deck(tmp_path) -> None:
+    import argparse
+
+    import torch
+
+    from crforge_bridge.league import CrforgeOpponentLeague, OpponentDeck, add_checkpoint, create_league
+
+    def checkpoint(name: str, checkpoint_id: str):
+        path = tmp_path / f"{name}.pt"
+        torch.save({"checkpoint_id": checkpoint_id, "update_step": 1}, path)
+        return path
+
+    league_path = tmp_path / "league.json"
+    create_league(league_path, anchor=checkpoint("anchor", "anchor-id"))
+    deck = OpponentDeck.from_mapping(_deck_spec("shared"))
+    add_checkpoint(league_path, checkpoint("one", "one-id"), deck=deck)
+    add_checkpoint(league_path, checkpoint("two", "two-id"), deck=deck)
+    args = argparse.Namespace(opponent_deck_id=None, opponent_deck_json=None, deck_pool=tmp_path)
+    assert self_play._resolve_opponent_deck(args, CrforgeOpponentLeague.load(league_path)) == deck
+
+
+def test_resolve_opponent_deck_refuses_mixed_decks_without_a_choice(tmp_path) -> None:
+    import argparse
+
+    import pytest
+    import torch
+
+    from crforge_bridge.league import CrforgeOpponentLeague, OpponentDeck, add_checkpoint, create_league
+
+    def checkpoint(name: str, checkpoint_id: str):
+        path = tmp_path / f"{name}.pt"
+        torch.save({"checkpoint_id": checkpoint_id, "update_step": 1}, path)
+        return path
+
+    league_path = tmp_path / "league.json"
+    create_league(league_path, anchor=checkpoint("anchor", "anchor-id"))
+    add_checkpoint(
+        league_path, checkpoint("one", "one-id"), deck=OpponentDeck.from_mapping(_deck_spec("one-deck"))
+    )
+    add_checkpoint(
+        league_path, checkpoint("two", "two-id"), deck=OpponentDeck.from_mapping(_deck_spec("two-deck"))
+    )
+    args = argparse.Namespace(opponent_deck_id=None, opponent_deck_json=None, deck_pool=tmp_path)
+    with pytest.raises(SystemExit, match="share one deck"):
+        self_play._resolve_opponent_deck(args, CrforgeOpponentLeague.load(league_path))
