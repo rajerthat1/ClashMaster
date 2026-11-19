@@ -53,12 +53,15 @@ so they allocate where the affected host faults; the remaining gap is one
    bodies); ruff (E,F) clean.  Evidence: `runs/crforge-c4/s52/hotspot-phased.json`.
 6. **Still open:** one `--mode phased` run on an affected host (a crash there
    makes the report self-contained), filing at bugreport.java.com, NVIDIA MPS
-   (an image with the control daemon), the 8-vCPU question, the A6000
-   overlapped-loop gate, and whether to pad a producer's width to the server's
-   ladder.
+   (an image with the control daemon), the 8-vCPU question and the A6000
+   overlapped-loop gate.  The producer-padding question is **closed** (§3.91):
+   a producer captures 7–13 graphs over 96 decisions (one per live width, not
+   per decision), so padding to the server's ladder saves 4–7 one-time captures
+   while adding masked compute to every decision — do not pad.
 
-See `FINDINGS.md` §3.90 (this), §3.89 (the sweep), §3.88 (the reproduction and
-the false negative), §3.87 (the parity cadence) and §3.86 (the driver).
+See `FINDINGS.md` §3.91 (the padding decision), §3.90 (this reproducer), §3.89
+(the sweep), §3.88 (the reproduction and the false negative), §3.87 (the parity
+cadence) and §3.86 (the driver).
 
 ## Bottom line (2026-11-18, session 51)
 
@@ -375,6 +378,13 @@ body's fast path, and makes the driver replay that history.
   `phased.reached_recompile`; `--log-compilation` enables the same record for
   `quick`/`soak`.  `--rounds`/`--kinds` now resolve per mode (quick 200000/2,
   phased 12/8).
+- **Padding a producer's width: no.**  The recorded full-graph sweeps capture
+  **7–13** shapes at 8–128 lanes over 96 decisions, one per live width
+  (`groups == children`, rows fixed by lanes).  The server's ladder would map
+  1–14 onto six keys, so padding saves 4–7 **one-time** captures while adding
+  masked compute to every decision; the whole first-segment excess at 128 lanes
+  is 1.2 s, captures included.  The ladder exists to join producers; a single
+  producer has nothing to join.  Item closed (§3.91).
 - **Gate:** `test_hotspot_repro.py` **13 passed** (the phased history is in the
   source, `_nmethods` reads `size` not `bytes`, `_mode_args` for phased,
   `_phased_summary` requires both bodies); ruff (E,F) clean on the tool and the

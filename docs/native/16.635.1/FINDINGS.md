@@ -7323,3 +7323,40 @@ source, the nmethod reader takes `size` not the bytecode's `bytes`, phased
 arguments, both bodies); ruff (E,F) clean on the tool and the test.  Evidence:
 `runs/crforge-c4/s52/hotspot-phased.json` and the trap excerpt appended to
 `runs/crforge-c4/s51-a6000/fault-map.txt`.
+
+### 3.91 Padding a producer's width to the server's ladder is the wrong side of the trade (2026-11-19)
+
+The last open CPU-side question in the handoff was "whether to pad a producer's
+width to the server's ladder to cut its capture count".  The session-51 full-graph
+sweeps already recorded the answer: a producer captures **7 / 8 / 9 / 11 / 13**
+graphs at 8 / 16 / 32 / 64 / 128 lanes over 3 segments × 32 decisions, one process
+(`runs/crforge-c4/s51-a6000/sweep-lanes*.json`, `inference.fast_forward.
+captured_full_shapes`).  The shapes differ only in the live width — rows are
+`2 × lanes` and `groups == children` in every recorded shape — so the producer
+captures **at most one graph per live width it visits** (widths 1–14 at 128 lanes).
+
+- **The ladder would collapse 13 shapes to 6 at 128 lanes.**  `GROUP_BUCKETS =
+  (1, 2, 4, 8, 12, 16, …)` and `CHILD_BUCKETS = (1, 4, 8, 16, …)` map widths
+  1–14 onto (1,1), (2,4), (4,4), (8,8), (12,16), (16,16): six keys instead of
+  thirteen, and 7→4 at 8 lanes.  So the padding saves **4–7 captures per
+  producer's lifetime**.
+- **A capture is one-time; the pad is per decision.**  The entire first-segment
+  excess at 128 lanes is **1.2 s** — 32 decisions at 619.5 lane-decisions/s
+  against 758.4 steady — and that excess contains all 13 captures plus the rest
+  of the warmup, so a capture is at most tens of milliseconds.  Seven saves are
+  a fraction of a second per process.  The padded forward would run on *every*
+  decision, and session 43 measured the padded CPU encode at **2.38–2.49 s
+  against 1.63–1.77 live** at 128 rows (the old 48/160 pad); a bucket-sized pad
+  is smaller, but it cannot be cheaper than live width, and the card's width term
+  is unmeasured but non-negative.
+- **The ladder exists to join, not to compile.**  The server pads because a round
+  must merge several producers' live widths into one batch; a single producer has
+  nothing to join, and its own graph cache is already keyed on the full shape
+  (session 48's fix).  Padding it would pay per decision to save a handful of
+  one-time captures.
+
+**Decision: do not pad.**  The item is closed; the useful number to quote is the
+capture count (7–13 per producer lifetime, flat in run length), not a capture
+rate.  If a future board visits far more widths — the count grows with the
+distinct width vocabulary, not with decisions — this note's bound (captures are
+one-time) still holds, so the answer would need a measured capture cost first.

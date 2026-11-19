@@ -683,10 +683,11 @@ pass**.  C1 costs 66 ms of engine step per decision at 128 lanes
 (51.3 → 106.9 ms), so only a producer that updates on the CPU pays it.
 
 **Still open:** NVIDIA MPS (blocked: `base` has no `nvidia-cuda-mps-control`)
-and the 8-vCPU question, the A6000 overlapped-loop gate, whether to pad a
-producer's width to the server's ladder to cut its captures, and a
-**self-contained** HotSpot reproducer for the C2 miscompile.  **The native
-parity cadence is defined 2026-11-18** (`--checkpoint-every` +
+and the 8-vCPU question, the A6000 overlapped-loop gate, and a **self-contained**
+HotSpot reproducer for the C2 miscompile.  *(Sessions 50–52: the padding question
+is closed — do not pad, `FINDINGS.md` §3.91; the reproducer now replays the
+engine's compile history and needs one run on an affected host, §3.90.)*  **The
+native parity cadence is defined 2026-11-18** (`--checkpoint-every` +
 `parity_curve.py`, and `N ≥ gate / (budget × update)` measured at 27.9 updates
 per 4-game gate; `FINDINGS.md` §3.87).  The C2 report now has a **second
 observation** (3/3 engine crashes on a fresh A6000), the fault mapped to `of`'s
@@ -696,8 +697,21 @@ stand-alone probe is a **false negative** on that host (its own body is 3968
 bytes), so session 50's host-CPU narrowing is withdrawn and `hotspot_repro.py`
 exit 1 must not be read as "this host is clean" (§3.88).  The warmup-corrected
 sweep is measured: 203 → 758 lane-decisions/s from 8 to 128 lanes on the A6000
-(§3.89).  Bridge suite **185** (8 new on the reproducer).
-See `FINDINGS.md` §3.82–§3.89.
+(§3.89).  Bridge suite **196**.
+
+**Status (2026-11-19, session 52).**  The C2 reproducer replays the engine's
+compile history: `hotspot_repro.py --mode phased` compiles the one-sided
+1528-byte body, reproduces the engine's own `unstable_if` at bci 120, fills an
+in-range null slot, and recompiles to a body of the engine's shape (traps at bci
+23/62, branches at 54/120, handler table; 2896 bytes against the engine's 2848
+on Temurin 21.0.13).  The affected host's body differs in one place — the
+`of == null` test is missing — so an in-range null slot faults at `0xc`
+(`FINDINGS.md` §3.90, `HOTSPOT_C2_SEATIDS.md` §4.3); one run of that mode on an
+affected host makes the report self-contained.  The producer-padding question is
+**closed** (7–13 one-time captures per producer, one per live width; do not pad,
+`FINDINGS.md` §3.91).  Still open: NVIDIA MPS, the 8-vCPU question, the A6000
+overlapped-loop gate, and filing the report.
+See `FINDINGS.md` §3.82–§3.91.
 
 ---
 
