@@ -46,11 +46,14 @@ so they allocate where the affected host faults; the remaining gap is one
    `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation` and records every
    compilation of `of` — size, count, install stamp — in each arm;
    `phased.c2_bodies` and `phased.reached_recompile` make "did the driver reach
-   the defect" readable after the temp build is gone.  `--log-compilation` turns
-   the same record on for `quick`/`soak`.
-5. **Gate:** `test_hotspot_repro.py` **13 passed** (4 new: the sequence is in the
-   source, the reader takes `size` not the bytecode's `bytes`, phased args, both
-   bodies); ruff (E,F) clean.  Evidence: `runs/crforge-c4/s52/hotspot-phased.json`.
+   the defect" readable after the temp build is gone, and the verdict requires
+   the second body in this mode (`verdict.c2_recompiled`), so a run that never
+   installed it is **inconclusive (exit 2)**, not a host negative.
+   `--log-compilation` turns the same record on for `quick`/`soak`.
+5. **Gate:** `test_hotspot_repro.py` **14 passed** (5 new: the phased history is
+   in the source, the reader takes `size` not the bytecode's `bytes`, phased
+   args, both bodies, and a phased run without the second body is inconclusive);
+   ruff (E,F) clean.  Evidence: `runs/crforge-c4/s52/hotspot-phased.json`.
 6. **Still open:** one `--mode phased` run on an affected host (a crash there
    makes the report self-contained), filing at bugreport.java.com, NVIDIA MPS
    (an image with the control daemon), the 8-vCPU question and the A6000
@@ -58,6 +61,24 @@ so they allocate where the affected host faults; the remaining gap is one
    a producer captures 7–13 graphs over 96 decisions (one per live width, not
    per decision), so padding to the server's ladder saves 4–7 one-time captures
    while adding masked compute to every decision — do not pad.
+
+**Next run — one affected box, one command.**  Rent the session-51 class (6 vCPU,
+1×A6000, Ubuntu 22.04.5, `/usr/lib/jvm/java-21-openjdk-amd64`) and run:
+
+```bash
+.venv/bin/python tools/crforge/hotspot_repro.py \
+    --jdks /usr/lib/jvm/java-21-openjdk-amd64 \
+    --mode phased --repeats 3 \
+    --output runs/crforge-c4/hotspot-phased.json
+```
+
+Expected on an affected host: exit **0**, at least one `c2` arm crashed, controls
+(`c1`, `-Xint`) clean, `bytecode_identical: true`, and `phased.c2_bodies` showing
+the first body then the recompiled one (`[1528, 2848]` on that JDK).  A clean run
+is exit **1** only with `reached_recompile: true`; exit **2** means the recompile
+never installed — rerun, do not record a negative.  If it reproduces, capture
+`dmesg`, whether an `hs_err` exists, and the arm's `stderr_tail`, then file at
+bugreport.java.com from `HOTSPOT_C2_SEATIDS.md`.
 
 See `FINDINGS.md` §3.91 (the padding decision), §3.90 (this reproducer), §3.89
 (the sweep), §3.88 (the reproduction and the false negative), §3.87 (the parity
@@ -385,10 +406,11 @@ body's fast path, and makes the driver replay that history.
   masked compute to every decision; the whole first-segment excess at 128 lanes
   is 1.2 s, captures included.  The ladder exists to join producers; a single
   producer has nothing to join.  Item closed (§3.91).
-- **Gate:** `test_hotspot_repro.py` **13 passed** (the phased history is in the
+- **Gate:** `test_hotspot_repro.py` **14 passed** (the phased history is in the
   source, `_nmethods` reads `size` not `bytes`, `_mode_args` for phased,
-  `_phased_summary` requires both bodies); ruff (E,F) clean on the tool and the
-  test.  Evidence: `runs/crforge-c4/s52/hotspot-phased.json`.
+  `_phased_summary` requires both bodies, and the phased verdict requires the
+  recompile); ruff (E,F) clean on the tool and the test.  Evidence:
+  `runs/crforge-c4/s52/hotspot-phased.json`.
 
 ### 2026-11-18 (session 51) — the C2 miscompile reproduces, the probe is a false negative, and the host-CPU narrowing is withdrawn
 

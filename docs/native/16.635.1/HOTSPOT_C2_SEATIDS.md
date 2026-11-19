@@ -169,9 +169,13 @@ must not be reported as "this host is clean".
 
 Exit status: **0** reproduced, **1** every arm passed, **2** inconclusive. An arm
 is only counted as a pass if its `PrintCompilation` output shows the level-4
-nmethod of `of`. The artifact (`crforge-hotspot-seatids.v1`) records the host
-(model, microcode and the full CPU flag list as of session 51), the JDK banners,
-the bytecode check and every arm's exit status and tail.
+nmethod of `of`. In `phased` mode a pass also requires the **second** C2 body
+(the artifact's `verdict.c2_recompiled` and `phased.reached_recompile`): a run
+whose only body is the one-sided first compilation never exercised the
+recompilation and is `inconclusive` (exit **2**), not a negative. The artifact
+(`crforge-hotspot-seatids.v1`) records the host (model, microcode and the full
+CPU flag list as of session 51), the JDK banners, the bytecode check and every
+arm's exit status and tail.
 
 A minimal hand-run:
 

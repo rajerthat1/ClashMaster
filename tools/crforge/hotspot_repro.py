@@ -346,14 +346,24 @@ def _arm(
     }
 
 
-def _verdict(arms: list[dict[str, Any]], *, bytecode_identical: bool) -> dict[str, Any]:
-    """Classify the arm table; a pass only counts if `of` really was C2-compiled."""
+def _verdict(
+    arms: list[dict[str, Any]], *, bytecode_identical: bool, require_recompile: bool = False
+) -> dict[str, Any]:
+    """Classify the arm table; a pass only counts if `of` really was C2-compiled.
+
+    In ``phased`` mode a pass also requires the *second* C2 body: a run whose only
+    body is the one-sided first compilation never exercised the recompilation the
+    defect lives in, so it is inconclusive rather than a host negative.
+    """
     controls = [arm for arm in arms if arm["arm"] != "c2" and not arm["timed_out"]]
     c2_arms = [arm for arm in arms if arm["arm"] == "c2" and not arm["timed_out"]]
     crashes = [arm for arm in c2_arms if arm["crashed"]]
     compiled_c2 = [arm for arm in c2_arms if arm["c2_level4_compiled"]]
     control_crash = [arm for arm in controls if arm["crashed"]]
+    recompiled = [arm for arm in c2_arms if len(arm.get("c2_nmethods", [])) >= 2]
     inconclusive = not c2_arms or not compiled_c2 or not bytecode_identical
+    if require_recompile and not recompiled:
+        inconclusive = True
     if crashes and not control_crash:
         verdict = "reproduced"
     elif not crashes and not inconclusive and not control_crash:
@@ -365,15 +375,20 @@ def _verdict(arms: list[dict[str, Any]], *, bytecode_identical: bool) -> dict[st
         "c2_arms": len(c2_arms),
         "crashes": len(crashes),
         "c2_level4_compiled": len(compiled_c2),
+        "c2_recompiled": len(recompiled),
         "bytecode_identical": bytecode_identical,
         "control_arms": len(controls),
         "control_crashes": len(control_crash),
         "note": {
             "reproduced": "a default-flags arm crashed while C1 and the interpreter passed",
-            "not reproduced": "every C2 arm compiled `of` at level 4 and passed, and its bytecode is the engine's",
+            "not reproduced": (
+                "every C2 arm compiled `of` at level 4 and passed, and its bytecode is the engine's"
+                " (in phased mode, the recompiled body also installed)"
+            ),
             "inconclusive": (
                 "an arm timed out, crashed in a control arm, or never compiled `of` at level 4; "
-                "or the engine jar was absent so the bytecode check did not run"
+                "or the engine jar was absent so the bytecode check did not run; or (phased) no "
+                "arm installed the recompiled body"
             ),
         }[verdict],
     }
@@ -506,7 +521,9 @@ def main(argv: list[str] | None = None) -> int:
             shutil.rmtree(build_root, ignore_errors=True)
 
     bytecode_identical = any(jvm.get("bytecode", {}).get("identical") for jvm in jvms)
-    verdict = _verdict(arms, bytecode_identical=bytecode_identical)
+    verdict = _verdict(
+        arms, bytecode_identical=bytecode_identical, require_recompile=args.mode == "phased"
+    )
 
     artifact = {
         "schema": SCHEMA,

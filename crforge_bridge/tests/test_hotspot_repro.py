@@ -18,12 +18,20 @@ if str(_TOOL_DIR) not in sys.path:
 import hotspot_repro  # noqa: E402  (the tool lives outside the package)
 
 
-def _arm(name: str, *, crashed: bool = False, level4: bool = True, timed_out: bool = False) -> dict[str, object]:
+def _arm(
+    name: str,
+    *,
+    crashed: bool = False,
+    level4: bool = True,
+    timed_out: bool = False,
+    bodies: tuple[int, ...] = (),
+) -> dict[str, object]:
     return {
         "arm": name,
         "crashed": crashed,
         "c2_level4_compiled": level4,
         "timed_out": timed_out,
+        "c2_nmethods": [{"size": size} for size in bodies],
     }
 
 
@@ -139,6 +147,32 @@ def test_phased_mode_passes_its_own_knobs_and_defaults() -> None:
         phased_settle_ms = 300
 
     assert hotspot_repro._mode_args(Args()) == ["phased", "8", "512", "12", "300"]
+
+
+def test_a_phased_run_that_never_recompiled_is_inconclusive() -> None:
+    # In phased mode the one-sided first body is not the body under test: a clean run
+    # with only that body did not exercise the recompilation and is not a host negative.
+    one_body = [
+        _arm("c2", bodies=(1528,)),
+        _arm("c1", level4=False),
+        _arm("interpreter", level4=False),
+    ]
+    verdict = hotspot_repro._verdict(
+        one_body, bytecode_identical=True, require_recompile=True
+    )
+    assert verdict["result"] == "inconclusive"
+    assert verdict["c2_recompiled"] == 0
+
+    two_bodies = [
+        _arm("c2", bodies=(1528, 2896)),
+        _arm("c1", level4=False),
+        _arm("interpreter", level4=False),
+    ]
+    verdict = hotspot_repro._verdict(
+        two_bodies, bytecode_identical=True, require_recompile=True
+    )
+    assert verdict["result"] == "not reproduced"
+    assert verdict["c2_recompiled"] == 1
 
 
 def test_a_phased_run_must_show_both_c2_bodies() -> None:

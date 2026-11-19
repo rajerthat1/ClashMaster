@@ -7313,14 +7313,17 @@ phased` (`--phased-n`, `--phased-settle-ms`, `--rounds`, `--kinds`) adds
 `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation` and writes every compilation
 of `of` per arm (`c2_nmethods`: compile id, compiler, level, nmethod size, count,
 install stamp).  The artifact gains `phased.c2_bodies` (the size list per C2 arm)
-and `phased.reached_recompile`; `--log-compilation` turns the record on for the
-other modes.  A clean phased run can now say *which* compilation it reached, so
-`exit 1` cannot be read as "this host is clean" when the second body never
-installed — the gap session 51 had to discover by hand.
+and `phased.reached_recompile`, and the verdict requires the second body in this
+mode (`verdict.c2_recompiled`), so a run that never installed it exits **2**
+(inconclusive) rather than **1** (a host negative).  `--log-compilation` turns
+the record on for the other modes.  A clean phased run therefore cannot be
+misread as "this host is clean" when the second body never installed — the gap
+session 51 had to discover by hand.
 
-**Gate:** `test_hotspot_repro.py` **13 passed** (the phased history is in the
+**Gate:** `test_hotspot_repro.py` **14 passed** (the phased history is in the
 source, the nmethod reader takes `size` not the bytecode's `bytes`, phased
-arguments, both bodies); ruff (E,F) clean on the tool and the test.  Evidence:
+arguments, both bodies, and the phased verdict requires the recompile); ruff
+(E,F) clean on the tool and the test.  Evidence:
 `runs/crforge-c4/s52/hotspot-phased.json` and the trap excerpt appended to
 `runs/crforge-c4/s51-a6000/fault-map.txt`.
 
