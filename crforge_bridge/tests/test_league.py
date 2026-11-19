@@ -107,3 +107,56 @@ def test_checkpoint_identity_rejects_a_payload_without_an_id(tmp_path: Path) -> 
     torch.save({"weights": torch.zeros(1)}, path)
     with pytest.raises(ValueError, match="checkpoint_id"):
         checkpoint_identity(path)
+
+
+def _deck_spec(deck_id: str = "hog-2.6") -> dict:
+    return {
+        "deck_id": deck_id,
+        "card_keys": [f"card{index}" for index in range(8)],
+        "card_ids": [26000000 + index for index in range(8)],
+        "form_availability": [0, 1, 0, 2, 0, 0, 1, 0],
+        "tower_key": "tower-princess",
+        "tower_troop_id": 159000000,
+        "uses": 10,
+        "focus_rank": None,
+    }
+
+
+def test_a_league_deck_survives_save_and_record(tmp_path: Path) -> None:
+    from crforge_bridge.league import OpponentDeck
+
+    path, _, _ = _league(tmp_path)
+    league = CrforgeOpponentLeague.load(path)
+    entry = league.entries[0]
+    deck = OpponentDeck.from_mapping(_deck_spec())
+    league.set_deck(entry.checkpoint_id, deck)
+    league.record(entry.checkpoint_id, 1.0)
+    league.save()
+
+    reloaded = CrforgeOpponentLeague.load(path)
+    assert reloaded.deck_for(entry.checkpoint_id) == deck
+    assert reloaded.summary()["decks"][entry.checkpoint_id]["deck_id"] == "hog-2.6"
+    updated = next(item for item in reloaded.entries if item.checkpoint_id == entry.checkpoint_id)
+    assert updated.wins_against == 1
+
+
+def test_set_deck_refuses_an_unknown_checkpoint(tmp_path: Path) -> None:
+    from crforge_bridge.league import OpponentDeck
+
+    path, _, _ = _league(tmp_path)
+    league = CrforgeOpponentLeague.load(path)
+    with pytest.raises(ValueError, match="no checkpoint"):
+        league.set_deck("not-in-the-league", OpponentDeck.from_mapping(_deck_spec()))
+
+
+def test_add_checkpoint_can_attach_a_deck(tmp_path: Path) -> None:
+    from crforge_bridge.league import OpponentDeck
+
+    anchor = _checkpoint(tmp_path / "anchor.pt", "anchor-id")
+    path = tmp_path / "league.json"
+    create_league(path, anchor=anchor)
+    extra = _checkpoint(tmp_path / "extra.pt", "extra-id")
+    deck = OpponentDeck.from_mapping(_deck_spec("extra-deck"))
+
+    league = add_checkpoint(path, extra, deck=deck)
+    assert league.deck_for("extra-id") == deck

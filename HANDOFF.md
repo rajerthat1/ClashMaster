@@ -46,13 +46,24 @@ results; `tools/crforge/self_play.py` now takes `--opponent-checkpoint`,
 model, and stores the opponent's transitions while masking them out of the PPO
 loss (`CrforgeRolloutStore(train_rows=...)`, learner rows only). CPU smoke:
 2 lanes × 2 segments with `B-general-v275` on seat 1 — **8 valid rows = 4
-decisions × 2 learner rows**, 2 finite updates, 0 rejected; `A-hog26-v738` also
-loads and plays. A 4-segment league smoke sampled both members and recorded
-`opponent_load_s` outside the collection wall. Gate: 22 targeted tests (209 in
-the bridge suite), ruff clean.
-Still open: **per-opponent deck sampling** (the opponent currently mirrors the
-learner's X-Bow deck), a two-model fast-forward/decision-server arm (the
-opponent forward is eager today), and per-lane opponents.
+decisions × 2 learner rows**, 2 finite updates, 0 rejected.
+
+**Also landed — the opponent deck and fixed-opponent fast-forward.**
+`--opponent-deck-id` / `--opponent-deck-json` (with `--deck-pool`) set the
+opponent seat's deck from the deck pool; the engine gets it at reset, the
+opponent tensorizer is built for it, and a league whose entries share one deck
+uses it automatically. Mixed-deck leagues are refused unless one deck is forced.
+A **fixed** opponent can also use `--fast-forward` (a second `FastForwardV4` with
+`rows = count`), and the league fast-forward path copies each new member's
+weights **in place** into the persistent opponent model so the CUDA graphs are
+reused instead of recaptured at every segment. Smoke: `A-hog26-v738` on the
+`523b64…` Hog 2.6 deck (`cannon-ev1`, `skeletons-ev1`, `musketeer-hero`,
+`hog-rider`, …) — **0 illegal, 1 ACT**; CPU fast-forward enabled (fp32); a
+2-segment league rotated `B-general` → `A-hog` on that deck with the fast path.
+
+Gate: 26 targeted tests, 213 in the bridge suite, ruff clean. Still open: a
+two-model decision-server arm, per-lane opponents, and per-segment decks (the
+engine keeps a lane's deck across autoresets, so a league must share one deck).
 
 ## Bottom line (2026-11-19, session 52)
 

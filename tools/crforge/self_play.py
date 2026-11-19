@@ -103,12 +103,12 @@ for _path in (_REPO_ROOT, _REPO_ROOT / ".resource" / "crforge" / "python"):
 import numpy as np
 import torch
 
-from crforge_bridge.catalog import Catalog
+from crforge_bridge.catalog import TOWER_SELECTIONS, Catalog
 from crforge_bridge.decision_server import DecisionClient
 from crforge_bridge.fast_forward import DEFAULT_TOLERANCE, FastForwardV4
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
-from crforge_bridge.league import CrforgeOpponentLeague, OpponentPlan
+from crforge_bridge.league import CrforgeOpponentLeague, OpponentDeck, OpponentPlan
 from crforge_bridge.rollout import CrforgeRewardConfig, CrforgeRolloutStore, PotentialShapingReward, rollout_statistics
 from crforge_bridge.training import (
     CrforgeTrainer,
@@ -308,6 +308,37 @@ def _check_opponent_policy(opponent_policy: Any, *, config: Any, release: str | 
         )
 
 
+def _resolve_opponent_deck(args: Any, league: CrforgeOpponentLeague | None) -> OpponentDeck | None:
+    """The one deck the opponent seat plays for the whole run.
+
+    The engine keeps each environment's deck across autoresets, so a league can
+    rotate checkpoints at segment boundaries but not decks.  A league with one
+    shared deck is accepted; mixed decks need an explicit ``--opponent-deck-*``.
+    """
+
+    if args.opponent_deck_id is not None and args.opponent_deck_json is not None:
+        raise SystemExit("pass --opponent-deck-id or --opponent-deck-json, not both")
+    if args.opponent_deck_json is not None:
+        raw = json.loads(args.opponent_deck_json.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise SystemExit(f"{args.opponent_deck_json} is not a deck object")
+        return OpponentDeck.from_mapping(raw)
+    if args.opponent_deck_id is not None:
+        try:
+            return OpponentDeck.from_pool(args.deck_pool, args.opponent_deck_id)
+        except (OSError, ValueError) as error:
+            raise SystemExit(str(error)) from error
+    if league is not None and league.has_opponents:
+        decks = {league.deck_for(entry.checkpoint_id) for entry in league.entries}
+        if len(decks) == 1 and None not in decks:
+            return next(iter(decks))
+        if decks != {None}:
+            raise SystemExit(
+                "league opponents do not share one deck; pass --opponent-deck-id or --opponent-deck-json"
+            )
+    return None
+
+
 def _candidate_record(section: Any) -> Any:
     return getattr(section, "candidates", section)
 
@@ -475,7 +506,16 @@ def _force_second_micro_actions(
     return ActionSequenceV4(**updated), int(chosen.size)
 
 
-def _stock_tensorizer(bundle: Any, config: Any, seat: int) -> UniversalObservationTensorizerV4:
+def _stock_tensorizer(
+    bundle: Any,
+    config: Any,
+    seat: int,
+    *,
+    deck: Sequence[int] = LEARNER_DECK,
+    forms: Sequence[int] = LEARNER_FORMS,
+) -> UniversalObservationTensorizerV4:
+    deck = tuple(int(card_id) for card_id in deck)
+    forms = tuple(int(form) for form in forms)
     return UniversalObservationTensorizerV4(
         actor_owner=int(seat),
         card_catalog=bundle.card_catalog,
@@ -483,18 +523,33 @@ def _stock_tensorizer(bundle: Any, config: Any, seat: int) -> UniversalObservati
         entity_archetype_catalog=bundle.entity_archetype_catalog,
         effect_catalog=bundle.effect_catalog,
         card_specs=bundle.card_specs,
-        deck=LEARNER_DECK,
+        deck=deck,
         tracker=None,
-        deck_roles=deck_roles_from_form_availability(LEARNER_DECK, LEARNER_FORMS),
+        deck_roles=deck_roles_from_form_availability(deck, forms),
         config=config,
         reject_unknown_public_semantics=True,
     )
 
 
-def _vector(count: int, *, max_ticks: int, jvm_args: tuple[str, ...] = ()) -> Any:
+def _vector(
+    count: int,
+    *,
+    max_ticks: int,
+    jvm_args: tuple[str, ...] = (),
+    decks: tuple[Sequence[str], Sequence[str]] | None = None,
+    slots: tuple[Sequence[int], Sequence[int]] | None = None,
+    towers: tuple[str, str] | None = None,
+) -> Any:
     from crforge_env.vector import LadderConfig, SideSetup, VectorBattle
 
-    setup = SideSetup(towers="King_PrincessTowers", king_level=16, tower_level=16)
+    decks = (LEARNER_NAMES, LEARNER_NAMES) if decks is None else decks
+    slots = (LEARNER_FORMS, LEARNER_FORMS) if slots is None else slots
+    towers = ("King_PrincessTowers", "King_PrincessTowers") if towers is None else towers
+    for side in (0, 1):
+        if len(decks[side]) != 8 or len(slots[side]) != 8:
+            raise ValueError(f"side {side} needs eight cards and eight slot flags")
+    setup0 = SideSetup(towers=towers[0], king_level=16, tower_level=16)
+    setup1 = SideSetup(towers=towers[1], king_level=16, tower_level=16)
     vector = VectorBattle(
         count,
         1,
@@ -505,12 +560,12 @@ def _vector(count: int, *, max_ticks: int, jvm_args: tuple[str, ...] = ()) -> An
     )
     vector.reset(
         list(range(1, count + 1)),
-        list(LEARNER_NAMES),
-        list(LEARNER_NAMES),
-        list(LEARNER_FORMS),
-        list(LEARNER_FORMS),
-        setup0=setup,
-        setup1=setup,
+        list(decks[0]),
+        list(decks[1]),
+        list(slots[0]),
+        list(slots[1]),
+        setup0=setup0,
+        setup1=setup1,
     )
     return vector
 
@@ -620,6 +675,23 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="where to write the league's updated results (default: --opponent-league)",
+    )
+    parser.add_argument(
+        "--opponent-deck-id",
+        default=None,
+        help="the opponent's deck id from --deck-pool (default: the league entry's deck, else mirror X-Bow)",
+    )
+    parser.add_argument(
+        "--opponent-deck-json",
+        type=Path,
+        default=None,
+        help="a deck-pool deck object in a JSON file; mutually exclusive with --opponent-deck-id",
+    )
+    parser.add_argument(
+        "--deck-pool",
+        type=Path,
+        default=Path("runs/deck-pool.json"),
+        help="deck pool used to resolve --opponent-deck-id",
     )
     parser.add_argument(
         "--learner-seat",
@@ -928,10 +1000,10 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("a frozen opponent needs both seats: pass --seats 0 1")
         if args.learner_seat not in seats:
             raise SystemExit(f"--learner-seat {args.learner_seat} is not in --seats {list(seats)}")
-        if args.fast_forward or args.decision_server is not None:
+        if args.decision_server is not None:
             raise SystemExit(
-                "the opponent forward is eager and runs beside the learner's: drop --fast-forward / "
-                "--decision-server for the league smoke (the server arm needs a two-model server)"
+                "the opponent forward is eager and runs beside the learner's: drop --decision-server "
+                "for the league smoke (the server arm needs a two-model server)"
             )
     if args.league_state is not None and args.opponent_league is None:
         raise SystemExit("--league-state writes an opponent league; pass --opponent-league too")
@@ -954,17 +1026,56 @@ def main(argv: list[str] | None = None) -> int:
     catalog = Catalog.load()
     timeline = load_game_mode_timeline(STANDARD_GAME_MODE).timeline
 
-    vector = _vector(args.count, max_ticks=args.max_ticks, jvm_args=tuple(args.jvm_arg))
+    # N4's opponent pool: the opponent seat may be a frozen checkpoint, sampled
+    # from the native PFSP league at each segment boundary.  Its deck is fixed
+    # for the run because the engine keeps an environment's deck across
+    # autoresets; a league must therefore share one deck (checked below).
+    league = None
+    if args.opponent_league is not None:
+        league = CrforgeOpponentLeague.load(args.opponent_league, seed=args.seed)
+    opponent_requested = args.opponent_checkpoint is not None or (
+        league is not None and league.has_opponents
+    )
+    opponent_seat = 1 - args.learner_seat if opponent_requested else None
+    if not opponent_requested and (args.opponent_deck_id is not None or args.opponent_deck_json is not None):
+        raise SystemExit("--opponent-deck-* needs --opponent-checkpoint or a non-empty --opponent-league")
+    opponent_deck = _resolve_opponent_deck(args, league) if opponent_requested else None
+
+    side_names: list[Sequence[str]] = [LEARNER_NAMES, LEARNER_NAMES]
+    side_slots: list[Sequence[int]] = [LEARNER_FORMS, LEARNER_FORMS]
+    side_decks: list[Sequence[int]] = [LEARNER_DECK, LEARNER_DECK]
+    side_forms: list[Sequence[int]] = [LEARNER_FORMS, LEARNER_FORMS]
+    side_towers: list[str] = ["King_PrincessTowers", "King_PrincessTowers"]
+    side_tower_ids: list[int] = [TOWER_TROOP, TOWER_TROOP]
+    if opponent_deck is not None and opponent_seat is not None:
+        tower = TOWER_SELECTIONS.get(opponent_deck.tower_troop_id)
+        if tower is None:
+            raise SystemExit(f"opponent deck {opponent_deck.deck_id} uses an unsupported tower troop")
+        side_names[opponent_seat] = tuple(catalog.name(card_id) for card_id in opponent_deck.card_ids)
+        side_slots[opponent_seat] = opponent_deck.forms
+        side_decks[opponent_seat] = opponent_deck.card_ids
+        side_forms[opponent_seat] = opponent_deck.forms
+        side_towers[opponent_seat] = tower
+        side_tower_ids[opponent_seat] = opponent_deck.tower_troop_id
+
+    vector = _vector(
+        args.count,
+        max_ticks=args.max_ticks,
+        jvm_args=tuple(args.jvm_arg),
+        decks=(side_names[0], side_names[1]),
+        slots=(side_slots[0], side_slots[1]),
+        towers=(side_towers[0], side_towers[1]),
+    )
     encoder = VectorObservationEncoder(vector, catalog)
     encoder.reset()
     batch = encoder.encode()
     rows = {
         seat: VectorTensorizer(
-            _stock_tensorizer(bundle, config, seat),
+            _stock_tensorizer(bundle, config, seat, deck=side_decks[seat], forms=side_forms[seat]),
             vocabulary=list(vector.vocabulary),
             bridge_catalog=catalog,
             timeline=timeline,
-            tower_troop_id=TOWER_TROOP,
+            tower_troop_id=side_tower_ids[seat],
         )
         for seat in seats
     }
@@ -972,31 +1083,33 @@ def main(argv: list[str] | None = None) -> int:
         item.reset(batch)
     decoders = {seat: VectorActionDecoder(rows[seat].tensorizer, schema=vector.schema) for seat in seats}
 
-    # N4's opponent pool: seat 1 may be a frozen checkpoint, sampled from the
-    # native PFSP league at each segment boundary.  Without either flag the
-    # producer stays pure self-play, exactly as before.
-    league = None
     segment_opponent = None
     opponent_policy = None
     opponent_state = None
-    if args.opponent_league is not None:
-        league = CrforgeOpponentLeague.load(args.opponent_league, seed=args.seed)
-    if league is not None and league.has_opponents:
-        segment_opponent = league.sample()
-        opponent_policy = load_policy_v4(segment_opponent.checkpoint_path, device=device)
-    elif args.opponent_checkpoint is not None:
-        opponent_policy = load_policy_v4(args.opponent_checkpoint, device=device)
-        segment_opponent = OpponentPlan(
-            checkpoint_id=opponent_policy.checkpoint_id,
-            checkpoint_path=args.opponent_checkpoint,
-            update_step=opponent_policy.update_step,
-        )
-    opponent_seat = None
-    if opponent_policy is not None:
-        opponent_seat = 1 - args.learner_seat
+    if opponent_requested:
+        if league is not None and league.has_opponents:
+            segment_opponent = league.sample()
+            opponent_policy = load_policy_v4(segment_opponent.checkpoint_path, device=device)
+        else:
+            opponent_policy = load_policy_v4(args.opponent_checkpoint, device=device)
+            segment_opponent = OpponentPlan(
+                checkpoint_id=opponent_policy.checkpoint_id,
+                checkpoint_path=args.opponent_checkpoint,
+                update_step=opponent_policy.update_step,
+            )
         _check_opponent_policy(opponent_policy, config=config, release=release)
         opponent_policy.model.eval()
-        print(json.dumps({"event": "opponent", "seat": opponent_seat, **segment_opponent.as_dict()}), flush=True)
+        print(
+            json.dumps(
+                {
+                    "event": "opponent",
+                    "seat": opponent_seat,
+                    "deck": None if opponent_deck is None else opponent_deck.deck_id,
+                    **segment_opponent.as_dict(),
+                }
+            ),
+            flush=True,
+        )
 
     window = int(config.decision_ticks)
     # Every delay bin must have a tick of its own inside one decision window;
@@ -1008,6 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
     if opponent_policy is not None:
         opponent_state = opponent_policy.model.initial_state(args.count, device=device)
     fast = None
+    opponent_fast = None
     fast_verification = None
     server_verification = None
     decision_client = None
@@ -1034,6 +1148,16 @@ def main(argv: list[str] | None = None) -> int:
             full_cuda_graph=bool(args.full_cuda_graph),
         )
         state = fast.state
+        if opponent_policy is not None:
+            opponent_fast = FastForwardV4(
+                opponent_policy.model,
+                device=device,
+                rows=args.count,
+                precision=args.inference_precision,
+                cuda_graphs=not args.no_cuda_graphs,
+                full_cuda_graph=bool(args.full_cuda_graph),
+            )
+            opponent_state = opponent_fast.state
     # The overlapped loop needs a second, independent model: the collector keeps
     # sampling with stable weights while the worker updates this copy.  Loading
     # the checkpoint twice (rather than deepcopy) makes the two models visibly
@@ -1151,13 +1275,22 @@ def main(argv: list[str] | None = None) -> int:
                     # The opponent's forward has its own first-call cost; prime it
                     # and then put its recurrence back to the start.
                     opponent_warm_start = torch.zeros(args.count, dtype=torch.bool, device=device)
-                    opponent_policy.model.sample_for_ppo_rollout(
-                        warm_stacks[opponent_seat].to_model_input(device),
-                        opponent_state,
-                        episode_start=opponent_warm_start,
-                        validate=not args.no_validate,
-                    )
-                    opponent_state = opponent_policy.model.initial_state(args.count, device=device)
+                    if opponent_fast is not None:
+                        opponent_fast.sample(
+                            warm_stacks[opponent_seat],
+                            opponent_fast.state,
+                            episode_start=opponent_warm_start,
+                        )
+                        opponent_fast.rebind(opponent_policy.model.initial_state(args.count, device=device))
+                        opponent_state = opponent_fast.state
+                    else:
+                        opponent_policy.model.sample_for_ppo_rollout(
+                            warm_stacks[opponent_seat].to_model_input(device),
+                            opponent_state,
+                            episode_start=opponent_warm_start,
+                            validate=not args.no_validate,
+                        )
+                        opponent_state = opponent_policy.model.initial_state(args.count, device=device)
                 if fast is not None and args.verify_fast_forward:
                     # The gate is numerical, not the wall: the half-precision or
                     # graph-replayed path must sample the same actions as eager
@@ -1270,12 +1403,29 @@ def main(argv: list[str] | None = None) -> int:
                 # learner currently does worst against.  Its recurrence starts
                 # fresh; the learner's carries according to the update policy.
                 segment_opponent = league.sample()
-                opponent_policy = load_policy_v4(segment_opponent.checkpoint_path, device=device)
-                _check_opponent_policy(opponent_policy, config=config, release=release)
-                opponent_policy.model.eval()
-                opponent_state = opponent_policy.model.initial_state(args.count, device=device)
+                new_policy = load_policy_v4(segment_opponent.checkpoint_path, device=device)
+                _check_opponent_policy(new_policy, config=config, release=release)
+                if opponent_fast is not None:
+                    # The CUDA graphs hold the persistent opponent model's
+                    # parameter objects, so copy the new member's weights in
+                    # place instead of rebuilding the graphs at every segment.
+                    copy_weights(new_policy.model, opponent_policy.model)
+                    opponent_fast.rebind(opponent_policy.model.initial_state(args.count, device=device))
+                    opponent_state = opponent_fast.state
+                else:
+                    opponent_policy = new_policy
+                    opponent_policy.model.eval()
+                    opponent_state = opponent_policy.model.initial_state(args.count, device=device)
                 print(
-                    json.dumps({"event": "opponent", "segment": segment, "seat": opponent_seat, **segment_opponent.as_dict()}),
+                    json.dumps(
+                        {
+                            "event": "opponent",
+                            "segment": segment,
+                            "seat": opponent_seat,
+                            "deck": None if opponent_deck is None else opponent_deck.deck_id,
+                            **segment_opponent.as_dict(),
+                        }
+                    ),
                     flush=True,
                 )
             opponent_load_s = time.perf_counter() - opponent_load_started
@@ -1381,22 +1531,38 @@ def main(argv: list[str] | None = None) -> int:
                         # model's own actions.  Only the learner's rows enter the
                         # PPO update (``train_rows`` in the rollout store).
                         opponent_episode_start = torch.from_numpy(episode_start_lanes).to(device)
-                        opponent_output = (
-                            opponent_policy.model.act(
-                                stacks[opponent_seat].to_model_input(device),
-                                opponent_state,
-                                episode_start=opponent_episode_start,
-                                validate=validate_rows,
+                        if opponent_fast is not None:
+                            opponent_output = (
+                                opponent_fast.act(
+                                    stacks[opponent_seat],
+                                    opponent_fast.state,
+                                    episode_start=opponent_episode_start,
+                                )
+                                if args.greedy
+                                else opponent_fast.sample(
+                                    stacks[opponent_seat],
+                                    opponent_fast.state,
+                                    episode_start=opponent_episode_start,
+                                )
                             )
-                            if args.greedy
-                            else opponent_policy.model.sample_for_ppo_rollout(
-                                stacks[opponent_seat].to_model_input(device),
-                                opponent_state,
-                                episode_start=opponent_episode_start,
-                                validate=validate_rows,
+                            opponent_state = opponent_fast.state
+                        else:
+                            opponent_output = (
+                                opponent_policy.model.act(
+                                    stacks[opponent_seat].to_model_input(device),
+                                    opponent_state,
+                                    episode_start=opponent_episode_start,
+                                    validate=validate_rows,
+                                )
+                                if args.greedy
+                                else opponent_policy.model.sample_for_ppo_rollout(
+                                    stacks[opponent_seat].to_model_input(device),
+                                    opponent_state,
+                                    episode_start=opponent_episode_start,
+                                    validate=validate_rows,
+                                )
                             )
-                        )
-                        opponent_state = opponent_output.next_state
+                            opponent_state = opponent_output.next_state
                         sampled_actions = _splice_opponent_actions(
                             output.actions,
                             opponent_output.actions,
@@ -1579,6 +1745,7 @@ def main(argv: list[str] | None = None) -> int:
                         league.save(args.league_state)
                 league_block = {
                     **segment_opponent.as_dict(),
+                    "deck": None if opponent_deck is None else opponent_deck.deck_id,
                     "games": recorded,
                     "learner_result": (
                         statistics.fmean(segment_results) if segment_results else None
@@ -1957,6 +2124,7 @@ def main(argv: list[str] | None = None) -> int:
                 "opponent_league": (
                     None if args.opponent_league is None else str(args.opponent_league)
                 ),
+                "opponent_deck_id": None if opponent_deck is None else opponent_deck.deck_id,
                 "device": str(device),
                 "seed": args.seed,
                 "warmup_ticks": args.warmup_ticks,
@@ -1997,9 +2165,12 @@ def main(argv: list[str] | None = None) -> int:
                     "seat": opponent_seat,
                     "mode": "league" if league is not None else "fixed",
                     "last_segment": segment_opponent.as_dict(),
+                    "deck": None if opponent_deck is None else opponent_deck.deck_id,
+                    "deck_card_ids": None if opponent_deck is None else list(opponent_deck.card_ids),
+                    "deck_forms": None if opponent_deck is None else list(opponent_deck.forms),
                     "train_rows": "learner seat only; opponent rows are stored but masked from the PPO update",
-                    "deck": "mirror (the learner's X-Bow deck); per-opponent deck sampling is the next step",
-                    "eager": "the opponent forward is eager; --fast-forward / --decision-server are refused with it",
+                    "fast_forward": None if opponent_fast is None else opponent_fast.describe(),
+                    "eager": "the opponent forward is eager when fast_forward is null",
                 }
             ),
             "opponent_league": None if league is None else league.summary(),

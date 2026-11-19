@@ -8,19 +8,63 @@ still loses to.
 
 A league file is the native ``v4-ppo-policy-league.v1`` JSON, so a league built
 by the native trainer can be used as a crforge opponent pool without conversion.
+crforge adds one optional top-level ``crforge`` block (each entry's deck); a
+native ``PolicyLeagueV4.save`` does not preserve it, so write the file back
+through :class:`CrforgeOpponentLeague` once decks are attached.
 """
 
 from __future__ import annotations
 
+import json
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from native_runner.training.v4.deck_pool import DeckIdentityV4, DeckPoolManifestV4
 from native_runner.training.v4.league import LeagueEntryV4, PolicyLeagueV4
 
 LEAGUE_SCHEMA = "crforge-opponent-league.v1"
+
+
+@dataclass(frozen=True, slots=True)
+class OpponentDeck:
+    """One opponent's deck, in the deck-pool identity the native trainer uses."""
+
+    identity: DeckIdentityV4
+
+    @property
+    def deck_id(self) -> str:
+        return self.identity.deck_id
+
+    @property
+    def card_ids(self) -> tuple[int, ...]:
+        return self.identity.card_ids
+
+    @property
+    def forms(self) -> tuple[int, ...]:
+        return self.identity.form_availability
+
+    @property
+    def tower_troop_id(self) -> int:
+        return self.identity.tower_troop_id
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.identity.to_dict()
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any]) -> OpponentDeck:
+        return cls(DeckIdentityV4.from_dict(value))
+
+    @classmethod
+    def from_pool(cls, pool: str | Path, deck_id: str) -> OpponentDeck:
+        manifest = DeckPoolManifestV4.load(pool)
+        for deck in manifest.decks:
+            if deck.deck_id == str(deck_id):
+                return cls(deck)
+        raise ValueError(f"deck {deck_id} is not in {Path(pool)}")
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,17 +116,37 @@ class CrforgeOpponentLeague:
     league state and writes it back at a segment boundary.
     """
 
-    def __init__(self, league: PolicyLeagueV4, *, path: str | Path | None = None, seed: int = 0) -> None:
+    def __init__(
+        self,
+        league: PolicyLeagueV4,
+        *,
+        path: str | Path | None = None,
+        seed: int = 0,
+        decks: Mapping[str, OpponentDeck] | None = None,
+    ) -> None:
         if seed < 0:
             raise ValueError("league seed must be non-negative")
         self.league = league
         self.path = None if path is None else Path(path).expanduser().resolve()
         self.rng = random.Random(int(seed))
+        self.decks = {str(key): value for key, value in (decks or {}).items()}
+        known = {entry.checkpoint_id for entry in league.entries} | {league.anchor_checkpoint_id}
+        unknown = set(self.decks) - known
+        if unknown:
+            raise ValueError(f"league decks name unknown checkpoints: {sorted(unknown)}")
 
     @classmethod
     def load(cls, path: str | Path, *, seed: int = 0) -> CrforgeOpponentLeague:
         source = Path(path).expanduser().resolve()
-        return cls(PolicyLeagueV4.load(source), path=source, seed=seed)
+        raw = json.loads(source.read_text(encoding="utf-8"))
+        block = raw.get("crforge") if isinstance(raw, Mapping) else None
+        rows = block.get("decks") if isinstance(block, Mapping) else None
+        decks = (
+            {str(key): OpponentDeck.from_mapping(value) for key, value in rows.items()}
+            if isinstance(rows, Mapping)
+            else {}
+        )
+        return cls(PolicyLeagueV4.load(source), path=source, seed=seed, decks=decks)
 
     @property
     def has_opponents(self) -> bool:
@@ -91,6 +155,15 @@ class CrforgeOpponentLeague:
     @property
     def entries(self) -> tuple[LeagueEntryV4, ...]:
         return tuple(self.league.entries)
+
+    def deck_for(self, checkpoint_id: str) -> OpponentDeck | None:
+        return self.decks.get(str(checkpoint_id))
+
+    def set_deck(self, checkpoint_id: str, deck: OpponentDeck) -> None:
+        known = {entry.checkpoint_id for entry in self.league.entries} | {self.league.anchor_checkpoint_id}
+        if checkpoint_id not in known:
+            raise ValueError(f"league has no checkpoint {checkpoint_id}")
+        self.decks[str(checkpoint_id)] = deck
 
     def sample(self) -> OpponentPlan:
         if not self.has_opponents:
@@ -119,7 +192,12 @@ class CrforgeOpponentLeague:
         if destination is None:
             raise ValueError("a league loaded without a path needs an explicit save destination")
         destination = destination.expanduser().resolve()
-        self.league.save(destination)
+        payload = self.league.to_dict()
+        payload["crforge"] = {"decks": {key: deck.as_dict() for key, deck in self.decks.items()}}
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(destination)
         self.path = destination
         return destination
 
@@ -130,6 +208,7 @@ class CrforgeOpponentLeague:
             "anchor_checkpoint_id": self.league.anchor_checkpoint_id,
             "anchor_checkpoint_path": self.league.anchor_checkpoint_path,
             "entries": [entry.to_dict() for entry in self.league.entries],
+            "decks": {key: deck.as_dict() for key, deck in self.decks.items()},
         }
 
 
@@ -138,6 +217,7 @@ def add_checkpoint(
     checkpoint: str | Path,
     *,
     update_step: int | None = None,
+    deck: OpponentDeck | None = None,
 ) -> CrforgeOpponentLeague:
     """Load a league, add one checkpoint as a frozen opponent, and save it."""
 
@@ -148,6 +228,8 @@ def add_checkpoint(
         checkpoint,
         update_step=recorded_step if update_step is None else int(update_step),
     )
+    if deck is not None:
+        league.set_deck(checkpoint_id, deck)
     league.save(path)
     return league
 
@@ -171,6 +253,7 @@ def create_league(
 __all__ = [
     "LEAGUE_SCHEMA",
     "CrforgeOpponentLeague",
+    "OpponentDeck",
     "OpponentPlan",
     "add_checkpoint",
     "checkpoint_identity",

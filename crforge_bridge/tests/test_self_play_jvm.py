@@ -91,3 +91,32 @@ def test_splice_opponent_actions_supports_learner_seat_one() -> None:
         learner, opponent, seats=(0, 1), opponent_seat=0
     )
     assert spliced.gate.tolist() == [0, 0, 1, 0]
+
+
+def test_vector_uses_per_side_decks_slots_and_towers(monkeypatch) -> None:
+    import crforge_env.vector as vector_module
+
+    seen: dict[str, object] = {}
+
+    class FakeVectorBattle:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def reset(self, *args: object, **kwargs: object) -> None:
+            seen["args"] = args
+            seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(vector_module, "VectorBattle", FakeVectorBattle)
+    self_play._vector(
+        2,
+        max_ticks=0,
+        decks=(("Xbow",) * 8, ("HogRider",) * 8),
+        slots=((0,) * 8, (1, 0, 0, 0, 0, 2, 1, 0)),
+        towers=("King_PrincessTowers", "King_CannonTowers"),
+    )
+    args = seen["args"]
+    assert args[1] == ["Xbow"] * 8
+    assert args[2] == ["HogRider"] * 8
+    assert args[3] == [0] * 8
+    assert args[4] == [1, 0, 0, 0, 0, 2, 1, 0]
+    assert seen["kwargs"]["setup1"].towers == "King_CannonTowers"

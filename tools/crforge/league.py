@@ -8,7 +8,8 @@ trainer and the crforge producer read the same pool::
     python tools/crforge/league.py add runs/crforge-league.json \
         .resource/RoyaleFish/models/B-general-v275.pt
     python tools/crforge/league.py add runs/crforge-league.json \
-        .resource/RoyaleFish/models/A-hog26-v738.pt
+        .resource/RoyaleFish/models/A-hog26-v738.pt \
+        --deck-id 523b6428074d4689904add37912722f47182bc6a1679dd89c5d50a19292263d3
     python tools/crforge/league.py show runs/crforge-league.json
 
 Then train against it with::
@@ -27,7 +28,26 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from crforge_bridge.league import CrforgeOpponentLeague, add_checkpoint, create_league
+from crforge_bridge.league import CrforgeOpponentLeague, OpponentDeck, add_checkpoint, create_league
+
+
+def _add_deck_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--deck-id", default=None, help="a deck id from --deck-pool")
+    parser.add_argument("--deck-json", type=Path, default=None, help="a deck-pool deck object in a JSON file")
+    parser.add_argument("--deck-pool", type=Path, default=Path("runs/deck-pool.json"))
+
+
+def _resolve_deck(args: argparse.Namespace) -> OpponentDeck | None:
+    if args.deck_id is not None and args.deck_json is not None:
+        raise SystemExit("pass --deck-id or --deck-json, not both")
+    if args.deck_json is not None:
+        raw = json.loads(args.deck_json.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise SystemExit(f"{args.deck_json} is not a deck object")
+        return OpponentDeck.from_mapping(raw)
+    if args.deck_id is not None:
+        return OpponentDeck.from_pool(args.deck_pool, args.deck_id)
+    return None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -43,6 +63,12 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("league", type=Path)
     add.add_argument("checkpoint", type=Path)
     add.add_argument("--update-step", type=int, default=None)
+    _add_deck_arguments(add)
+
+    deck = commands.add_parser("deck", help="attach or replace one entry's deck")
+    deck.add_argument("league", type=Path)
+    deck.add_argument("checkpoint_id")
+    _add_deck_arguments(deck)
 
     show = commands.add_parser("show", help="print the league and its PFSP weights")
     show.add_argument("league", type=Path)
@@ -67,10 +93,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(league.summary(), indent=2))
         return 0
     if args.command == "add":
-        league = add_checkpoint(args.league, args.checkpoint, update_step=args.update_step)
+        league = add_checkpoint(
+            args.league, args.checkpoint, update_step=args.update_step, deck=_resolve_deck(args)
+        )
         print(json.dumps(league.summary(), indent=2))
         return 0
     league = CrforgeOpponentLeague.load(args.league, seed=getattr(args, "seed", 0))
+    if args.command == "deck":
+        deck = _resolve_deck(args)
+        if deck is None:
+            raise SystemExit("pass --deck-id or --deck-json")
+        league.set_deck(args.checkpoint_id, deck)
+        league.save()
+        print(json.dumps(league.summary(), indent=2))
+        return 0
     if args.command == "show":
         summary = league.summary()
         summary["entries"] = [
