@@ -11,10 +11,12 @@ level 4 on that same host and does **not** crash: its `soak` body is 3968 bytes
 where the engine's is 2848, so it does not exercise the engine's compilation
 shape.  Session 50's "the trigger is the host CPU" is therefore withdrawn — the
 second host it tested was almost certainly affected and only the probe was
-negative.  Session 52 gives the driver a `phased` mode that reaches the engine's
-*compile sequence* — a one-sided 1528-byte body, an `unstable_if` reinterpret, a
-recompile — deterministically on both local JDKs; locally the recompile keeps the
-null guard, so the miscompiled body is still observed only on the affected host.
+negative.  Session 52 gives the driver a `phased` mode that replays the engine's
+*compile history* — a one-sided 1528-byte body, the bci-120 `unstable_if`
+reinterpret, an in-range null slot, and a recompile of the same shape — and the
+recompiled body is within 48–56 bytes of the engine's 2848 on Temurin 21.0.13;
+the host/JIT build is the only remaining difference, because locally the test is
+present.
 This file is the text for a JDK bug report, the engine reproduction that is the
 working reproducer, and the probe that is not one.
 
@@ -47,10 +49,13 @@ return of[n] - 1;
 
 On the affected host, once the method has been **recompiled** at level 4, its
 compiled body loads `of = byKind[kind]` and then `of.length` with **no null test
-in between** — the bytecode's `of == null` guard (bci 54) is gone. A new entity
-kind hands it the slot `byKind[kind]` that `Arrays.copyOf` just created, still
-null, and the length load faults at offset 12: `segfault at c`. The `n >=
-of.length` comparison itself is correct; the missing guard is the defect (§4.3).
+in between** — the bytecode's `of == null` guard (bci 54) is gone, even though the
+grow path behind it is compiled. The crash is an **in-range null slot**: a kind
+first seen on this seat *after* a higher kind already grew `byKind`, so
+`kind < byKind.length` (bci 23's copy branch is never taken) while
+`byKind[kind] == null` (bci 54 is taken). The length load faults at offset 12:
+`segfault at c`. The `n >= of.length` comparison itself is correct; the missing
+guard is the defect (§4.3).
 
 The bytecode is correct (see §5); the interpreted and C1 code are correct. This is
 a C2 defect, not a crforge bug.
@@ -118,13 +123,15 @@ indices differ). The driver has three modes:
   new kind every `newEvery` calls (the affected host crashed 65.1 s in, so the
   default is 70 s); the kind count is capped at 1,000 because the id is
   `kind * 1_000_000` in an `int`.
-- `phased [kinds] [n] [rounds] [settleMs]` — the engine's **compile sequence**
-  (§4.3): the id tables are seeded directly, so `of` has never taken a guard when
-  C2 first compiles it; assigned slots are warmed, the one-sided body is allowed
-  to install, a guard is flipped with the first new kind (an `unstable_if`
-  reinterpret), the method is warmed again so C2 recompiles it, and only then is
-  the recompiled body shown new kinds. This is the sequence the crash lives in;
-  `quick` and `soak` never recompile `of` and so cannot reach it.
+- `phased [kinds] [n] [rounds] [settleMs]` — the engine's **compile history**
+  (§4.3): the id tables are seeded with `kinds` populated kinds plus a null tail
+  (so `byKind` is long enough for them); assigned slots are warmed and the
+  one-sided body is allowed to install; an assigned slot is cleared and re-read,
+  which reproduces the engine's own `unstable_if` event at bci 120; one in-range
+  null slot is filled (bci 54 taken, bci 23 not), the method is warmed again so
+  C2 recompiles it, and only then is the recompiled body shown a second in-range
+  null slot. This is the body the crash lives in; `quick` and `soak` never
+  recompile `of` after a bci-120 flip and so cannot reach it.
 
 `tools/crforge/hotspot_repro.py` compiles it with each JDK and runs three arms,
 every one with `-XX:+PrintCompilation`:
@@ -267,11 +274,25 @@ There is **no test of `of` between `0x…ed82` and `0x…ed87`**, and no
 implicit-exception entry covers the load: a null `of` faults at `0xc` and the
 process dies instead of taking an NPE or an uncommon trap. The two compiled
 guards that remain are `kind >= byKind.length` and `n >= of.length`; the bytecode
-guard `of == null` at bci 54 is the one that was dropped. The other C2 body
-(1528 bytes, installed at 24.989 s) was compiled while every guard was
-one-sided, and the 2848 body is the **recompilation** that followed the
-`unstable_if` reinterpret — so a reproducer has to reach that recompilation, not
-just a hot `of`.
+guard `of == null` at bci 54 is the one that was dropped.
+
+**Which branch trapped, and what that implies.**  The log names the event:
+
+```
+<uncommon_trap ... reason='unstable_if' action='reinterpret' compile_id='2288' ... stamp='33.993'>
+<jvms bci='120' method='org.crforge.env.SeatIds of (II)I' bytes='194' count='8604' iicount='8604'/>
+```
+
+bci 120 is `if (of[n] == 0)` — the assignment branch, neither the grow branch nor
+the null check.  So at the 65.488 s recompile bci 23 and bci 54 were still
+zero-taken.  The 2848 body is consistent: bci 23 and bci 62 are uncommon traps,
+bci 120 is compiled, and the body has a **handler table** (offset 2760) that the
+1528 body lacks — the `of == null` grow path was compiled (a null slot *inside*
+an already-long `byKind` array was seen between the two compiles), while the test
+that reaches it was dropped.  The crash call must therefore be another **in-range
+null slot**: `kind < byKind.length` (bci 23 not taken) and `byKind[kind] == null`
+(bci 54 taken).  That is the state a driver has to produce, and it is the state
+the `phased` mode reproduces (§6 D).
 
 ## 5. The bytecode is correct
 
@@ -352,16 +373,25 @@ while the engine crashed 3/3 on that same box. Evidence:
 `runs/crforge-c4/s51-a6000/hotspot-repro.json`.
 
 **D. The two local JDKs, driven by `--mode phased` (a negative for the body, not
-for the sequence).** `short soak` reaches the method but not the recompilation;
-`phased` reaches the recompilation. 3/3 C2 arms on each JDK, 0 crashes:
-Temurin `21.0.13` compiles `of` at **1528** bytes, then at **4096–4104**;
-Temurin `25.0.5` at **872**, then **2888**. The first body is the engine's 1528
-on 21.0.13 — the driver now compiles the same one-sided body — and the second is
-a recompilation, which the `quick`/`soak` bodies (3968/4064 as a *first* body)
-never were. What differs is the body: on both local JDKs the recompiled arm keeps
-a null-check trap at bci 54, so the new kind deopts as it should, while the
-affected host's 2848 body has no guard (§4.3). Evidence:
-`runs/crforge-c4/s52/hotspot-phased.json` (`phased.c2_bodies`).
+for the history).** `quick`/`soak` reach the method but never the recompilation;
+`phased` now replays the engine's history exactly (bci-120 trap → in-range null
+slot → recompile) and reaches a body of the **same shape**. 3/3 C2 arms on each
+JDK, 0 crashes:
+
+| JDK | first body | recompiled body | engine |
+| --- | --- | --- | --- |
+| Temurin 21.0.13 | **1528** | **2896–2904** | 1528 → **2848** |
+| Temurin 25.0.5 | 872 | 1880 | — |
+
+On 21.0.13 the recompiled body is within 48–56 bytes of the engine's, and its
+LogCompilation parse has the engine's structure field for field: uncommon traps
+at bci 23 and bci 62, bci 120 compiled, bci 54 **compiled as a branch** (not a
+trap), and a handler table for the grow path. The one difference is the test
+itself: locally the second in-range null slot is tested and allocated, while the
+affected host's body reaches the length load with no test (§4.3) and faults.
+The driver therefore no longer differs in history or shape; only the host/JIT
+build differs. Evidence: `runs/crforge-c4/s52/hotspot-phased.json`
+(`phased.c2_bodies`).
 
 ## 7. What would make the report filable — and what session 52 closed
 
@@ -374,15 +404,18 @@ affected host's 2848 body has no guard (§4.3). Evidence:
    PC → level-4 nmethod at offset `0x277`, and the faulting instruction
    (`mov 0xc(%r12,%r9,8),%ebp`, a null `int[]` length) (§4.2), with the whole
    fast path showing the dropped guard (§4.3).
-4. **Narrowed — a stand-alone reproducer now reaches the engine's compile
-   sequence.** `--mode phased` deterministically compiles the one-sided body
-   (the engine's 1528 bytes on 21.0.13), flips a guard, and recompiles; locally
-   the second body keeps the null guard. The remaining step is one run of that
-   mode on an affected host: `phased.reached_recompile: true` plus a crash makes
-   it self-contained. Until then file with §3.1 as the reproduction, the `of`
-   listing in §5 and the assembly in §4.2/§4.3, and state both driver negatives
-   (§6 C and D) explicitly so a triager does not read them as "cannot
-   reproduce".
+4. **Narrowed — a stand-alone reproducer now replays the engine's compile
+   history and reaches a body of the same shape.** `--mode phased` deterministically
+   produces the 1528-byte one-sided body (the engine's exact size on 21.0.13),
+   the bci-120 `unstable_if` reinterpret, an in-range null slot, and a recompile
+   whose traps (`23`, `62`), compiled branches (`54`, `120`) and handler table
+   match the engine's 2848-byte body; on 21.0.13 it is 2896–2904 bytes. The one
+   difference is the missing `of == null` test — the defect itself. The remaining
+   step is one run of that mode on an affected host: `phased.reached_recompile:
+   true` plus a crash makes it self-contained. Until then file with §3.1 as the
+   reproduction, the `of` listing in §5 and the assembly in §4.2/§4.3, and state
+   both driver negatives (§6 C and D) explicitly so a triager does not read them
+   as "cannot reproduce".
 5. File at <https://bugreport.java.com> with the summary in §1, the environment in
    §2, the reproduction in §3.1 and the evidence in §4.
 

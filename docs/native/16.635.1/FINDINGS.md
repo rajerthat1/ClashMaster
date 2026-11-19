@@ -7256,54 +7256,57 @@ rejected, 0 failed rounds; no crash in any short run.  Evidence:
 `runs/crforge-c4/s51-sweep-summary.json`, `s51-a6000/sweep-lanes*.json`,
 `s51-l40/sweep-lanes*.json` and their logs.
 
-### 3.90 The C2 reproducer reaches the engine's compile sequence — and the fault body is a recompile with no null guard (2026-11-19)
+### 3.90 The C2 reproducer replays the engine's compile history — and the fault body drops the null test (2026-11-19)
 
 Session 51 left the report one gap: the stand-alone driver was clean on a host
 whose engine crashes 3/3, because its first C2 body was 3968 bytes where the
-engine's was 2848. This session makes the driver reproduce the engine's *compile
-history* rather than just its board, and reads the faulting body's fast path from
-the assembly already in `runs/crforge-c4/s51-a6000/print.log`.
+engine's was 2848. This session reads the engine's compile history out of its
+log, reads the faulting body's fast path out of the assembly already in
+`runs/crforge-c4/s51-a6000/print.log`, and makes the driver replay that history.
 
-**The engine's history.**  Read from `hotspot-pid5285.log`: `of` is compiled by C2
-at **1528 bytes** at 24.989 s (count 8604), made not entrant by
-`unstable_if action='reinterpret'`, recompiled by C1 at 5296 bytes at 34.002 s
-(`decompiles='1' unstable_if_traps='1'`), and recompiled by C2 at **2848 bytes**
-at 65.488 s (count 15093); the crash follows in that second C2 body on the next
-new kind.  The first body was compiled while every guard was one-sided — that is
-what makes all four of them uncommon traps in a 1528-byte body.
+**The engine's history.**  From `hotspot-pid5285.log`: `of` is compiled by C2 at
+**1528 bytes** at 24.989 s (count 8604), retired by
+`unstable_if action='reinterpret'` at 33.993 s, recompiled by C1 at 5296 bytes at
+34.002 s, and recompiled by C2 at **2848 bytes** at 65.488 s (count 15093).  The
+trap names its branch: `bci='120'`, i.e. `if (of[n] == 0)` — the assignment
+branch, **not** a grow branch and not the null check.  So at the 65.488 s
+recompile bci 23 (`kind >= byKind.length`) and bci 54 (`of == null`) were still
+zero-taken.
 
-**The faulting body has no null guard.**  Disassembling compile 2922 from
-`print.log` (main code at `0x…ece0`) shows the fast path loading `of =
-byKind[kind]` at `0x…ed82`, then `mov 0xc(%r12,%r9,8),%ebp` (`of.length`) at
-`0x…ed87`, with **no test in between**.  The guards that are compiled are
-uncommon traps at `0x…efa8` (`kind >= byKind.length`) and `0x…efd0`
-(`n >= of.length`).  A null `of` reaches the length load, and because no
-implicit-exception entry covers that pc the process takes SIGSEGV at `0xc`
-instead of an NPE or a trap.  This is the whole defect: bci 54's `of == null`
-guard is dropped from the recompiled body.
+**The faulting body has no null guard, but does have the grow path.**  The fast
+path loads `of = byKind[kind]` at `0x…ed82` and `mov 0xc(%r12,%r9,8),%ebp`
+(`of.length`) at `0x…ed87` with **no test in between**.  bci 23 and bci 62 are
+uncommon traps there, bci 120 is compiled, and the body has a **handler table**
+(offset 2760) that the 1528 body lacks — so the `of == null` grow path *is*
+compiled, while the test that reaches it is gone.  A null `of` reaches the
+length load, and no implicit-exception entry covers that pc, so the process takes
+SIGSEGV at `0xc`.  The crash call therefore has `kind < byKind.length` and
+`byKind[kind] == null`: an **in-range null slot** (a kind first seen on that seat
+after a higher kind already grew `byKind`), not a fresh `Arrays.copyOf` slot.
 
-**The driver now reaches the sequence.**  `SeatIdsOfRepro phased` seeds the id
-tables directly (so `of` has never taken either guard when it is first compiled),
-warms assigned slots across both seats and 8 kinds, waits for the one-sided body,
-flips `kind >= byKind.length` with the first new kind, then warms in short chunks
-spaced by 20 ms so the compiler thread installs the C1 body and C2 recompiles it,
-and only after that body has installed shows it new kinds.  Measured, 3/3 with
-each `.resource` JDK, 0 crashes:
+**The driver replays it.**  `SeatIdsOfRepro phased` seeds `kinds` populated kinds
+plus null slots at higher indices, warms every assigned slot (both seats, every
+guard false), waits for the one-sided body, clears and re-reads an assigned slot
+(the engine's bci-120 flip), fills one in-range null slot (bci 54 taken, bci 23
+not — which compiles the grow path), warms in short chunks spaced by 20 ms so the
+compiler thread installs C1 and then C2, and only after that recompiled body
+exists shows it a second in-range null slot.  Measured 3/3 with each `.resource`
+JDK, 0 crashes:
 
-| JDK | first C2 body | recompiled body |
-| --- | --- | --- |
-| Temurin 21.0.13 | **1528** | 4096 / 4104 |
-| Temurin 25.0.5 | 872 | 2888 / 2896 |
+| JDK | first C2 body | recompiled body | engine |
+| --- | --- | --- | --- |
+| Temurin 21.0.13 | **1528** | **2896 / 2904** | 1528 → **2848** |
+| Temurin 25.0.5 | 872 | 1880 | — |
 
-The first number is the engine's 1528 exactly on 21.0.13, and the second body is
-a recompilation — the previous `quick`/`soak` drivers compiled 3968/4064 as a
-*first* body and never recompiled, which is why they could not reach the defect.
-The local recompiled bodies keep the bci-54 trap (the LogCompilation parse shows
-`uncommon_trap bci='54' reason='unstable_if'`), so the new kind deopts instead of
-faulting; the affected host's 2848 body is the same point in the history with the
-guard missing.  Nmethod size alone is not comparable across JDK builds (this
-laptop's 25.0.5 first body is 872), so the report compares the body's guard, not
-just its size.
+On 21.0.13 the recompiled body is within 48–56 bytes of the engine's and its
+LogCompilation parse matches field for field: traps at bci 23 and 62, compiled
+branches at bci 54 and 120, and a handler table.  The one difference is the test
+itself — locally the second in-range null slot is tested and allocated, while the
+affected host's body faults.  Nmethod size alone is not comparable across JDK
+builds (25.0.5's first body is 872), so compare the parse: `phased` now reaches
+the same body shape, and the host/JIT build is the only variable left.  The
+previous `quick`/`soak` drivers compiled 3968/4064 as a *first* body and never
+recompiled, which is why they could not reach the defect at all.
 
 **The tool records the bodies, not just the crash.**  `hotspot_repro.py --mode
 phased` (`--phased-n`, `--phased-settle-ms`, `--rounds`, `--kinds`) adds
@@ -7315,7 +7318,8 @@ other modes.  A clean phased run can now say *which* compilation it reached, so
 `exit 1` cannot be read as "this host is clean" when the second body never
 installed — the gap session 51 had to discover by hand.
 
-**Gate:** `test_hotspot_repro.py` **13 passed** (4 new: the phased sequence is in
-the source, the nmethod reader takes `size` not the bytecode's `bytes`, phased
+**Gate:** `test_hotspot_repro.py` **13 passed** (the phased history is in the
+source, the nmethod reader takes `size` not the bytecode's `bytes`, phased
 arguments, both bodies); ruff (E,F) clean on the tool and the test.  Evidence:
-`runs/crforge-c4/s52/hotspot-phased.json`.
+`runs/crforge-c4/s52/hotspot-phased.json` and the trap excerpt appended to
+`runs/crforge-c4/s51-a6000/fault-map.txt`.

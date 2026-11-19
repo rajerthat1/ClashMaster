@@ -32,16 +32,18 @@ different method would prove nothing.
 rarely) instead of the deterministic warm-then-new-kind loop; the box's crash
 came 65.1 s in, so the default soak is 70 s.
 
-``--mode phased`` drives the engine's compile sequence instead of its board: the
-id tables are seeded directly, the method is warmed over assigned slots (every
-guard false, so C2 compiles `of` one-sided — the engine's 1528-byte first body),
-a guard is flipped with the first new kind (C2's `unstable_if` reinterpret), the
-method is warmed again so C2 recompiles it, and only after that recompiled body
-has installed is it shown new kinds.  This mode always logs compilations and the
-artifact carries ``c2_nmethods`` (every C2 body's size and install time) so a
-clean run can be read as "the driver did reach the recompiled body" — the
-engine's faulting body is 2848 bytes, and the previous drivers compiled 3968 /
-4064 and never recompiled.
+``--mode phased`` drives the engine's compile history instead of its board: the
+id tables are seeded with populated slots plus null slots at higher indices, the
+method is warmed over the assigned slots (every guard false, so C2 compiles `of`
+one-sided — the engine's 1528-byte first body), an assigned slot is cleared and
+re-read (the engine's own event: an `unstable_if` trap at bci 120), one in-range
+null slot is filled (bci 54, not bci 23), and the method is warmed again so C2
+recompiles it; only after that recompiled body has installed is it shown a
+second in-range null slot.  This mode always logs compilations and the artifact
+carries ``c2_nmethods`` (every C2 body's size and install time) so a clean run
+can be read as "the driver did reach the recompiled body" — the engine's
+faulting body is 2848 bytes, the previous drivers compiled 3968 / 4064 as a
+first body and never recompiled.
 
 The artifact is ``crforge-hotspot-seatids.v1``.  Exit status: 0 when the defect
 reproduced (the report has its reproducer), 1 when every arm passed (a recorded

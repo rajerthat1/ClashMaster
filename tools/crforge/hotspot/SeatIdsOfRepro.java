@@ -21,9 +21,9 @@
  *   soak [seconds] [newEvery] random ids over the live kinds; a new kind every newEvery calls,
  *                            for `seconds` (the box crashed 65.1 s in, so the default is 70)
  *   phased [kinds] [n] [rounds] [settleMs]
- *                            the engine's compile sequence: warm on assigned slots, let C2
- *                            compile `of` one-sided, flip a guard, let it reinterpret and
- *                            recompile, then show the recompiled body a new kind
+ *                            the engine's compile history: a one-sided body, the bci-120
+ *                            reinterpret, an in-range null slot, the recompile, then a second
+ *                            in-range null slot (the state the miscompiled body does not test)
  *
  * Battle ids are kind * IDS_PER_KIND + n, as the engine's are: a new kind is a null slot in
  * byKind, which is the state the miscompiled body fails to test.
@@ -120,32 +120,47 @@ public final class SeatIdsOfRepro {
   }
 
   /**
-   * The engine's compile sequence, made deterministic.
+   * The engine's compile history, made deterministic.
    *
-   * The engine's log on the affected host shows `of` compiled by C2 at **1528
-   * bytes** (all four branches one-sided, so all four become uncommon traps),
-   * made not entrant by `unstable_if action='reinterpret'` when a guard finally
-   * went the other way, and recompiled at **2848 bytes**; the crash is in that
-   * recompiled body on the next new entity kind.  The `quick` and `soak` drivers
-   * never reach that sequence: their first C2 body is a different shape (3968 /
-   * 4064 bytes), so they do not exercise the recompilation this defect lives in.
+   * The engine's log on the affected host shows, in order: `of` compiled by C2 at
+   * **1528 bytes** (all four branches one-sided, so all four are uncommon traps),
+   * an `unstable_if action='reinterpret'` at **bci 120** (`if (of[n] == 0)`) at
+   * 33.993 s, a C1 body at 34.002 s, and a second C2 body at **2848 bytes** at
+   * 65.488 s.  In that second body `kind >= byKind.length` (bci 23) and
+   * `n >= of.length` (bci 62) are still uncommon traps, `of[n] == 0` is compiled,
+   * and the `of == null` guard (bci 54) has no test at all — yet the grow path is
+   * compiled (the body has an exception handler table), so a null slot inside an
+   * already-long `byKind` array was seen between the two compiles.  The crash is
+   * the *next* such slot, which the body does not test for.
    *
-   * This mode builds the id tables directly (so `of` has never taken a guard
-   * when C2 first compiles it), warms both seats over assigned slots (every
-   * guard false), lets that compilation install, then flips `kind >=
-   * byKind.length` with the first new kind.  That deopts the method; it is
-   * warmed again so C2 recompiles it with the taken branch in the profile, and
-   * only after that recompiled body has installed is it shown new kinds.
+   * This mode replays that history: seed `kinds` populated kinds plus null slots
+   * at higher indices (so `byKind` is long enough for them), warm every assigned
+   * slot, let the one-sided body install, clear-and-reassign a slot so bci 120
+   * flips (the engine's own event), fill one null slot in range (bci 54, not 23),
+   * warm in short chunks so the compiler thread installs C1 and then C2, and only
+   * after the recompiled body exists show it a second in-range null slot.
+   *
+   * On a healthy JVM the recompiled body tests `of` and the second slot is
+   * allocated; on the affected host the test is missing and the body faults at
+   * `0xc` (the engine's crash).  `quick` and `soak` never recompile `of` after a
+   * bci-120 flip and so cannot reach this body.
    */
   private static long phased(SeatIdsOfRepro ids, int kinds, int n, int rounds, long settleMs) {
-    ids.seed(kinds, n);
+    int holes = 3;  // null slots inside an already-long byKind array
+    ids.seed(kinds + holes, n, kinds);
     long sum = warm(ids, kinds, n, rounds, -1);
     System.err.printf("phased: warm done sum=%d%n", sum);
     System.err.flush();
-    // let the one-sided C2 body of `of` install before a guard changes
+    // let the one-sided C2 body of `of` install before a branch changes
     sleep(settleMs);
-    sum += ids.of(0, kinds * IDS_PER_KIND);  // the flip: a kind with no array at all
-    System.err.printf("phased: flip done%n");
+    // The engine's event, from its log: bci 120 flips because an assigned slot is
+    // read again as zero (the driver clears it, the engine's board produced one).
+    ids.clear(0, 0, 0);
+    sum += ids.of(0, 0);
+    // The engine's second input: a null slot whose kind is below byKind.length
+    // (bci 54 only, not bci 23), which compiles the grow path into the body.
+    sum += ids.of(0, kinds * IDS_PER_KIND);
+    System.err.printf("phased: flip/1st hole done sum=%d%n", sum);
     System.err.flush();
     // The trap reinterpreted `of`.  Keep it hot in short chunks so the compiler
     // thread can install C1 and then recompile at C2; one long loop here races
@@ -158,23 +173,24 @@ public final class SeatIdsOfRepro {
     System.err.flush();
     // and let the recompiled body install before a null slot is read
     sleep(settleMs);
-    for (int kind = kinds + 1; kind < kinds + 5; kind++) {
-      sum += ids.of(kind & 1, kind * IDS_PER_KIND);
-      System.err.printf("phased: kind %d ok%n", kind);
+    // Another null slot in range: the exact state the miscompiled body does not test.
+    for (int hole = 1; hole < holes; hole++) {
+      sum += ids.of(hole & 1, (kinds + hole) * IDS_PER_KIND);
+      System.err.printf("phased: hole %d ok%n", kinds + hole);
       System.err.flush();
     }
     return sum;
   }
 
   /**
-   * Assigned slots for `kinds` kinds, built without calling `of`: its profile
-   * has never taken a guard when the warm loop starts, which is the state the
-   * engine's first C2 compilation saw (1528 bytes, all guards one-sided).
+   * `length` kinds on each seat, only `filled` of them populated.  The null tail
+   * is what makes a later kind take bci 54 without bci 23, the state the engine's
+   * recompiled body compiled a grow path for.
    */
-  private void seed(int kinds, int n) {
+  private void seed(int length, int n, int filled) {
     for (int seat = 0; seat < 2; seat++) {
-      int[][] byKind = new int[kinds][];
-      for (int kind = 0; kind < kinds; kind++) {
+      int[][] byKind = new int[length][];
+      for (int kind = 0; kind < filled; kind++) {
         int[] of = new int[n];
         for (int i = 0; i < n; i++) {
           of[i] = i + 1;
@@ -201,6 +217,11 @@ public final class SeatIdsOfRepro {
       }
     }
     return sum;
+  }
+
+  /** An assigned slot read as zero again: the engine's bci-120 branch flip. */
+  private void clear(int seat, int kind, int i) {
+    ids[seat][kind][i] = 0;
   }
 
   private static void sleep(long ms) {

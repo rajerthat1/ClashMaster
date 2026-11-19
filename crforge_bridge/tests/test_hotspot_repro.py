@@ -96,18 +96,22 @@ def test_the_engine_method_is_the_one_this_tool_compiles() -> None:
 
 
 def test_the_phased_mode_keeps_the_engine_s_compile_sequence() -> None:
-    # The driver is only a reproducer if it seeds the tables without calling `of`,
-    # flips a guard after the one-sided C2 body is installed, and warms again so C2
-    # recompiles the method before a new kind is shown to it.
+    # The driver is only a reproducer if it seeds populated slots plus an in-range null
+    # tail, flips bci 120 the way the engine's log did (an assigned slot read as zero),
+    # fills one null slot so the grow path is compiled, and only then shows a second one.
     source = (Path(_TOOL_DIR) / "hotspot" / "SeatIdsOfRepro.java").read_text(encoding="utf-8")
     phased = source[source.index("private static long phased("):]
     phased = phased[: phased.index("public static void main")]
-    assert "ids.seed(kinds, n);" in phased
-    assert "sleep(settleMs);" in phased
-    assert "ids.of(0, kinds * IDS_PER_KIND)" in phased
+    assert "ids.seed(kinds + holes, n, kinds);" in phased
+    assert "ids.clear(0, 0, 0);" in phased
+    assert "sum += ids.of(0, 0);" in phased
+    assert "sum += ids.of(0, kinds * IDS_PER_KIND);" in phased
     assert "warm(ids, kinds, n, 1, kinds)" in phased
     seed = source[source.index("private void seed("):]
-    assert "ids[seat] = byKind;" in seed[: seed.index("\n  }")]
+    seed = seed[: seed.index("\n  }")]
+    assert "int[][] byKind = new int[length][];" in seed
+    assert "for (int kind = 0; kind < filled; kind++)" in seed
+    assert "ids[seat] = byKind;" in seed
 
 
 def test_the_nmethod_reader_records_the_body_sizes_not_the_bytecode_size() -> None:

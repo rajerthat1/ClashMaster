@@ -6,34 +6,41 @@
 
 ## Bottom line (2026-11-19, session 52)
 
-The C2 reproducer now reaches the **engine's compile sequence**: a one-sided C2
-body (1528 bytes on Temurin 21.0.13 — the engine's exact size), an `unstable_if`
-reinterpret, and a **recompile**.  That recompilation is where the defect lives:
-the affected host's second body has **no null guard at all**, and no earlier
-driver ever recompiled `of`.  Both local JDKs reach the sequence 3/3 but their
-recompiled body keeps the guard, so they deopt where the affected host crashes;
-the remaining gap is one `--mode phased` run on an affected host.
+The C2 reproducer now replays the **engine's compile history**: a one-sided C2
+body (1528 bytes on Temurin 21.0.13 — the engine's exact size), the engine's own
+`unstable_if` trap at **bci 120**, an in-range null slot, and a recompile whose
+body matches the engine's 2848-byte one trap for trap and branch for branch.  The
+crash body's fast path has **no null test at all**, and no earlier driver ever
+recompiled `of`.  Both local JDKs reach that shape 3/3, but keep the null test,
+so they allocate where the affected host faults; the remaining gap is one
+`--mode phased` run on an affected host.
 
 1. **The engine's history is two C2 bodies, not one.**  From
    `runs/crforge-c4/s51-a6000/hotspot-pid5285.log.gz`: **1528** bytes at 24.989 s
-   (count 8604, every guard one-sided), made not entrant by
-   `unstable_if action='reinterpret'`, C1 **5296** at 34.002 s, then C2 **2848**
-   at 65.488 s (count 15093) — the crash body.
-2. **The fault is a dropped null guard.**  In the 2848 body's fast path, `of =
-   byKind[kind]` is loaded at `0x…ed82` and `of.length` at `0x…ed87` with no test
-   in between; no implicit-exception entry covers that load, so a null `of` is a
-   SIGSEGV at `0xc`.  The compiled guards are `kind >= byKind.length` and
-   `n >= of.length` (both uncommon traps); bci 54's `of == null` is the one
-   missing (report §4.3).
-3. **The driver reaches it.**  `SeatIdsOfRepro phased` seeds the id tables
-   directly (so `of` has never taken a guard before its first C2 compile), warms
-   assigned slots, lets the one-sided body install, flips a guard with the first
-   new kind, warms in 20 ms-spaced chunks so the compiler thread installs C1 and
-   then C2, and only after that shows the recompiled body new kinds.  3/3 per JDK,
-   0 crashes: **1528 → 4096/4104** (Temurin 21.0.13) and **872 → 2888/2896**
-   (Temurin 25.0.5).  The local recompiled bodies keep the bci-54 trap; the
-   affected host's does not.  Nmethod size is not comparable across JDK builds,
-   so compare the guard, not just the number.
+   (count 8604, every guard one-sided), retired by `unstable_if
+   action='reinterpret'` at **bci 120** (`if (of[n] == 0)`) at 33.993 s, C1
+   **5296** at 34.002 s, then C2 **2848** at 65.488 s (count 15093) — the crash
+   body.  The trap is the assignment branch, so bci 23 and bci 54 were still
+   zero-taken at the recompile.
+2. **The fault is a dropped null test, with the grow path compiled.**  In the
+   2848 body's fast path, `of = byKind[kind]` is loaded at `0x…ed82` and
+   `of.length` at `0x…ed87` with no test in between; bci 23 and 62 are traps,
+   bci 120 is compiled, and the body has a handler table the 1528 body lacks —
+   the `of == null` grow path is compiled while its test is gone.  No
+   implicit-exception entry covers the load, so the crash call is an **in-range
+   null slot** (`kind < byKind.length`, `byKind[kind] == null`) and faults at
+   `0xc` (report §4.3).
+3. **The driver replays it.**  `SeatIdsOfRepro phased` seeds `kinds` populated
+   kinds plus a null tail, warms every assigned slot, lets the one-sided body
+   install, clears and re-reads an assigned slot (the engine's bci-120 flip),
+   fills one in-range null slot (bci 54 taken, bci 23 not), warms in 20 ms-spaced
+   chunks so the compiler thread installs C1 and then C2, and only after that
+   shows the recompiled body a second in-range null slot.  3/3 per JDK, 0
+   crashes: **1528 → 2896/2904** (Temurin 21.0.13; the engine is 1528 → 2848) and
+   **872 → 1880** (Temurin 25.0.5).  The recompiled body matches the engine's
+   shape — traps at bci 23/62, branches at 54/120, handler table — and locally
+   the null test is present; the affected host's body is that shape with the test
+   gone.
 4. **The tool now carries the bodies.**  `hotspot_repro.py --mode phased` (plus
    `--phased-n`, `--phased-settle-ms`, `--rounds`, `--kinds`) always adds
    `-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation` and records every
@@ -321,7 +328,7 @@ See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
 
 ## Decisions — what changed
 
-### 2026-11-19 (session 52) — the reproducer reaches the recompile, and the fault is a dropped null guard
+### 2026-11-19 (session 52) — the reproducer replays the engine's compile history, and the fault body drops the null test
 
 Session 51 filed the C2 defect under "reproduces in the engine, driver is a false
 negative" and named the missing piece: a driver that reaches the 2848-byte
@@ -330,31 +337,37 @@ body's fast path, and makes the driver replay that history.
 
 - **The engine's history.**  `of` is compiled by C2 twice: **1528** bytes at
   24.989 s (count 8604) and **2848** bytes at 65.488 s (count 15093), with an
-  `unstable_if action='reinterpret'` at ~34 s and a C1 level-3 body (5296) in
-  between.  The first body is the one where every guard is one-sided; the second
-  is a recompilation.  A driver that only makes `of` hot compiles the first
-  shape and is done.
+  `unstable_if action='reinterpret'` at **bci 120** (`if (of[n] == 0)`) at
+  33.993 s and a C1 level-3 body (5296) in between.  The trap is the assignment
+  branch — not a grow branch, not the null check — so bci 23 and bci 54 were
+  still zero-taken at the second compile.  The first body is the one where every
+  guard is one-sided; a driver that only makes `of` hot compiles that shape and
+  is done.
 - **The faulting fast path.**  Disassembling the 2848 body: `of = byKind[kind]`
-  at `0x…ed82`, `of.length` at `0x…ed87`, **no null test between them**; the
-  compiled guards are `kind >= byKind.length` (`0x…efa8`) and `n >= of.length`
-  (`0x…efd0`), both uncommon traps.  A null `of` faults at `0xc` and is not
-  converted to an NPE.  So the miscompile is bci 54's `of == null` guard being
-  dropped from the recompiled body, not a stale length comparison as session 49
-  read it.
-- **The driver.**  `SeatIdsOfRepro phased` (a third mode) seeds the `ids` tables
-  directly so `of`'s profile is clean before its first C2 compile, warms
-  assigned slots in both seats over 8 kinds, waits for the one-sided body, flips
-  a guard with the first new kind, warms in short chunks spaced by 20 ms so the
+  at `0x…ed82`, `of.length` at `0x…ed87`, **no test between them**.  bci 23 and
+  bci 62 are uncommon traps, bci 120 is compiled, and the body has a **handler
+  table** (offset 2760) the 1528 body lacks — the `of == null` grow path is
+  compiled, while the test that reaches it is gone.  A null `of` faults at `0xc`
+  and is not converted to an NPE.  The crash call is an **in-range null slot**
+  (`kind < byKind.length`, `byKind[kind] == null`), a kind first seen on that
+  seat after a higher kind already grew `byKind` — not a fresh `Arrays.copyOf`
+  slot.  Session 49's "stale length comparison" reading is withdrawn.
+- **The driver.**  `SeatIdsOfRepro phased` seeds `kinds` populated kinds plus a
+  null tail (so `byKind` is long enough for later kinds), warms every assigned
+  slot, waits for the one-sided body, clears and re-reads an assigned slot (the
+  engine's bci-120 flip), fills one in-range null slot (bci 54 taken, bci 23 not
+  — this compiles the grow path), warms in short chunks spaced by 20 ms so the
   compiler thread can install C1 and then C2 (one long loop races the compiler
-  queue and often ends before the recompile), then shows the recompiled body new
-  kinds.  The chunked rewarm is the load-bearing detail: 12 chunks × 1 round is
-  12/12 on the harsher scratch harness; 64 rounds of one loop is 0/10.
+  queue and often ends before the recompile), then shows the recompiled body a
+  second in-range null slot.  The chunked rewarm is load-bearing: 12 chunks × 1
+  round is 10/10 on the scratch harness; 64 rounds of one loop is 0/10.
 - **The measurement.**  3/3 per JDK, 0 crashes: Temurin 21.0.13 **1528 →
-  4096/4104**, Temurin 25.0.5 **872 → 2888/2896**.  The 1528 is the engine's
-  first body exactly.  The recompiled body keeps the bci-54 `unstable_if` trap
-  on both local JDKs (the parse shows it), which is why a new kind deopts instead
-  of crashing.  The affected host's 2848 body is the same point in the sequence
-  with the guard absent — the host/JIT build is now the only variable left.
+  2896/2904** (the engine is 1528 → **2848**), Temurin 25.0.5 **872 → 1880**.
+  On 21.0.13 the recompiled body is within 48–56 bytes of the engine's and its
+  parse matches field for field: traps at bci 23/62, compiled branches at bci
+  54/120, handler table.  The one difference is the test — locally the second
+  in-range null slot is tested and allocated; on the affected host the body
+  faults.  The host/JIT build is now the only variable left.
 - **The tool.**  `--mode phased` (`--phased-n` 512, `--phased-settle-ms` 300,
   `--rounds` 12, `--kinds` 8) always logs compilations and records every
   compilation of `of` per arm: compile id, compiler, level, nmethod size, count,
@@ -362,8 +375,8 @@ body's fast path, and makes the driver replay that history.
   `phased.reached_recompile`; `--log-compilation` enables the same record for
   `quick`/`soak`.  `--rounds`/`--kinds` now resolve per mode (quick 200000/2,
   phased 12/8).
-- **Gate:** `test_hotspot_repro.py` **13 passed** (4 new: the phased sequence is
-  in the source, `_nmethods` reads `size` not `bytes`, `_mode_args` for phased,
+- **Gate:** `test_hotspot_repro.py` **13 passed** (the phased history is in the
+  source, `_nmethods` reads `size` not `bytes`, `_mode_args` for phased,
   `_phased_summary` requires both bodies); ruff (E,F) clean on the tool and the
   test.  Evidence: `runs/crforge-c4/s52/hotspot-phased.json`.
 
