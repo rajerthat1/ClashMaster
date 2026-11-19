@@ -73,8 +73,8 @@ and C6 has a real 150-game block.
    `PORT` / `ENGINE_INDEX` / `DEVICE`; 15 ten-game chunks on **4 boxes × 4
    workers** finished 150 games in **~40 min at 77.5 s/game** of throughput
    (serial would be ~12 h).  The account quota is **4 instances**, so 10+
-   snapshot clones were not creatable; the snapshot `n4-base` is ready if the
-   quota rises.
+   snapshot clones were not creatable; the `n4-base` snapshot was deleted with
+   the boxes at cleanup.
 
 **Next session:** gate `ck-step-305` on 150 games (and `ck-step-325` only as the
 already-recorded negative).  Fix the two-micro refusal before another gate: the
