@@ -682,17 +682,22 @@ trainer also re-runs under torch 2.12.1: 24,358 lane-decisions, 710 ACT
 pass**.  C1 costs 66 ms of engine step per decision at 128 lanes
 (51.3 → 106.9 ms), so only a producer that updates on the CPU pays it.
 
-**Still open:** NVIDIA MPS and the 8-vCPU question, the A6000 overlapped-loop
-gate, whether to pad a producer's width to the server's ladder to cut its
-captures, and a HotSpot bug report for the C2 miscompile.  **The native parity
-cadence is defined 2026-11-18** (`--checkpoint-every` + `parity_curve.py`, and
-`N ≥ gate / (budget × update)` measured at 27.9 updates per 4-game gate;
-`FINDINGS.md` §3.87).  The C2 report now has a reproducer and a host check
-(`tools/crforge/hotspot_repro.py`, `HOTSPOT_C2_SEATIDS.md`) and **two recorded
-negatives** — this laptop and a fresh Thunder `base` with the affected host's
-exact JDK (§3.86) — which leaves the **host CPU** as the trigger; what it lacks
-is a host that reproduces it.  Bridge suite **185** (8 new on the reproducer).
-See `FINDINGS.md` §3.82–§3.86.
+**Still open:** NVIDIA MPS (blocked: `base` has no `nvidia-cuda-mps-control`)
+and the 8-vCPU question, the A6000 overlapped-loop gate, whether to pad a
+producer's width to the server's ladder to cut its captures, and a
+**self-contained** HotSpot reproducer for the C2 miscompile.  **The native
+parity cadence is defined 2026-11-18** (`--checkpoint-every` +
+`parity_curve.py`, and `N ≥ gate / (budget × update)` measured at 27.9 updates
+per 4-game gate; `FINDINGS.md` §3.87).  The C2 report now has a **second
+observation** (3/3 engine crashes on a fresh A6000), the fault mapped to `of`'s
+level-4 nmethod at offset `0x277` (2848-byte body, `mov 0xc(%r12,%r9,8),%ebp`
+on a null `int[]`), and the assembly (`HOTSPOT_C2_SEATIDS.md` §4.2).  The
+stand-alone probe is a **false negative** on that host (its own body is 3968
+bytes), so session 50's host-CPU narrowing is withdrawn and `hotspot_repro.py`
+exit 1 must not be read as "this host is clean" (§3.88).  The warmup-corrected
+sweep is measured: 203 → 758 lane-decisions/s from 8 to 128 lanes on the A6000
+(§3.89).  Bridge suite **185** (8 new on the reproducer).
+See `FINDINGS.md` §3.82–§3.89.
 
 ---
 

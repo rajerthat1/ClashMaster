@@ -15,7 +15,7 @@ _TOOL_DIR = Path(__file__).resolve().parents[2] / "tools" / "crforge"
 if str(_TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOL_DIR))
 
-import hotspot_repro
+import hotspot_repro  # noqa: E402  (the tool lives outside the package)
 
 
 def _arm(name: str, *, crashed: bool = False, level4: bool = True, timed_out: bool = False) -> dict[str, object]:
@@ -68,6 +68,21 @@ def test_the_crash_classifier_reads_a_signal_and_a_fatal_log() -> None:
     assert hotspot_repro._crashed({"returncode": 139, "stderr": ""})
     assert hotspot_repro._crashed({"returncode": 1, "stderr": "A fatal error has been detected by the Java Runtime"})
     assert not hotspot_repro._crashed({"returncode": 0, "stderr": ""})
+
+
+def test_the_artifact_carries_the_cpu_it_ran_on() -> None:
+    # Session 49 kept no lscpu and the trigger narrowed to the CPU, so the host block
+    # has to name the model and its vector ISA: a negative from an AVX2-only Xeon and
+    # one from an AVX-512 host are different evidence.
+    host = hotspot_repro._host()
+    assert host["cpu"] and host["cpu"] != "unknown"
+    assert isinstance(host["flags"], list)
+    assert host["vector_flags"] == [
+        flag
+        for flag in host["flags"]
+        if flag.startswith(("sse", "avx", "avx2", "avx_vnni", "avx512", "amx"))
+    ]
+    assert "microcode" in host
 
 
 def test_the_engine_method_is_the_one_this_tool_compiles() -> None:

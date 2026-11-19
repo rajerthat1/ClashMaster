@@ -142,14 +142,47 @@ def _find_jdks(named: list[Path]) -> list[Path]:
     return found
 
 
-def _cpu_model() -> str:
+def _cpu_field(name: str) -> str:
     try:
         for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
-            if line.startswith("model name"):
+            if line.startswith(name):
                 return line.split(":", 1)[1].strip()
     except OSError:
         pass
-    return platform.processor() or "unknown"
+    return ""
+
+
+def _cpu_model() -> str:
+    return _cpu_field("model name") or platform.processor() or "unknown"
+
+
+def _cpu_flags() -> list[str]:
+    """The CPU's feature flags.
+
+    Session 49 did not keep these and the trigger narrowed to the host CPU, so the
+    artifact has to carry them: the two recorded negatives are both AVX2-only Xeons
+    and the untested variable is a host that reports AVX-512.
+    """
+    return _cpu_field("flags").split()
+
+
+def _vector_flags(flags: list[str]) -> list[str]:
+    """The subset of ``flags`` that names a vector ISA, in /proc/cpuinfo order."""
+    names = ("sse", "avx", "avx2", "avx_vnni", "avx512", "amx")
+    return [flag for flag in flags if any(flag.startswith(name) for name in names)]
+
+
+def _host() -> dict[str, object]:
+    flags = _cpu_flags()
+    return {
+        "platform": platform.platform(),
+        "kernel": platform.release(),
+        "cpu": _cpu_model(),
+        "cpus": os.cpu_count(),
+        "microcode": _cpu_field("microcode"),
+        "vector_flags": _vector_flags(flags),
+        "flags": flags,
+    }
 
 
 def _mode_args(args: argparse.Namespace) -> list[str]:
@@ -328,12 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     artifact = {
         "schema": SCHEMA,
         "measured": datetime.now().isoformat(timespec="seconds"),
-        "host": {
-            "platform": platform.platform(),
-            "kernel": platform.release(),
-            "cpu": _cpu_model(),
-            "cpus": os.cpu_count(),
-        },
+        "host": _host(),
         "source": str(SOURCE.relative_to(REPO_ROOT)),
         "method": METHOD,
         "mode": args.mode,

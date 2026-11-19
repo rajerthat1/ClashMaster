@@ -4,6 +4,74 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
+## Bottom line (2026-11-18, session 51)
+
+The C2 miscompile is **reproduced on a second host**, and the report now has the
+evidence it lacked: the fault is inside the **level-4 nmethod of
+`SeatIds.of`, at offset `0x277`**, and the miscompiled body loads a null
+`int[]`'s length (`mov 0xc(%r12,%r9,8),%ebp` → `segfault at c`).  The
+**stand-alone reproducer is a false negative**: on the very host whose engine
+crashes **3/3** it compiles `of` at level 4 and passes (2/2), because its own C2
+body is **3968 bytes** where the engine's is **2848**.  Session 50's "the trigger
+is the host CPU" is therefore **withdrawn**; the flag is not a per-host
+workaround.
+
+1. **A fresh Thunder A6000 reproduces the engine crash 3/3.**  Same class as
+   session 49 (6 vCPU, 1×A6000, $0.35/h, Ubuntu 22.04.5, kernel
+   `6.12.115-thunder-sandbox`, CPU `Intel Xeon @ 2.10 GHz`, microcode `0x1`,
+   AVX2 and **no AVX-512**), but a **later JDK** — Ubuntu
+   `21.0.13.1+2` rather than `21.0.13.0.3` — so the defect is not fixed in
+   `.1`.  Session 49's shape (4 lanes × 2 seats × 3 × 24, CPU producer,
+   `--ppo-update`, default flags) completes segment 0 and dies in segment 1
+   with `segfault at c`, exit 139, no `hs_err`, 3/3.
+2. **The fault is `of`'s own C2 nmethod, deterministically at `0x277`.**  Each
+   run compiles `of` at level 4 twice — 1528 bytes at ~25 s, **2848 bytes at
+   62–65 s** — and only the second faults: compile_id 3001 (stamp 65.488 s,
+   count 15093) and 2922 (stamp 62.065 s, count 13864), both at offset `0x277`.
+   With `hsdis` (`libhsdis0-fcml` linked as `$JAVA_HOME/lib/hsdis-amd64.so`),
+   `-XX:CompileCommand=print` gives the instruction:
+   `43 8b 6c cc 0c` = `mov 0xc(%r12,%r9,8),%ebp`, a null `int[]` length at
+   address `0xc`.  This supersedes session 49's "the copy is inlined in the
+   caller" reading; the `exclude` arm needs re-running before the report leans on
+   it.
+3. **The probe is clean on that host — a recorded false negative.**  `soak 70 s
+   --new-every 20000 --repeats 2`: 2/2 C2 arms at level 4, bytecode identical,
+   0 crashes, controls clean.  Its level-4 body is 3968 bytes, not the engine's
+   2848: the driver's warm-then-new-kind loop reaches a different compilation.
+   So `hotspot_repro.py` exit 1 means "this probe did not crash", never "this
+   host is clean", and session 50's second box was almost certainly affected.
+4. **C1 still clears it on this host.**  `--jvm-arg=-XX:TieredStopAtLevel=1`:
+   3/3 segments, gate pass, 563 eligible lane-decisions, 28 ACT (4.97 %),
+   0 illegal, 0 rejected.  The flag stays on every CPU producer that can meet a
+   new entity kind after `of` is recompiled at level 4 — not on "an affected
+   host class".
+5. **The report is filable except for a self-contained reproducer.**  The text
+   (`docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md`) now carries the second
+   observation, the nmethod offset, the assembly, and the driver's negative
+   stated explicitly.  Filing option: use §3.1 (the engine run) as the
+   reproduction; the open work is a driver that reaches the 2848-byte
+   compilation.
+6. **The warmup-corrected sweep is done on two cards.**  3 segments × 32
+   decisions, `--warmup-forward`, fp16 + full graph, one process: steady
+   lane-decisions/s on the A6000 are **203 / 372 / 428 / 535 / 758** at
+   **8 / 16 / 32 / 64 / 128** lanes (`T` 0.079 → 0.338 s/decision), and on an
+   L40 **361 / 508 / 651 / 841 / 988** (`T` 0.044 → 0.259).  The 8→128 ratio is
+   **3.7×** on the A6000 (2.7× on the L40): the old "0.34× at 8 lanes" was
+   one-time cost, and the measured 128-lane steady state is **758 ld/s** against
+   session 33's 490 prediction (different packet).  First segment is still slow
+   (8 lanes 91.8 vs 203.1; 128 lanes 619.5 vs 758.4).
+7. **MPS is still untested, now with a reason.**  The `base` container has no
+   `nvidia-cuda-mps-control` and the toolkit does not ship it; it needs the
+   driver's control daemon.  Blocked on the image, not on the technique.
+8. **Still open:** a self-contained reproducer for the C2 report, filing it,
+   NVIDIA MPS (image with the control daemon), the 8-vCPU question, the A6000
+   overlapped-loop gate, and whether to pad a producer's width to the server's
+   ladder.
+
+See `FINDINGS.md` §3.89 (the sweep), §3.88 (the reproduction and the false
+negative), §3.87 (the parity cadence), §3.86 (the reproducer) and §3.85 (the JIT
+defect and the flag).
+
 ## Bottom line (2026-11-18, session 50)
 
 The C2 miscompile has a **reproducer**, a **host check** and **one recorded
@@ -203,6 +271,86 @@ See `FINDINGS.md` §3.84 (the card), §3.83 (the shape bug), §3.82 (the push),
 §3.81 (the server on CPU) and §3.74 (native gate).
 
 ## Decisions — what changed
+
+### 2026-11-18 (session 51) — the C2 miscompile reproduces, the probe is a false negative, and the host-CPU narrowing is withdrawn
+
+Session 50 left the defect with no second observation, a clean probe on a second
+box, and a conclusion that the trigger was the CPU.  Renting that class again and
+running the **engine** (not the probe) reproduces it 3/3, and running the probe on
+the same host passes — so the conclusion was an artefact of the probe.
+
+- **The engine, not the probe, is the reproducer.**  Session 49's shape (4 lanes ×
+  2 seats × 3 segments × 24 decisions, CPU producer, `--ppo-update`, default JVM
+  flags) crashes 3/3 on a fresh Thunder A6000: segment 0's update completes, the
+  next segment dies with `segfault at c`, exit 139, no `hs_err`.  The host is
+  `Intel(R) Xeon(R) Processor @ 2.10GHz`, microcode `0x1`, AVX2, no AVX-512,
+  Ubuntu 22.04.5, kernel `6.12.115-thunder-sandbox`, JDK Ubuntu
+  `21.0.13.1+2` — a **later** patch than session 49's `21.0.13.0.3`.
+- **The fault maps to `of`'s own level-4 nmethod, at the same offset every
+  time.**  Each run compiles `of` twice at level 4: 1528 bytes at ~25 s and
+  **2848 bytes at 62–65 s**; the crash is in the second, at offset **`0x277`**
+  (compile_id 3001, stamp 65.488 s, count 15093; compile_id 2922, stamp
+  62.065 s, count 13864).  With `hsdis` installed, `-XX:CompileCommand=print`
+  gives `43 8b 6c cc 0c` = `mov 0xc(%r12,%r9,8),%ebp`: the length load of a null
+  `int[]`, i.e. `segfault at c`.  Session 49's "the miscompiled copy is inlined
+  in the caller" does not hold for this body — the `exclude` arm is marked as
+  needing a re-run.
+- **The probe is a false negative on the crashing host, and the reason is
+  visible.**  `hotspot_repro.py --mode soak --seconds 70 --new-every 20000
+  --repeats 2` reaches level 4 in 2/2 C2 arms, passes the bytecode check and
+  crashes 0 times.  Its own level-4 `of` is **3968 bytes** where the engine's is
+  **2848** — a different compilation of the same 194-byte method.  So exit 1 is
+  "the probe did not crash", never "the host is clean", and **session 50's
+  host-CPU narrowing is withdrawn** (its second box was almost certainly
+  affected).  The same probe is also clean on an L40 host.
+- **The artifact now carries the CPU.**  `hotspot_repro.py` records the model
+  name, microcode and the full `/proc/cpuinfo` flag list beside the vector-flag
+  subset; session 49 kept none of them, and the flags stopped mattering the
+  moment the engine reproduced on the same AVX2-only class.
+- **C1 is confirmed on the second host.**  `--jvm-arg=-XX:TieredStopAtLevel=1`:
+  3/3 segments, gate pass, 563 eligible lane-decisions, 28 ACT (4.97 %),
+  0 illegal, 0 rejected.  The flag's scope is every CPU producer that can meet a
+  new entity kind after `of` is recompiled at level 4, not a host class.
+- **The report gains its missing evidence and keeps one gap.**  A second
+  observation, the nmethod offset and the assembly are in
+  `docs/native/16.635.1/HOTSPOT_C2_SEATIDS.md` §4.2; what is still missing is a
+  **self-contained** reproducer that reaches the 2848-byte compilation.  Until
+  then the engine run is the reproduction, and the driver's negative is stated in
+  the report so a triager does not read it as "cannot reproduce".
+- **Gate:** `test_hotspot_repro.py` **9 passed** (one new: the host block carries
+  model, microcode and vector flags); ruff (E,F) clean on the tool and the test.
+  Evidence: `runs/crforge-c4/s51-a6000/`.
+
+### 2026-11-18 (session 51b) — the warmup-corrected sweep: 3.7× from 8 to 128 lanes, and MPS is blocked by the image
+
+Session 33 found the 8-decision scaling runs were 65–82 % one-time cost and said
+to re-measure with `--warmup-forward`.  This is that measurement on two host
+classes, plus the reason the MPS item is still open.
+
+- **The shape.**  `--warmup-forward` (default) + 3 segments × 32 decisions,
+  `--no-rollout --no-validate`, fp16 + full CUDA graph, one process, so segment 2
+  is steady.  A6000: `Intel Xeon 2.10 GHz`; L40: `AMD EPYC`, $0.79/h.
+- **The numbers.**  Steady lane-decisions/s, A6000: **203 / 372 / 428 / 535 /
+  758** at **8 / 16 / 32 / 64 / 128** lanes (`T` 0.079 / 0.086 / 0.149 / 0.239 /
+  0.338 s per decision; forward 11.9 → 70.9 ms).  L40: **361 / 508 / 651 / 841 /
+  988** (`T` 0.044 → 0.259; forward 8.8 → 54.6 ms).  The 8→128 ratio is **3.7×**
+  and **2.7×**.
+- **The reading.**  The first segment is still the slow one (8 lanes 91.8 vs
+  203.1 steady; 128 lanes 619.5 vs 758.4), so one-time cost is real but no longer
+  the whole story at 32 decisions.  The old "0.34× at 8 lanes" was that cost; the
+  steady ratio is 0.27× (203/758).  The measured 128-lane steady state is
+  **758 ld/s**, against session 33's `F ≈ 4.0 s + 523 ms/decision = 490` — a
+  different packet, not a like-for-like gain.
+- **The card comparison.**  At 128 lanes the L40 is 1.30× the A6000 for 2.26×
+  the price: per process, 0.312 matches/s against 0.407, i.e. ≈$312/1M against
+  ≈$539/1M.  The A6000 remains the cheaper card until producers multiply.
+- **MPS is blocked by the image, not the technique.**  `nvidia-cuda-mps-control`
+  is not in the `base` template's container and is not part of the CUDA toolkit —
+  it comes with the driver.  The item needs an image where the control daemon is
+  reachable.
+- **Gate:** 5/5 shapes per host exit 0, 0 illegal, 0 rejected, 0 failed rounds;
+  no crash in any short run.  Evidence: `runs/crforge-c4/s51-sweep-summary.json`,
+  `s51-a6000/`, `s51-l40/`.
 
 ### 2026-11-18 (session 50b) — the native parity cadence: a checkpoint every N updates, and the gate priced in updates
 

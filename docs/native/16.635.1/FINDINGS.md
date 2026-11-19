@@ -7144,3 +7144,114 @@ cases, the cadence arithmetic and its missing-wall/zero-budget answers); bridge
 suite **191 passed**; ruff (F) clean on the touched files.  Evidence:
 `runs/crforge-c4/s50/train-cadence.json`, `runs/native-parity-s50/curve.json`
 (chunk dirs and logs beside it).
+
+### 3.88 The C2 miscompile reproduces on a fresh A6000 — and the stand-alone reproducer is a false negative (2026-11-18)
+
+Session 50 concluded that the `SeatIds.of` miscompile was host-CPU-specific
+because a second Thunder `base` ran `hotspot_repro.py` clean.  It did not run the
+**engine** on that box.  Session 51 rented the same class again and did: the
+engine crashes **3/3**, and the same stand-alone driver is clean on that host —
+so the negative was the probe's, not the host's.
+
+**The host.**  Thunder `base`, 6 vCPU / 1×A6000, $0.35/h, Ubuntu 22.04.5, kernel
+`6.12.115-thunder-sandbox`, CPU `Intel(R) Xeon(R) Processor @ 2.10GHz`
+(microcode `0x1`, flags to `avx2`, **no AVX-512**), JDK Ubuntu `21.0.13.1+2`
+— a later patch than session 49's `21.0.13.0.3`, so the defect is not fixed in
+`.1` — and torch 2.12.1+cu130.
+
+**The engine reproduces it.**  Session 49's shape (4 lanes × 2 seats × 3 segments
+× 24 decisions, CPU producer, `--ppo-update`, default JVM flags, no
+`TieredStopAtLevel`): segment 0 completes its update, segment 1 dies with
+`segfault at c`, exit 139, no `hs_err`.  Three runs, three crashes
+(`0x7f3d7847bc87`, `0x7fe328054307`, `0x7ff7e605ed87`).
+
+**The fault is inside `of`'s own level-4 nmethod, at the same offset every
+time.**  Each run compiles `of` at level 4 twice — a **1528-byte** body at ~25 s
+(no crash) and a **2848-byte** body at 62–65 s (the crash):
+
+| run | compile_id | level | size | count | installed | fault PC | offset |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A | 3001 | 4 | 2848 | 15093 | 65.488 s | `0x00007fe328054307` | `0x277` |
+| B | 2922 | 4 | 2848 | 13864 | 62.065 s | `0x00007ff7e605ed87` | `0x277` |
+
+`-XX:CompileCommand=print,org.crforge.env.SeatIds::of` with `hsdis` (Debian's
+`libhsdis0-fcml`, linked as `$JAVA_HOME/lib/hsdis-amd64.so`) gives the body; the
+faulting instruction is `43 8b 6c cc 0c` = `mov 0xc(%r12,%r9,8),%ebp`, the
+`.length` load of a null `int[]` (fault address `0xc`).  The null check the
+bytecode has at bci 54 is not honoured on this path.
+
+**The stand-alone driver is a false negative on that same host.**
+`hotspot_repro.py --mode soak --seconds 70 --new-every 20000 --repeats 2`: both
+C2 arms reach level 4, the bytecode check is identical, **0 crashes**, controls
+clean.  Its own level-4 body is **3968 bytes** where the engine's is **2848** —
+a different compilation of the same 194-byte method, so the driver's warm-then-
+new-kind loop does not reach the shape that is miscompiled.  (Its compile log on
+this laptop shows the same split: C2 at 3968 bytes, `of` inlined at both call
+sites of the soak loop.)  The same driver is clean on an L40 host as well.
+
+**Consequences.**
+
+- Session 50's narrowing ("the trigger is the host CPU") is **withdrawn**.  The
+  second box it tested was almost certainly affected; only the probe was clean.
+  "Thunder `base`" is not a safe class to assume clean, and neither is any host.
+- The workaround is not a per-host flag: **any** CPU producer that meets a new
+  entity kind after `of` has been recompiled at level 4 can hit it.  A C1 arm
+  (`-XX:TieredStopAtLevel=1`) completes 3/3 segments on this host (gate pass,
+  563 eligible lane-decisions, 28 ACT = 4.97 %, 0 illegal, 0 rejected).
+- `hotspot_repro.py` now records the CPU model, microcode and **full flag list**
+  in the artifact (session 49 kept none of these), and its exit 1 must be read as
+  "this probe did not crash", never as "this host is clean".
+- The report (`HOTSPOT_C2_SEATIDS.md`) now has what it lacked: a second
+  observation, the nmethod offset, and the miscompiled assembly.  The remaining
+  gap is a **self-contained** reproducer.
+
+**Gate:** `test_hotspot_repro.py` **9 passed** (one new: the host block carries
+model, microcode and vector flags); ruff (E,F) clean on the tool and the test.
+Evidence: `runs/crforge-c4/s51-a6000/` (`fault-map.txt`, `print.log`,
+`hotspot-pid5285.log.gz`, `hotspot-repro.json`, `cpu-producer*.log`,
+`cpu-producer-c1.json`, `crash-evidence.txt`).
+
+### 3.89 The warmup-corrected scale sweep: 3.7× from 8 to 128 lanes, on both cards (2026-11-18)
+
+Session 33 found that the 8-decision scaling runs were 65–82 % one-time cost and
+said they must be re-measured.  This is that measurement, made a different way:
+`--warmup-forward` (the default) plus **3 segments × 32 decisions** per shape,
+`--no-rollout --no-validate`, fp16 + full CUDA graph, one process, so segment 2
+is steady.  Two hosts: the A6000 above and an L40 (6 vCPU, AMD EPYC, $0.79/h).
+
+| lanes | A6000 ld/s (median) | A6000 `T` s | A6000 fwd ms | L40 ld/s | L40 `T` s | L40 fwd ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| 8 | 203.1 | 0.079 | 11.9 | 361.1 | 0.044 | 8.8 |
+| 16 | 371.7 | 0.086 | 15.6 | 508.1 | 0.063 | 12.0 |
+| 32 | 428.1 | 0.149 | 23.9 | 651.2 | 0.098 | 16.9 |
+| 64 | 535.4 | 0.239 | 39.3 | 840.9 | 0.152 | 30.4 |
+| 128 | 758.4 | 0.338 | 70.9 | 987.9 | 0.259 | 54.6 |
+
+**What it says.**
+
+- **The scaling is real and gentle, not a warmup artefact.**  At 32 decisions the
+  first segment is still the slow one — 8 lanes runs at **91.8** lane-decisions/s
+  against a 203.1 steady state (2.2×), and 128 lanes at 619.5 against 758.4
+  (1.22×) — but the steady state itself scales **3.7×** from 8 to 128 lanes on
+  the A6000 and **2.7×** on the L40.  The old "0.34× at 8 lanes" was a
+  one-time-cost reading; the steady ratio is 0.27× (203/758), and it is bought
+  with per-decision latency (0.079 → 0.338 s), which is the usual trade.
+- **The 128-lane steady state is faster than the session-33 estimate.**  The
+  recorded prediction was `F ≈ 4.0 s + 523 ms/decision = 490 ld/s`; the measured
+  steady state here is **758 ld/s** (0.338 s/decision, forward 70.9 ms, engine
+  step 77.3 ms, tensorize 31.1 ms).  That is a different packet (fp16 + full
+  graph, torch 2.12.1) and should not be quoted as a like-for-like gain.
+- **The L40 is 1.30× the A6000 at 128 lanes and 2.26× its price.**  Per process
+  the measured 0.312 matches/s (A6000) against 0.407 (L40) prices the card at
+  ≈$312/1M against ≈$539/1M at one process — the A6000 is still the cheaper card
+  unless producers multiply, which is the aggregate question the six-producer
+  sweeps already answer.
+- **NVIDIA MPS could not be tested on this image.**  `nvidia-cuda-mps-control` is
+  not installed in the `base` template's container and the toolkit does not ship
+  it; MPS needs the driver's control daemon.  That item stays open and needs an
+  image that has it (or a host where the daemon is reachable).
+
+**Gate:** every arm exits 0 (`SWEEP-DONE`, 5/5 shapes per host); 0 illegal, 0
+rejected, 0 failed rounds; no crash in any short run.  Evidence:
+`runs/crforge-c4/s51-sweep-summary.json`, `s51-a6000/sweep-lanes*.json`,
+`s51-l40/sweep-lanes*.json` and their logs.

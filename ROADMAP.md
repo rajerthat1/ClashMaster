@@ -530,12 +530,12 @@ bulk path is crforge, in the order that protects the schedule:
    (NVIDIA MPS, the 8-vCPU question, the A6000 overlapped-loop gate). The native
    parity cadence is defined: `--checkpoint-every` plus
    `tools/native_analysis/parity_curve.py`, priced at 27.9 updates per 4-game
-   gate (`FINDINGS.md` §3.87). A **CPU-updating producer on the affected host class
-   needs `--jvm-arg=-XX:TieredStopAtLevel=1`** until the host's C2 miscompile of
-   `SeatIds.of` is fixed: `tools/crforge/hotspot_repro.py` is the reproducer, and
-   both hosts tried so far are negatives (most recently a Thunder `base` with the
-   affected host's exact JDK), which leaves the host CPU as the trigger
-   (`FINDINGS.md` §3.85–§3.86).
+   gate (`FINDINGS.md` §3.87). A **CPU-updating producer needs
+   `--jvm-arg=-XX:TieredStopAtLevel=1`** until the JVM's C2 miscompile of
+   `SeatIds.of` is fixed: it reproduces on every host of the rented class tried
+   (3/3 on a fresh A6000, and the fault maps to `of`'s own level-4 nmethod), and
+   the stand-alone probe is a **false negative** on that host, so "the probe
+   passed" is not a clean bill (`FINDINGS.md` §3.85–§3.88).
 5. **C5 — parity curve.** 50–150 native matches every N updates and after every
    adapter change; a persistent win-rate gap freezes the checkpoint.
 6. **C6–C7 — native promotion gate, then live canary.** ≥150 native paired games,
