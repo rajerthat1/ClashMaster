@@ -259,26 +259,26 @@ rejected**; so the workaround is confirmed on the second host as well.
 
 The full disassembly of compile 2922 (`print.log`, base `0x…ece0`) makes the
 defect one instruction sequence. The fast path computes `kind`, `n`, loads
-`byKind = ids[seat]`, checks `kind < byKind.length` (the taken side is an
-uncommon trap at `0x…efa8`), loads `of = byKind[kind]`, and then loads
+`byKind = ids[seat]`, branches on `kind < byKind.length` (the `kind >= …` side is
+an uncommon trap at `0x…efa8`), loads `of = byKind[kind]`, and then loads
 `of.length`:
 
 ```
 0x…ed5e  mov    0x10(%r9,%rdx,4),%edi     ; byKind = ids[seat]
 0x…ed63  mov    0xc(%r12,%rdi,8),%ebp     ; byKind.length
 0x…ed68  cmp    %ebp,%ecx                  ; kind vs byKind.length
-0x…ed6a  jge    0x…efa8                    ; taken -> {uncommon trap}
+0x…ed6a  jge    0x…efa8                    ; kind >= length -> {uncommon trap}
 0x…ed82  mov    0x10(%r9,%rax,4),%r9d      ; of = byKind[kind]
 0x…ed87  mov    0xc(%r12,%r9,8),%ebp      ; of.length          <- fault PC, offset 0x277
 0x…ed8c  cmp    %ebp,%r11d                 ; n vs of.length
-0x…ed8f  jge    0x…efd0                    ; taken -> {uncommon trap}
+0x…ed8f  jge    0x…efd0                    ; n >= length -> {uncommon trap}
 ```
 
 There is **no test of `of` between `0x…ed82` and `0x…ed87`**, and no
 implicit-exception entry covers the load: a null `of` faults at `0xc` and the
-process dies instead of taking an NPE or an uncommon trap. The two compiled
-guards that remain are `kind >= byKind.length` and `n >= of.length`; the bytecode
-guard `of == null` at bci 54 is the one that was dropped.
+process dies instead of taking an NPE or an uncommon trap. The two one-sided
+branches that are still traps are `kind >= byKind.length` and `n >= of.length`;
+the bytecode guard `of == null` at bci 54 is the one that was dropped.
 
 **Which branch trapped, and what that implies.**  The log names the event:
 
