@@ -303,6 +303,65 @@ def test_store_finalizes_a_checked_ppo_record() -> None:
     assert store.storage_bytes() > 0  # the action tensors are retained
 
 
+def test_store_masks_the_frozen_opponent_rows_from_the_update() -> None:
+    """A league opponent's rows are stored but never enter the PPO loss."""
+
+    lanes, seats = 2, 2
+    train_rows = np.zeros(lanes * seats, dtype=bool)
+    train_rows[0::seats] = True  # the learner is seat 0 of every lane
+    store = CrforgeRolloutStore(
+        lanes=lanes,
+        seats=seats,
+        initial_state=_state(lanes * seats),
+        policy_state_id="test-learner-only",
+        gate_temperature=1.0,
+        action_temperature=1.0,
+        continue_temperature=1.0,
+        train_rows=train_rows,
+    )
+    steps = 3
+    for step in range(steps):
+        store.append(
+            observation=_FakeObservation(lanes * seats),
+            actions=_sequence(lanes * seats),
+            log_prob=torch.zeros(lanes * seats),
+            value=torch.full((lanes * seats,), 0.5),
+            rewards=np.array([[0.0, 0.0], [0.25, -0.25]], dtype=np.float32),
+            episode_start=np.full(lanes, step == 0, dtype=bool),
+            terminated=np.zeros(lanes, dtype=bool),
+            truncated=np.zeros(lanes, dtype=bool),
+        )
+    rollout = store.finalize(boundary_value=torch.zeros(lanes * seats))
+    assert bool(rollout.valid_mask[:, 0::seats].all())
+    assert not bool(rollout.valid_mask[:, 1::seats].any())
+    assert rollout_statistics(rollout, gamma=0.9997, gae_lambda=0.98)["valid_rows"] == lanes * steps
+
+
+def test_store_rejects_an_empty_or_missized_train_row_mask() -> None:
+    with pytest.raises(ValueError, match="train_rows"):
+        CrforgeRolloutStore(
+            lanes=2,
+            seats=2,
+            initial_state=_state(4),
+            policy_state_id="test-mask",
+            gate_temperature=1.0,
+            action_temperature=1.0,
+            continue_temperature=1.0,
+            train_rows=[True, False],
+        )
+    with pytest.raises(ValueError, match="trainable"):
+        CrforgeRolloutStore(
+            lanes=2,
+            seats=2,
+            initial_state=_state(4),
+            policy_state_id="test-mask",
+            gate_temperature=1.0,
+            action_temperature=1.0,
+            continue_temperature=1.0,
+            train_rows=[False, False, False, False],
+        )
+
+
 def test_store_escapes_inference_mode_for_the_ppo_update() -> None:
     """The producer samples under ``inference_mode``; PPO must still backprop.
 

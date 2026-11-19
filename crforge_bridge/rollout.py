@@ -44,6 +44,7 @@ never propagates across it.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, fields, is_dataclass
 
 import numpy as np
@@ -314,6 +315,7 @@ class CrforgeRolloutStore:
         continue_temperature: float,
         device: str | torch.device = "cpu",
         float_dtype: torch.dtype | None = torch.float16,
+        train_rows: Sequence[bool] | np.ndarray | None = None,
     ) -> None:
         if lanes < 1 or seats < 1:
             raise ValueError("a rollout store needs at least one lane and seat")
@@ -324,6 +326,7 @@ class CrforgeRolloutStore:
         self.lanes = int(lanes)
         self.seats = int(seats)
         self.rows = self.lanes * self.seats
+        self.train_rows = self._train_row_mask(train_rows)
         self.device = torch.device(device)
         self.float_dtype = float_dtype
         self.initial_state = initial_state
@@ -342,6 +345,16 @@ class CrforgeRolloutStore:
         self.stats = {"episode_starts": 0, "terminated": 0, "truncated": 0, "act_rows": 0, "storage_bytes": 0}
 
     # -- collection -----------------------------------------------------------
+
+    def _train_row_mask(self, value: Sequence[bool] | np.ndarray | None) -> Tensor:
+        if value is None:
+            return torch.ones(self.rows, dtype=torch.bool)
+        mask = torch.as_tensor(value, dtype=torch.bool).reshape(-1)
+        if mask.numel() != self.rows:
+            raise ValueError(f"train_rows carries {mask.numel()} rows, the store expects {self.rows}")
+        if not bool(mask.any()):
+            raise ValueError("at least one actor row must be trainable")
+        return mask
 
     @staticmethod
     def _row_mask(mask: np.ndarray, rows: int, *, label: str, device: torch.device | None = None) -> Tensor:
@@ -436,7 +449,7 @@ class CrforgeRolloutStore:
             observations=tuple(self.observations),
             actions=tuple(self.actions),
             episode_start=torch.stack(self._episode_start),
-            valid_mask=torch.ones_like(terminated),
+            valid_mask=self.train_rows.unsqueeze(0).expand_as(terminated).clone(),
             behavior_log_prob=torch.stack(self._log_prob),
             behavior_value=values,
             next_value=next_values,

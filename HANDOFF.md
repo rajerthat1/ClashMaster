@@ -4,6 +4,56 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
+## Next session (session 53) — the model path resumes here (plan, 2026-11-20)
+
+The C2 reproducer is a side thread with its own one-command runbook above. The
+model's next gate is **N4**, and a long run must not start until two things land.
+
+1. **C4's last throughput gate: the A6000 overlapped loop.** Raw GPU scaling is
+   measured (758 lane-decisions/s at 128 lanes; one process at 64–128 lanes, not
+   2–4 × 8). The open half is the pipeline: on CPU `--overlap-update` was
+   **1.03× wall, 0.65× collection, 5/6 updates stale** and failed. On the card the
+   update is 5.5 s against ~39 s of collection, so it may pay (bounded ~27 %).
+   Gate: `tools/crforge/overlap_compare.py` at 64/128 lanes (the producer defaults
+   `--warmup-forward` on) must keep the collection rate and beat the serial wall;
+   `multiproc.py` prices the server arm. If it fails, the training run is serial
+   and `reset` stays the default.
+2. **The opponent league, wired into `tools/crforge/self_play.py`.** The producer
+   was pure self-play: one checkpoint, both seats, fixed X-Bow deck.
+   `native_runner/training/v4/league.py` already has `PolicyLeagueV4` and PFSP
+   weighting; the first half of the crforge wiring is landed below. N4 needs
+   seat 1 to be a frozen league member (`B-general-v275`, `A-hog26-v738`, history
+   snapshots) while the learner stays on X-Bow; only the learner's rows enter the
+   PPO update. A run that does not do this trains an X-Bow mirror, not a
+   specialist.
+3. **First gated run (after the two-model GPU arm).** 50 updates, 64 lanes,
+   `--checkpoint-every 10`, C5 `parity_curve.py` on 4-game blocks, then C6:
+   **≥150 native paired games, both seats**, vs `B-general-v275` (and
+   `A-hog26-v738` as a canary). Promote only at **≥55 % with the Wilson lower
+   bound above 50 %**, no benchmark more than 3 points below the champion,
+   `rejected 0`, and no behaviour regression (ACT rate, plays/game, time at 10
+   elixir). Never promote on a crforge metric and never rank a run on the crforge
+   return. The league producer is eager-only today, so a 64-lane run needs either
+   the two-model decision server or a fixed-opponent fast-forward arm first.
+
+Evidence for the plan: `ROADMAP_CRFORGE.md` C4–C6, `ROADMAP.md` N4,
+`docs/native/16.635.1/FINDINGS.md` §3.62–§3.67 and §3.87.
+
+**Landed 2026-11-20 — the league's first half.** `crforge_bridge/league.py`
+loads the native `v4-ppo-policy-league.v1` JSON, samples with PFSP and records
+results; `tools/crforge/self_play.py` now takes `--opponent-checkpoint`,
+`--opponent-league` and `--learner-seat`, plays the other seat with the frozen
+model, and stores the opponent's transitions while masking them out of the PPO
+loss (`CrforgeRolloutStore(train_rows=...)`, learner rows only). CPU smoke:
+2 lanes × 2 segments with `B-general-v275` on seat 1 — **8 valid rows = 4
+decisions × 2 learner rows**, 2 finite updates, 0 rejected; `A-hog26-v738` also
+loads and plays. A 4-segment league smoke sampled both members and recorded
+`opponent_load_s` outside the collection wall. Gate: 22 targeted tests (209 in
+the bridge suite), ruff clean.
+Still open: **per-opponent deck sampling** (the opponent currently mirrors the
+learner's X-Bow deck), a two-model fast-forward/decision-server arm (the
+opponent forward is eager today), and per-lane opponents.
+
 ## Bottom line (2026-11-19, session 52)
 
 The C2 reproducer now replays the **engine's compile history**: a one-sided C2
