@@ -9,6 +9,11 @@
 #   tools/native_analysis/native_block_run.sh <name> <a.pt> <b.pt> \
 #       <match-config.json> <start-seed> <games> <chunk> <out-root>
 #
+# Independent blocks can run side by side: set PORT (and, for the engine's
+# control-cpu binding, ENGINE_INDEX) per process.  The default keeps the
+# historical single-host shape (port 26789, engine index 0).  DEVICE selects
+# the evaluator's policy device; it defaults to cpu for gate reproducibility.
+#
 # Example (50-game pilot gate in 10-game chunks, seeds 101-150):
 #
 #   tools/native_analysis/native_block_run.sh pilot-vs-seed \
@@ -28,7 +33,9 @@ mkdir -p "$ROOT"
 LOG="$ROOT/$NAME.log"
 : > "$LOG"
 ATTEMPTS=2
-PORT=26789
+PORT=${PORT:-26789}
+ENGINE_INDEX=${ENGINE_INDEX:-$((PORT - 26789))}
+DEVICE=${DEVICE:-cpu}
 
 seed=$START
 end=$((START + GAMES))
@@ -44,6 +51,7 @@ while [ "$seed" -lt "$end" ]; do
     echo "=== attempt $attempt" | tee -a "$LOG"
     rm -rf "$out"
     .venv/bin/python tools/native_analysis/crx_engine_host.py --seconds 5400 \
+      --engine-index "$ENGINE_INDEX" --port "$PORT" \
       >> "$ROOT/$NAME-engine.log" 2>&1 &
     engine=$!
     for _ in $(seq 1 120); do
@@ -56,6 +64,7 @@ while [ "$seed" -lt "$end" ]; do
       timeout 7200 .venv/bin/python -m native_runner.training.v4.evaluate \
         --checkpoint-a "$A" --checkpoint-b "$B" --games "$n" \
         --match-config "$CONFIG" --output "$out" --sample --seed "$seed" \
+        --device "$DEVICE" --port "$PORT" \
         >> "$LOG" 2>&1
     status=$?
     kill "$engine" 2>/dev/null
