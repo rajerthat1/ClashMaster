@@ -7363,3 +7363,295 @@ capture count (7–13 per producer lifetime, flat in run length), not a capture
 rate.  If a future board visits far more widths — the count grows with the
 distinct width vocabulary, not with decisions — this note's bound (captures are
 one-time) still holds, so the answer would need a measured capture cost first.
+
+### 3.92 The A6000 overlapped loop cannot capture a graph under the worker, and eager still misses the gate (2026-11-19)
+
+Session 32 measured the CPU pipeline as correct and unprofitable: the update was
+hidden in name only because the collector lost 35 % of its rate to the worker.
+The last C4 throughput gate asked the same question on the card, where the update
+is 5.5 s at the 1,024-frame shape and the collector has the longer half.  The
+answer is the same shape of result, for a card-specific reason.
+
+#### Full-graph capture is not concurrency-safe
+
+`overlap_compare.py` with `--fast-forward --full-cuda-graph` at 8 lanes completes
+segment 0 (collection 4.6 s, boundary 2.2 s) and then dies on the next new live
+width: `crforge_bridge/fast_forward.py::_GraphSlot.__init__` raises
+`torch.AcceleratorError: CUDA error: operation failed due to a previous error
+during capture` (`cudaErrorStreamCaptureInvalidated`) while the update worker is
+in flight on the same device.  The producer captures one graph per live width;
+a board that widens after segment 0 (a troop spawn) therefore asks for a capture
+mid-run, and a stream capture cannot begin while another thread's kernels are
+running.  The serial loop never hits it because its capture happens between
+updates.  The measurement below therefore uses the producer's eager fp16 path
+(`--fast-forward --no-cuda-graphs`), which is also the documented correctness
+path, and the capture conflict is left as a separate defect: an overlap mode
+with graphs needs either a pre-captured shape set or a capture lock shared with
+the update worker.
+
+#### Measured — serial vs overlapped, eager fp16, one seed
+
+Two shapes, 4 segments x 32 decisions, the producer's default `--warmup-forward`,
+`--ppo-sequence-chunk 32`, `--ppo-lane-minibatch 16`
+(`runs/crforge-c4/s53/overlap-*-eager.json`, per-run artifacts under
+`runs/crforge-c4/s53/overlap-*-eager/`):
+
+| shape | mode | wall | collection | update | collection rate | stale | stale \|KL\| | stale clip |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 lanes | serial | **67.2 s** | 45.7 s | 21.5 s | **358.7 ld/s** | 0/4 | — | — |
+| 64 lanes | overlap | **66.4 s** (1.01x) | 50.9 s | 26.4 s | **322.2 ld/s (0.898x)** | 3/4 | 3.0e-3 | 3.71 % |
+| 128 lanes | serial | **93.4 s** | 54.5 s | 39.0 s | **601.7 ld/s** | 0/4 | — | — |
+| 128 lanes | overlap | **82.6 s** (1.13x) | 62.8 s | 48.5 s | **522.1 ld/s (0.868x)** | 3/4 | 6.3e-3 | 4.53 % |
+
+Both pipeline arms pass the correctness half: the collector hashes to the id it
+sampled with, the boundary copy reproduces the update model's weight bytes, and
+the training gate passes.  Both fail the rate half.  The collector loses 10 %
+(64 lanes) to 13 % (128 lanes) of its lane-decisions/s to the worker's backward,
+so the gate's 0.9x floor is missed at 64 lanes by 0.002 and at 128 lanes by a
+clear margin.  The update is hidden enough to save 1 % and 13 % of wall time
+respectively, but that is exactly the trade the gate refuses: wall time bought
+out of the collector's throughput.
+
+#### What it says
+
+1. **The pipeline is not the training default; `reset` stays.**  The plan's
+   fallback was explicit: if the card's gate fails, the 50-update run is serial
+   with `reset`.  The measured 64-lane failure is 0.2 % of the rate threshold —
+   close enough to be worth re-measuring if the forward gets faster, but not
+   close enough to adopt on one seed.
+2. **The pipeline's own speedup is not the decision number.**  It reports
+   `speedup_vs_serial_equivalent` 1.16 / 1.35, because it sums the *contended*
+   clocks.  The honest walls are 67.2 -> 66.4 s and 93.4 -> 82.6 s, the same
+   distinction §3.64 had to make on the CPU.
+3. **The 128-lane eager collector is fast.**  601.7 ld/s serial, against the
+   §3.71 full-graph mechanics run's 468.2, because 4 x 32 decisions amortises the
+   warmup better than 3 x 32 and eager fp16 avoids the per-shape capture.  The
+   128-lane update is 39.0 s for 4 segments (9.8 s/segment at 16 optimizer steps),
+   so the serial loop is 1.6x collection, not update-bound.
+4. **One update of staleness is still structural.**  Every overlap after the
+   first is stale; at these shapes the stale half clips 3.7-4.5 % of ratios.
+   Whatever the wall number, a serial `reset` run is the only on-policy choice.
+
+Evidence: `tools/crforge/overlap_compare.py`, `crforge_bridge/fast_forward.py`,
+`runs/crforge-c4/s53/overlap-64-eager.json`,
+`runs/crforge-c4/s53/overlap-128-eager.json`, and the full-graph failure log
+`runs/crforge-c4/s53/smoke-overlap/overlap-seed1.log`.
+
+### 3.93 The phased reproducer reaches the recompile on the affected host and still compiles 2896, not 2848 (2026-11-19)
+
+Session 52 left one open step for the C2 report: run `--mode phased` on an
+affected host, where a crash would make the report self-contained.  This session
+rented the session-51 class again (6 vCPU, 1 x A6000, Intel Xeon 2.10 GHz,
+microcode 0x1, AVX2/no AVX-512, Ubuntu 22.04.5, kernel `6.12.115-thunder-sandbox`)
+with JDK **21.0.13.1+2** and ran both the engine and the probe.
+
+1. **The engine reproduces on this host, with the recorded history.**  The
+   session-49 shape (4 lanes x 2 seats x 3 segments x 24 decisions, CPU producer,
+   `--ppo-update`, default flags) exits **139**; `dmesg` says
+   `segfault at c ip 00007fe5e281a587` (a fresh instance, same signature).
+   `-XX:+LogCompilation` on that run records `SeatIds of` as C1 **5296** at
+   23.363 s, C2 **1528** at 23.606 s (count 8688), C1 **5296** at 32.603 s
+   (`unstable_if_traps='1'`), and C2 **2848** at 63.575 s (count 14180,
+   `handler_table_offset='2760'`, `unstable_if_traps='1'`).  That is the engine's
+   two-body history field for field.
+2. **The phased driver is a false negative on the same host.**  `hotspot_repro.py
+   --mode phased --repeats 3` reaches the recompile (`reached_recompile: true`)
+   and reports bodies **1528 -> 2896** on all three C2 arms, with 0 crashes and
+   clean C1/interpreter controls.  The 1528-byte first body is the engine's; the
+   recompiled body is 48 bytes larger and still tests the null slot, so the
+   second in-range null slot is allocated instead of faulting.
+3. **The 48 bytes are not a profile-count artifact.**  A sweep of
+   `--phased-n 48 64 72 80 96 128 192 256` (same 12 rewarm rounds, 8 kinds)
+   either never installs the second body (48, 64, 96) or installs **2896** (72,
+   80, 128, 192, 256); no count in that range produces 2848 or a crash.  The
+   driver's first body and its bytecode are the engine's, so the remaining
+   difference is a compilation decision the driver's call shape does not
+   reproduce — not the host and not the hotness.
+4. **The report keeps the engine run as the reproduction.**  The open item
+   changes from "one phased run on an affected host" to "a driver that compiles
+   the 2848-byte body"; the host is no longer the unknown.  The evidence is
+   `runs/crforge-c4/s53/hotspot-phased.json`, `hotspot-phased.log`, `lscpu.txt`,
+   `hotspot-pid5404.log` and `cpu-producer.log`.
+
+**Gate:** the engine exit is 139 with `segfault at c`; the probe exits 1 with
+`reached_recompile: true`, so it is a recorded negative, not an inconclusive run.
+
+### 3.94 The first league run closes 50 updates, and the learner-only mask lands on the data device (2026-11-19)
+
+The plan's first gated run is 50 updates at 64 lanes in one process against a
+frozen league, with the learner on X-Bow and both opponents on the Hog 2.6 deck.
+It ran (`runs/crforge-n4/run.json`), found one device defect on the way, and
+leaves one producer-level defect open.
+
+#### The shape and the result
+
+64 lanes x 2 seats x 50 segments x 64 decisions = **409,600 lane-decisions**,
+one process, fp16 + full CUDA graph, `--ppo-lane-minibatch 16`,
+`--ppo-sequence-chunk 32`, `--update-state-policy reset`,
+`--checkpoint-every 10`.  The league is
+`B-general-v275` and `A-hog26-v738`, both on
+`523b6428074d4689904add37912722f47182bc6a1679dd89c5d50a19292263d3`
+(cannon-ev1, fireballs, hog rider, ice golem/spirit, musketeer-hero,
+skeletons-ev1, the log), sampled with PFSP and rotated at segment boundaries.
+
+| measurement | value |
+| --- | ---: |
+| updates / optimizer steps | **50 / 400** |
+| behaviour ids | 50 distinct (one per segment) |
+| stale / on-policy updates | **0 / 50** |
+| return (first-10 → last-10) | **0.339 → 0.468** |
+| ACT lane-decisions / eligible | 23,893 / 343,085 (**6.96 %**) |
+| wall / collection / update | 1,503.6 / 983.6 / 520.0 s |
+| median update wall | **10.25 s** |
+| collection rate | **416.4 lane-decisions/s** |
+| autoresets | 168 |
+| rejected (producer counter) | **1** (one illegal lane-action in 409,600) |
+| training gate | **false** (only on that counter) |
+
+The league recorded 163 terminal lane-episodes while the run trained: 68 won and
+95 lost (46-53 to `B-general`, 22-42 to `A-hog`).  Those are crforge outcomes and
+are **not** a ranking; the native block is the gate.
+
+#### The learner-only mask was a CPU index over CUDA rows
+
+The first attempt died at update 0 with
+
+```
+episode_start.index_select(1, active_lanes)
+RuntimeError: Expected all tensors to be on the same device, but got index is on cpu,
+different from other tensors on cuda:0
+```
+
+`CrforgeRolloutStore.finalize` built `valid_mask` from `train_rows`, a CPU
+tensor, while every rollout tensor was moved to the store's device.  Every
+earlier gate run had all rows trainable, so `active_lanes` was always the whole
+batch and the update never took the `index_select` branch.  A league stores the
+frozen opponent's transitions but masks them out (`train_rows` = learner rows), so
+the first league update took it.  The fix puts the finalized mask on
+`store.device`, and every `active_lanes` index in `distributed_ppo_update_v4` is
+now moved to the tensor it indexes (matching the session-38 `lane_indices` fix).
+`test_store_masks_the_frozen_opponent_rows_from_the_update` asserts the mask and
+the episode mask share the store's device; the CUDA smoke then ran 3 updates
+with **64 learner rows per 128 stored rows** and 0 rejected.
+
+#### The one illegal action
+
+Fourteen segments report `illegal_peak: 1`; the producer's counter is
+`max(illegal_peak) + fault_delta`, so the run is `rejected: 1` and its training
+gate is false even though every update is finite and on-policy.  It is one
+engine-rejected lane-action in 409,600 (2.4e-6), not a fault and not a rollout
+problem, and it is **not** the native gate's `rejected` count.  It stays open:
+the likely edge is a sampled second micro-action that is legal when sampled and
+stale when the plan window shifts it (154 second micros, 48 shifted, 4 dropped),
+but the producer does not record which seat/lane or which card was refused, so
+the next run needs that attribution before it can be called clean.
+
+Evidence: `runs/crforge-n4/run.json`, `runs/crforge-n4/league.json`,
+`runs/crforge-n4/driver.log`, `crforge_bridge/rollout.py`,
+`native_runner/training/v4/distributed_ppo.py`,
+`crforge_bridge/tests/test_rollout.py`.
+
+### 3.95 The parity curve at the league run's cadence, and the native runner learns to run in parallel (2026-11-19)
+
+C5 asks for the native gate against the trainer's own checkpoints on the same
+seeds.  The first league run wrote five (`ck-step-285` … `ck-step-325`); each
+point played seeds 101–104 against `B-general-v275` on the form-faithful
+`xbow-vs-hog26-evo` config.
+
+| update step | wins / 4 | rate | Wilson 95 % | illegal | rejected (unique) |
+| ---: | ---: | ---: | --- | ---: | ---: |
+| 285 | 2 | 0.50 | 0.15–0.85 | 0 | 0 (0) |
+| 295 | 3 | 0.75 | 0.30–0.95 | 0 | 0 (0) |
+| 305 | **4** | **1.00** | 0.51–1.00 | 0 | 0 (0) |
+| 315 | 2 | 0.50 | 0.15–0.85 | 0 | 0 (0) |
+| 325 | 1 | 0.25 | 0.05–0.70 | 0 | 24 (**1**) |
+
+Four games is a schedule proof, not a ranking: every interval overlaps every
+other, and the 4–0 point is not evidence that update 305 is stronger than 325.
+What the curve does show is that the run is not monotone — the final checkpoint
+is the worst point on these seeds — and that update 325 is the checkpoint that
+emits the one refused play.  On seed 101 it schedules a play of a card that is
+still in its hand slot; the engine refuses it (`card_still_in_slot`), and the
+event is visible in 24 observation windows.  `evaluate` reports
+`rejected_unique_total = 1` beside `rejected_total = 24`; the block gate reads
+the window total, so the zero-rejected criterion is false for that point.  The
+other four checkpoints never emit it on the same four seeds.
+
+The native runner is serial: one engine host, one match at a time, ~5 min per
+game on a 6-vCPU box.  `tools/native_analysis/native_block_run.sh` now accepts
+`PORT` / `ENGINE_INDEX` (and `DEVICE`) so independent seed ranges can run side by
+side; four 1-game blocks with four engine hosts finished in **310 s**, i.e.
+**77.5 s/game** of throughput, against ~300 s/game serial.  That is the same
+78 s/game the handoff recorded on the laptop, and it is why C6 is run as
+15 ten-game chunks over four boxes rather than one ~12 h serial block.  The
+gate is still the native evaluator; no crforge fast-forward is involved.
+
+Evidence: `runs/native-n4-c5/curve.json`, the five chunk directories under
+`runs/native-n4-c5/`, and `tools/native_analysis/native_block_run.sh`.
+
+### 3.96 The first gated league run is not promotable: 28 % against B-general, and a two-micro refusal (2026-11-19)
+
+The first run the plan gates is the 50-update league run from §3.94 against
+`B-general-v275`, both seats, on the form-faithful X-Bow vs Hog 2.6 config.
+150 paired games, seeds 101–250, one engine host per ten-game chunk, four
+ten-game chunks in parallel per box (15 chunks over four boxes).  The block took
+about 40 min at 77.5 s/game of throughput, against ~12 h serial
+(`runs/native-n4-gate/block.json`, `gate.json`).
+
+| measurement | value |
+| --- | ---: |
+| games / decisive | **150 / 150** |
+| A wins / B wins | **42 / 108** |
+| win rate [Wilson 95 %] | **0.280 [0.214, 0.357]**, p = 6.9e-8 |
+| seat 0 / seat 1 | 17/75 (**22.7 %**) / 25/75 (**33.3 %**) |
+| illegal | **0** |
+| truncated | **0** |
+| rejected | **346** window events / **10 unique** (10 games) |
+| rejected reason | `card_still_in_slot`, all 346 |
+| verdict | **FAIL** |
+
+The gate fails on four criteria: `win_rate_ge_min` (0.280 < 0.55),
+`wilson_lower_gt_half` (0.214 < 0.5), `no_seat_below_min` (both seats below
+0.45), and `zero_rejected`.  It passes `decisive_games_ge_min`, `zero_illegal`,
+`truncated_fraction_le_max`, `seat_split_present` and `no_block_warnings`; the
+seed schedule is contiguous 101–250 and every game terminated.
+
+#### What it says
+
+1. **The run learned a return, not a matchup.**  Its PPO return trace rose
+   0.339 → 0.468 over 50 updates (§3.94), but the native result is 28 % with the
+   Wilson upper bound at 35.7 %.  The crforge league's own terminal episodes
+   (46-53 to `B-general`, §3.94) were the honest preview; the return is a
+   value-fit diagnostic, not a score.  This is exactly the separation the plan
+   insisted on: never promote on a crforge metric.
+2. **The seat split is a collapse, not a sample.**  Both seats are below the
+   0.45 floor (22.7 % / 33.3 %); the 75-game seat intervals do not overlap 0.5.
+   A single seat result would have been misleading.
+3. **The two-micro refusal is real and isolated.**  Ten games contain one
+   distinct `card_still_in_slot` refusal each; the evaluator sees each event in
+   ~35 observation windows, so the block's window total is 346 against
+   `rejected_unique_total = 10`.  The refused play is a card the policy asks to
+   play while the same card is still in its hand slot.  The crforge producer
+   shifts collisions with `plan_window_ticks` (§3.44/§3.57); the native
+   `PolicySessionV4` path does not, so a policy that emits two micro-actions can
+   generate a play the client would never let a human queue.  The gate reads
+   `rejected_total` (346), but the unique count is 10 and either is non-zero; the
+   failure does not depend on the counting convention.
+4. **The C5 point that looked best was real, but four games cannot rank.**  The
+   C5 curve's update-305 point was 4-0; update 325 was 1-3 and is the point that
+   carries the refusal.  The 150-game block confirms the final checkpoint is
+   worse, not that 305 is promotable: 305 must be gated on its own 150 games
+   before any promotion claim.  Both checkpoints are local
+   (`runs/crforge-n4/ck-step-305.pt`, `ck-step-325.pt`).
+
+#### The native block now runs in parallel
+
+`tools/native_analysis/native_block_run.sh` accepts `PORT`, `ENGINE_INDEX` and
+`DEVICE`.  Fifteen ten-game chunks on four 6-vCPU boxes produced 150 games in
+~40 min; the native evaluator remains the gate, and no crforge fast-forward is
+involved.  The account's instance quota is four, so ten clones from the prepared
+snapshot were not creatable; four boxes at 16 workers is the measured shape.
+
+Evidence: `runs/native-n4-gate/block.json`, `runs/native-n4-gate/gate.json`,
+`runs/native-n4-gate/*/*-seeds*/matches.jsonl`,
+`runs/native-n4-c5/curve.json`, `runs/crforge-n4/run.json`.

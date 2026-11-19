@@ -4,7 +4,87 @@
 > [`ROADMAP_CRFORGE.md`](ROADMAP_CRFORGE.md) is the bulk-training plan of record.
 > This file is the next-session starting point.
 
-## Next session (session 53) — the model path resumes here (plan, 2026-11-20)
+> **Upstream 2026-11-19 — read before a training run.**
+> [`docs/upstream-2026-11-19.md`](docs/upstream-2026-11-19.md) collects the
+> actionable items: reward written back on the play action (RoyaleFish
+> `9179bc5`), the brute-force → drill recipe, the held-out-defence release gate,
+> and the crforge 16.635.13 move (rules/data unchanged; **16.635.3 no longer
+> playable after a crforge update**; old-client tag `8be539ea`).
+> **`A-hog26-v738`, `A-hog26-v98` and `B-general-v49` were deleted upstream**;
+> all five weights are backed up in `.resource/upstream-keep/royalefish/models/`
+> with a SHA256 manifest and restore commands. The league runbook below still
+> points at `.resource/RoyaleFish/models/A-hog26-v738.pt` — if that path is
+> missing after a pull, restore it from the keep folder first.
+>
+> **Target is pinned:** Null's Royale stays on client **16.635.1** for the next
+> few months (decision 2026-11-19). Do not start a 16.635.10/13 port or a replay
+> re-capture; the live client range is out of scope.
+
+## Bottom line (2026-11-19, session 53)
+
+The plan executed and the model path is **negative**: the A6000 overlapped loop
+fails its throughput gate, and the 50-update league run is **not promotable** —
+**42–108 (28.0 %, Wilson [21.4, 35.7])** against `B-general-v275`, 0 illegal,
+10 unique `card_still_in_slot` refusals, both seats below 45 %.  The C4 question
+is closed (training stays **serial + `reset`**), the league is wired and trained,
+and C6 has a real 150-game block.
+
+1. **Overlapped loop — FAIL, so no pipeline.**  At 64 lanes the wall is
+   67.2 → 66.4 s but the collector loses to **0.898×**; at 128 lanes the wall is
+   93.4 → 82.6 s (**1.13×**) but the collector loses to **0.868×**.  The gate
+   requires ≥0.9× collection, so both fail.  The arm runs eager fp16 because
+   **full-graph capture is invalidated while the update worker is in flight**
+   (`cudaErrorStreamCaptureInvalidated` on the next new live width); a capture
+   lock or a pre-captured shape set is the fix, not a training-mode change.
+   `speedup_vs_serial_equivalent` (1.16/1.35) is the contended-clock artefact;
+   the honest walls are above.  `FINDINGS.md` §3.92.
+2. **First league run — 50 updates, one process.**  64 lanes × 50 segments × 64
+   decisions = 409,600 lane-decisions; **50 updates / 400 optimizer steps**,
+   50 distinct behaviour ids, **0 stale**, return 0.339 → 0.468, ACT 6.96 %,
+   wall 1,503.6 s, median update 10.25 s.  Its strict counter saw **1 illegal
+   lane-action**, so the producer training gate is false until that edge is
+   attributed.  The learner-only PPO update needed a device fix: the league
+   mask was built on CPU and the first learner-only update indexed CUDA rows
+   with it (`crforge_bridge/rollout.py`,
+   `native_runner/training/v4/distributed_ppo.py`, commit `f275539`).
+   `FINDINGS.md` §3.94.
+3. **C6 — the native block is negative.**  150 paired games, seeds 101–250,
+   both seats, X-Bow vs Hog 2.6 evo config: **42–108**, win rate **0.280
+   [0.214, 0.357]**, seats **22.7 % / 33.3 %**, illegal 0, truncated 0,
+   **rejected 346 window events / 10 unique**, all `card_still_in_slot`, 10
+   games.  Gate: **FAIL** on win rate, Wilson lower bound, seat floor and zero
+   rejected.  The return trace is a value-fit diagnostic, not a score; the
+   crforge league's 46-53 was the honest preview.  `FINDINGS.md` §3.96.
+4. **C5 — four-game points, not a ranking.**  Steps 285/295/305/315/325 were
+   **2/3/4/2/1** wins of 4 (all illegal 0); step 305 was the only 4–0, step 325
+   was 1–3 and carried the refusal.  The 150-game block says the final
+   checkpoint is worse, not that 305 is promotable: **gate 305 on its own 150
+   games** before any claim (`runs/crforge-n4/ck-step-305.pt` is local).
+   `FINDINGS.md` §3.95.
+5. **C2 — the host is no longer the unknown.**  On a fresh affected host
+   (Xeon 2.10 GHz, JDK 21.0.13.1+2) the engine still exits 139 with
+   `segfault at c` and its exact history **1528 → 5296 (C1) → 2848**
+   (`handler_table_offset 2760`, `unstable_if` 1); the phased driver reaches the
+   recompile and compiles **2896**, 0/3 crashes.  An `--phased-n` sweep
+   (48–256) never produces 2848 or a crash.  The gap is the driver's compilation
+   shape, not the host; the engine run remains the report's reproduction.
+   `FINDINGS.md` §3.93.
+6. **The native gate now runs in parallel.**  `native_block_run.sh` takes
+   `PORT` / `ENGINE_INDEX` / `DEVICE`; 15 ten-game chunks on **4 boxes × 4
+   workers** finished 150 games in **~40 min at 77.5 s/game** of throughput
+   (serial would be ~12 h).  The account quota is **4 instances**, so 10+
+   snapshot clones were not creatable; the snapshot `n4-base` is ready if the
+   quota rises.
+
+**Next session:** gate `ck-step-305` on 150 games (and `ck-step-325` only as the
+already-recorded negative).  Fix the two-micro refusal before another gate: the
+crforge producer shifts colliding plays with `plan_window_ticks`, the native
+`PolicySessionV4` path does not, and the gate refuses the second play as
+`card_still_in_slot`.  Do not promote on the return trace.  Still open: the
+capture lock/pre-capture for the overlapped loop, the 1 illegal producer action,
+NVIDIA MPS, the 8-vCPU question, and filing the C2 report.
+
+## Session 53 plan (executed above)
 
 The C2 reproducer is a side thread with its own one-command runbook above. The
 model's next gate is **N4**, and a long run must not start until two things land.
@@ -2040,7 +2120,7 @@ drills/reward mining (hours), then a BC warm-start (2–5k games) **only if** a
 100–200-game native eval of `B-general-v275` on the locked X-Bow deck is **<40 %**;
 always meta/opponent modelling. Mass scraping is not worth it.
 
-### 2026-11-15 — RoyaleFish upstream (`c42108d`; README + media only since `da9c8cf`)
+### 2026-11-15 — RoyaleFish upstream (`c42108d`; README + media only since `da9c8cf`; superseded 2026-11-19 by `9179bc5`, see the top of this file)
 
 - **The November 2026 Hog 2.6 replay set is cancelled at the source.** RoyaleAPI
   closed replay access for everyone on **2026-11-16** (Discord login plus a
@@ -5666,7 +5746,7 @@ Yes — but as a **parity oracle**, not the training engine.
 | Decision-rate reality | native: A51 4×8 @ 5 ticks = **0.26 matches/s** (raw channel); one x86_64 process = **0.61** raw, **0.082** measured *training* floor; learner loop = **0.04–0.05**. crforge: **2.6 / 6.0 / 13.0** matches/s at 1/4/8 threads, 256 lanes, this laptop (2026-11-15 bench); 18.5 / 52.5 on an M4 Pro. Raw ceilings exclude observe + tensorize |
 | **crforge bulk path** | **activated 2026-11-15** — `VectorBattle` is the bulk trainer after C0–C3; the native engine is the gate, the parity oracle and the deploy rig. **C0 closed 2026-11-16 (20/20 clean)**. The 10–30× is conditional on the C3 row build (≤0.5 ms/lane); a per-lane port is ~1.4× |
 | **Learner deck** | **X-Bow 3.0, locked 2026-11-15** — `x-bow · tesla-ev1 · archers-ev1 · knight-hero · skeletons · electro-spirit · fireball · the-log`, Princess tower `159000000`. All cards/forms pass the 16.635 + crforge catalog check; **rollout-clean 2026-11-17** (2/2 games, `illegal 0`, `rejected 0`) after the Knight-hero global-id fix. Deck constants live in `tools/crforge/bridge_session.py` |
-| **Substrate pins** | Clashback `002aa8c` / libg `c4721bd9…` (build `160635001`, local use only) = **the gate**; RoyaleFish `c42108d` (README-only since `da9c8cf`) = catalogs + `B-general-v275`/`A-hog26-v738` + `ever_*` (C4 recipe); crforge tables 16.635.8 + data lock. Record all four in every checkpoint artifact |
+| **Substrate pins** | Clashback `002aa8c` / libg `c4721bd9…` (build `160635001`, local use only) = **the gate**; RoyaleFish `9179bc5` (README-only since `da9c8cf`; models backed up in `.resource/upstream-keep/`) = catalogs + `B-general-v275`/`A-hog26-v738` + `ever_*` (C4 recipe); crforge tables 16.635.8 + data lock. Record all four in every checkpoint artifact |
 | Training observation | **lean — done (§3.43)** — non-validating `construct_contract` + `lean_contracts()` scope under `policy_features_only`, no provenance/freeze/validation, cached hand contract and form aliases, `(identity, lean)`-keyed observation caches. Paired A/B: **11.75 → 7.81 CPU ms/packet**, **78 → 113 lane-packets/s** on one x86 engine; 8 lanes 10.6/12.5 → 8.2/9.4 ms. Validated path and parity unchanged |
 | Loop pipelining | **done, CPU-verified** — one `ppo-inference` thread, one batch in flight, receives staged during the forward (§3.41). Non-model wall −14 % with a cheap forward, neutral with the 17.5M model (forward = 98 % of wall). 10/10 segments clean. CUDA path unverified until a GPU run |
 | Training-floor gates | **superseded by §3.43** — the remaining packet is ~3 ms native round trip + rich binding + placement, not observation contracts. The 0.45/2.5 gates assumed raw-channel ceilings that skip ~90 % of a real packet (§3.41); the observation half of that gap is now closed |
@@ -6574,7 +6654,8 @@ Scale options, in order of leverage:
 | `docs/native/PHASE2_BOTTLENECK.md` | cr-native throughput evidence |
 | `.resource/CRkonwledagebase/` | Ecosystem index (58 projects, R0–R4 evidence) |
 | `.resource/Clashback/` | **Gate substrate** (commit `002aa8c`): `game/engine/libg.so` (build `160635001`, sha `c4721bd9…`), `vendor/crx` ELF loader, `neo_replay` tick cache/snapshots. License unknown — **local use only, never commit or redistribute**. **Upstream unreachable since 2026-11-15 (404); this checkout is the only copy** |
-| `.resource/RoyaleFish/` | Apache-2.0 (commit `c42108d`; README-only since `da9c8cf`): `data_16635/` (adopted), `B-general-v275` / `A-hog26-v738` (league seed + gate opponents), `royalefish/ever_*` (**C4 throughput recipe**), patches (reference only) |
+| `.resource/RoyaleFish/` | Apache-2.0 (commit `9179bc5`; README + media only since `da9c8cf`): `data_16635/` (adopted), `B-general-v275` / `A-hog26-v738` (league seed + gate opponents), `royalefish/ever_*` (**C4 throughput recipe**), patches (reference only). **Upstream deleted v738/v98/v49 on 2026-11-19; all five models are in `.resource/upstream-keep/`** |
+| `.resource/upstream-keep/` | Provenance-pinned backup outside the resource checkouts: all RoyaleFish models, media, the new README, and the crforge PPO example/compatibility snapshots. `SHA256SUMS.txt` + `README.md` (restore commands) |
 | `.resource/FirstLight-Zero/` | X-Bow 3.0 self-play checkpoints (15.535.13) |
 | `.resource/daybreak-cr/` | IL→PPO→live-Null's pipeline with league/bc recipe |
 | `runs/deck-pool.json` | 7,089 decks / 443,381 uses (111 X-Bow) |

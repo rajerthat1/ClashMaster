@@ -161,6 +161,13 @@ A51's 12–14 matches/s figure is a 600-tick transport ceiling, not a training
 rate (at the PPO 5-tick cadence it is 0.26). **N4 is the next gate**, and its
 first requirement is the C1 encoder measurement, not a GPU rental.
 
+**N4 status 2026-11-19:** the first 50-update league run is **negative** — 150
+paired native games vs `B-general-v275`, both seats on the X-Bow vs Hog 2.6
+config: **42–108 (28.0 %, Wilson [21.4, 35.7])**, seats 22.7 % / 33.3 %, 0
+illegal, 10 unique `card_still_in_slot` refusals.  The final checkpoint is not
+promotable; the C5 point at update 305 (4–0 of 4) is the next candidate to gate
+on 150 games, not a promotion.  See `HANDOFF.md` and `FINDINGS.md` §3.96.
+
 Compute decision (2026-11-15, supersedes the 2026-11-14 rental): **1× RTX A6000
 @ $0.35/h, `--gpus 1`, rented only for C4/C5 and promotion runs.** At 0.04
 matches/s the card idled at 4 %; at crforge's vectorized rate it is the
@@ -292,29 +299,35 @@ become a training data path; the gate is `libg.so` + our probe + our
 `BattleEnvV1`, not Clashback's observation schema.
 
 **RoyaleFish** (`github.com/fabiospalla9-tech/RoyaleFish`, Apache-2.0, commit
-`c42108d`; 501 MB):
+`9179bc5`, upstream 2026-11-19, not yet pulled; README + media only since `da9c8cf`; 501 MB):
 
 | Piece | Role |
 | --- | --- |
 | `data_16635/` | **Already adopted** as `native_runner/data/competitive-16.635/` (verified release, all 5 catalog ids match `B-general-v275`). |
-| `models/B-general-v275.pt`, `A-hog26-v738.pt` | **The league seed and the gate's reference opponents.** v275 = 17.5M generalist; v738 = 71.9 % ±2.6 over 1,147 games. The 15.535 v49/v98 pair stays as legacy references. |
+| `models/B-general-v275.pt`, `A-hog26-v738.pt` | **The league seed and the gate's reference opponents.** v275 = 17.5M generalist; v738 = 71.9 % ±2.6 over 1,147 games. The 15.535 v49/v98 pair stays as legacy references. **Upstream `9179bc5` deleted v738, v98 and v49; all five are backed up in `.resource/upstream-keep/royalefish/models/` and must be restored there after a pull past `9179bc5`.** |
 | `royalefish/ever_{server,collector,learner,loader,packed,node_fork}.py`, `net.py`, `reward.py` | **C4's throughput recipe.** The **inference port** is four tricks: fp16 + fp32 action equality, CUDA graphs at several batch sizes, one GPU-side LSTM state table, layout/pack once. **Ported and measured (session 36):** `crforge_bridge/fast_forward.py`; forward 182 → 133 ms on the A6000, but the partial graph does not pay and six producers gain only 3 % ($77.5/1M) — the CPU half is the gate. The server's TCP/pickle wire protocol (`net.py`) is **discarded** — crforge is in-process. Sparse trajectories, row-packed updates and the loader process are the separate training-side items. `ms.inference_ms` 157 → 21.5 ms is the forward target for ~$20/1M **physical** at $0.35/h; the ~490 ms CPU half is a separate gate (`ROADMAP_CRFORGE.md` §4). |
 | `patches/native_runner_16635.diff`, `probe_x86_64_16635.diff` | **Reference only.** Different base tree; our catalogs are a first-class release and our x86 probe is already ported. Do not apply as-is. |
 | `logical_{funcs,offsets,vtables}.inc` | **Already used** for the relocation cross-check (0 AMBIGUOUS, §3.33). Keep for re-checks on a version bump. |
 
-**Upstream watch (pulled 2026-11-15, `c42108d`; README + media only since `da9c8cf`):**
+**Upstream watch (upstream 2026-11-19, `9179bc5`; README + media only since `da9c8cf`; details in [`docs/upstream-2026-11-19.md`](docs/upstream-2026-11-19.md)):**
 
+- **Write a delayed reward back on the action, not at its outcome.** v1881's post-mortem: a Cannon's usefulness is known only when it disappears (~120 decisions later), so the reward now lands on the play move — **+1.5** if a win condition enters its range, **−1.5** if wasted. Wasted Cannons **~5 → ~1/game**, Hogs **0.9 → 3.8/game**, win rate vs B **12 % → 42 %**. Directly targets our reward-share finding (observed reward is 0.2–0.8 % of a return; `FINDINGS.md` §3.67). Prefer this over raising a potential weight.
+- **Brute-force the mechanic, then train a drill.** 88,000 Ice Golem + Skeletons placements against a lone Hog: ~0.3 % stop it at zero damage, 213/213 re-tested 10/10; then A trained on a one-Hog / two-card drill and found the block itself. **The engine is not mirror-symmetric** — the right-bridge block does not transfer left. Use this shape for X-Bow defence work.
+- **Held-out defence is the release gate.** Their next A improved wasted Cannons, Hog pressure and the B win rate, but held-out ghost defence fell to 0.67–0.68 against v1881's 0.75, so it was **not released**. Copy the discipline, and the per-game counters (wasted buildings, buildings used on a win condition, win-condition commits, Fireball elixir trade).
+- **Frozen weights are backed up.** `9179bc5` deletes `A-hog26-v738`, `A-hog26-v98` and `B-general-v49`; all five models plus the new media and README are in `.resource/upstream-keep/` (manifest + restore in its `README.md`). Restore the three before a league run after any pull past `9179bc5`.
 - **The November 2026 Hog 2.6 replay set is cancelled at the source.** RoyaleAPI closed replay access for everyone on **2026-11-16** (Discord login plus a hand-reviewed request form, no stated turnaround). RoyaleFish's collector stopped at a few hundred games; the Hugging Face upload is **postponed with no date**. Treat the set as unavailable — no tier-2 Hog IL anchor and no meta snapshot from it, and an X-Bow collector hits the same wall. The local 252k corpus is unaffected.
 - **A v1881 learned defense from real human attacks.** 52,632 human attacks replayed card-for-card as "ghosts", four attempts each, rewarded for beating its own earlier attempts; 2,666 ghosts held out. On those unseen attacks: defense score 0.53 → **0.75**, princess towers lost per game 0.47 → **0.25**, fully clean defenses 11 % → **19 %**; ~1,900 updates and 99 % of the 17.5M weights changed. Open: it under-attacks and rarely commits the Hog, and its Fireball leads moving troops. **The checkpoint is not uploaded yet.** A template for the Hog opponent, not a change to the X-Bow learner.
-- **Model conversion script (15.535 → 16.635) is coming.** It remaps **card rows
+- **Model conversion script (15.535 → 16.635) is still not shipped.** It remaps **card rows
   for the same architecture**, so it helps older V4-family checkpoints (FirstLight
   CR, community V4 models), **not** FirstLight-Zero's X-Bow 3.0 — that is a
   1.17M, mirror-only model with its own architecture, so it stays a reference /
   possible opponent, not a V4 init. Verify forms and a native parity sample before
   trusting any conversion.
 - **The league is no longer frozen.** RoyaleFish now trains A against a generalist B that **keeps learning**, plus older versions, mirror games, focus decks picked from the cards A loses to, and drills from real mistakes. A frozen opponent can be memorized; adopt this shape for X-Bow (co-trained or periodically refreshed generalist, 10 % mirror, hard-deck focus).
-- **New models (not X-Bow):** A v1290 (Hog 2.6) uploading soon; **Frost** (Knight-EV1 / Hero Ice Wizard / Tesla-EV1 / Bats / Minion Giant / Skeletons / Barbarian Barrel / Fireball) in 1–2 days; an anti-2.6 model at ~81 %. Use them as league opponents and as the strength bar. `Blade` is no longer mentioned in their notes.
+- **New models (not X-Bow):** **A v1881** is out (ghost-trained defender); the next A targets held-out defence back to 0.72–0.75, Fireball discipline, more Hog pressure, and a frame-tight Skeletons + Ice Spirit defence found by brute force. An anti-2.6 model reached ~81 %. Use them as league opponents and as the strength bar. `Blade` is no longer mentioned.
 - **Throughput validation:** ~2,500–3,000 complete games/h on an RTX 5060 Ti + V100, ~55k decisions from ~64 games per update, 70–90 s/update; **NVIDIA MPS** nearly doubled games/h. That is the `ever_*` recipe working; make MPS part of C4.
+
+**crforge upstream (2026-11-19, `dff6d68a`; not yet pulled).** The game stopped accepting clients 16.635.1–16.635.9 between 2026-11-18 09:07 UTC and 2026-11-19 06:03 UTC; crforge moved its reference client to **16.635.13**. No new data version (still 16.635.8) and the rules are identical — 16.635.13 plays the 16.635.8 reference battles tick for tick and reads the same replay fields. **The native 16.635.1 gate and new replay capture are therefore unchanged.** **Null's stays on 16.635.1 for the next few months (decision 2026-11-19), so the live client range is informational only — no port, no re-capture.** In the checkout, 16.635.3 leaves the playable range (`BattleWorld.requireModelled` throws); the old behaviour is the tag `v16.635.1-range-16.635.1-16.635.9` = `8be539ea`. The new `python/examples/ppo.py` is an independent PPO reference (seat swap, truncation bootstrap, GAE); it reaches 1.00 vs random and **0/32 vs `ScriptedBot`**, which confirms random-opponent win rates are not a gate. Snapshot: `.resource/upstream-keep/crforge/`.
 
 What RoyaleFish does **not** give us: a crforge adapter, a gate waiver, or
 permission to use 15.535 weights as 16.635 weights. It is a data/recipe/opponent
@@ -733,7 +746,9 @@ Full table with effort and step mapping: `HANDOFF.md` → "Adopt from the field"
 | 16.635 catalogs, model config | RoyaleFish `data_16635/`, `native_runner_16635.diff` | data + patch | Apache-2.0 | **done** — adopted as `native_runner/data/competitive-16.635/` |
 | x86_64 16.635.1 engine | RoyaleFish `probe_x86_64_16635.diff` + Clashback `game/engine/libg.so` + `vendor/crx` | probe port + ELF loader (game binary local-only) | Apache-2.0 / unknown | **the gate**; pin `c4721bd9…`, build `160635001` |
 | Missing anchors | RoyaleFish `logical_*.inc` | second relocation table | Apache-2.0 | **done** — 0 AMBIGUOUS (§3.33) |
-| 16.635 baselines | `B-general-v275`, `A-hog26-v738` | eval opponents + starting point | Apache-2.0 | **the league seed and the gate's reference opponents** |
+| 16.635 baselines | `B-general-v275`, `A-hog26-v738` | eval opponents + starting point | Apache-2.0 | **the league seed and the gate's reference opponents** — upstream deleted v738 on 2026-11-19; use `.resource/upstream-keep/royalefish/models/` |
+| Delayed-credit reward | RoyaleFish README `9179bc5` | write a Cannon/Fireball reward back **on the play action** (+1.5 in range / −1.5 wasted) instead of at the outcome | method | reward-share fix for 0.2–0.8 % (§3.67); not applied |
+| Defence drills | RoyaleFish README `9179bc5` | brute-force placements against one threat → keep the zero-damage set → train a restricted-hand drill; engine is **not mirror-symmetric** | method | X-Bow specialist / defence work; not applied |
 | Training throughput | RoyaleFish `ever_server/collector/learner/packed/loader` | inference: fp16+action equality, multi-size CUDA graphs, LSTM state table, layout/pack once; training: sparse + row-packed updates, loader | Apache-2.0 | **C4 deliverable** — forward port in-process; wire protocol discarded; CPU half is a separate gate |
 | Bulk backend | crforge `python/` | `VectorBattle` (needs V4 adapter) | Apache-2.0 | **C0–C4, plan of record** |
 | Snapshots / lookahead | Clashback `neo_replay/native_snapshots.py` | per-tick encode/load for search | unknown → local use only | optional; parity/replay lab only |

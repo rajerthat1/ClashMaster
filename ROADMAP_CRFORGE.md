@@ -205,12 +205,27 @@ different game. Record the value in the run artifact and add a test where possib
 | Dependency | Pin | Used for | Not used for |
 | --- | --- | --- | --- |
 | **Clashback** `game/engine/libg.so` + `vendor/crx` | `002aa8c`, libg `c4721bd9…`, build `160635001` | the **native gate** (`crx_engine_host.py`), replay/parity traces via `neo_replay` | bulk collection; it is a local-use-only game binary, never redistributed. **Upstream is unreachable as of 2026-11-15 (404: deleted or made private) — the local checkout is the only copy. Back it up; never `git clean`, re-clone or re-point it** |
-| **RoyaleFish** `data_16635/` | `c42108d` (README-only since `da9c8cf`) | already adopted as the verified 16.635 catalog release | a second rules implementation |
-| **RoyaleFish** `B-general-v275`, `A-hog26-v738` | `c42108d` (README-only since `da9c8cf`) | league seed, gate reference opponents, `A-hog26` as the strength bar (71.9 % ±2.6 / 1,147 games) | init weights for a 15.535 checkpoint |
-| **RoyaleFish** `ever_*` | `c42108d` (README-only since `da9c8cf`) | **C4 throughput recipe**: fp16 + action equality, multi-size CUDA graphs, central LSTM state table, sparse/row-packed updates, loader process, **NVIDIA MPS**; ~2.5–3k games/h on a 5060 Ti + V100 | anything before C4; the adapter gates come first |
-| **RoyaleFish** patches | `c42108d` (README-only since `da9c8cf`) | reference diff only | applying as-is (different base tree) |
+| **RoyaleFish** `data_16635/` | `9179bc5` (README-only since `da9c8cf`; upstream 2026-11-19, not yet pulled) | already adopted as the verified 16.635 catalog release | a second rules implementation |
+| **RoyaleFish** `B-general-v275`, `A-hog26-v738` | `9179bc5` (README-only since `da9c8cf`; upstream 2026-11-19, not yet pulled) | league seed, gate reference opponents, `A-hog26` as the strength bar (71.9 % ±2.6 / 1,147 games) | init weights for a 15.535 checkpoint |
+| **RoyaleFish** `ever_*` | `9179bc5` (README-only since `da9c8cf`; upstream 2026-11-19, not yet pulled) | **C4 throughput recipe**: fp16 + action equality, multi-size CUDA graphs, central LSTM state table, sparse/row-packed updates, loader process, **NVIDIA MPS**; ~2.5–3k games/h on a 5060 Ti + V100 | anything before C4; the adapter gates come first |
+| **RoyaleFish** patches | `9179bc5` (README-only since `da9c8cf`; upstream 2026-11-19, not yet pulled) | reference diff only | applying as-is (different base tree) |
 | **RoyaleFish** Hog 2.6 replay set (HF) | **cancelled 2026-11-16** | nothing — RoyaleAPI closed replay access, the collector stopped at a few hundred games, upload postponed with no date | the Hog IL anchor and the meta snapshot |
-| **RoyaleFish** 15.535→16.635 converter | announced 2026-11-15 | remap card rows for **same-architecture** V4 checkpoints | FirstLight-Zero's 1.17M mirror model (different architecture) |
+| **RoyaleFish** 15.535→16.635 converter | announced 2026-11-15, still not shipped | remap card rows for **same-architecture** V4 checkpoints | FirstLight-Zero's 1.17M mirror model (different architecture) |
+| **RoyaleFish** models backup | `.resource/upstream-keep/royalefish/models/` (manifest + SHA256 in that folder) | all five `.pt` files; upstream `9179bc5` deleted `A-hog26-v738`, `A-hog26-v98`, `B-general-v49` | treating them as anything but the roles above |
+| **crforge** 16.635.13 move | `13462718`, 2026-11-19 | reference client moved from 16.635.1; **rules and data unchanged** (still 16.635.8, same replay fields) | a native engine port; re-collecting replays for version reasons |
+| **crforge** minimal PPO example | `python/examples/ppo.py` at `7269b332`; snapshot in `.resource/upstream-keep/crforge/` | an independent reference for seat swap, truncation bootstrap and GAE; measured 1.00 vs random and **0/32 vs `ScriptedBot`** | replacing the V4 trainer; ranking a run on a random-opponent win rate |
+| **RoyaleFish** delayed-credit reward | README `9179bc5` | write a delayed outcome (Cannon/Fireball) back **on the play action**, not when it resolves | a patch to drop in; it is a reward-design change for the next reward work |
+
+**Client range moved 2026-11-19.** The game stopped accepting clients
+16.635.1–16.635.9 between 2026-11-18 09:07 UTC and 2026-11-19 06:03 UTC; the
+minimum is now 16.635.10. crforge follows 16.635.13, but **no data version and no
+battle rule changed** — it plays the 16.635.8 reference battles tick for tick and
+reads the same replay fields, so the native 16.635.1 gate and new replay capture
+stay valid. The one operational change: **16.635.3 leaves the playable range**
+(`BattleWorld.requireModelled` throws). Our bridge defaults to **16.635.8**
+(`crforge_bridge/jvm.py`), so the bulk path is safe; a `.3` reproduction must use
+the tag `v16.635.1-range-16.635.1-16.635.9` = `8be539ea`, not the moving checkout.
+Details: [`docs/upstream-2026-11-19.md`](docs/upstream-2026-11-19.md).
 
 Record both commits in every checkpoint/run artifact. If either repo moves, fork
 and pin; do not float.
@@ -712,6 +727,35 @@ affected host makes the report self-contained.  The producer-padding question is
 `FINDINGS.md` §3.91).  Still open: NVIDIA MPS, the 8-vCPU question, the A6000
 overlapped-loop gate, and filing the report.
 See `FINDINGS.md` §3.82–§3.91.
+
+**Status (2026-11-19, session 53).**  The A6000 overlapped-loop gate is measured
+and **fails**: at 64 lanes the wall is 67.2 → 66.4 s but the collector loses
+0.898× of its rate; at 128 lanes the wall is 93.4 → 82.6 s and the collector
+loses 0.868×.  The arm uses the eager fp16 forward because a full-graph capture
+first seen mid-run is invalidated while the update worker is in flight (one graph
+per live width; a capture needs the device), so training stays **serial +
+`reset`**.  The first league run (64 lanes × 50 segments × 64 decisions,
+`B-general-v275` and `A-hog26-v738` on the Hog 2.6 deck) closed **50 updates /
+400 optimizer steps, 0 stale, return 0.339 → 0.468**; its strict counter records
+**1 illegal lane-action in 409,600**, so the producer training gate is false
+until that edge is found.  The league path also needed a device fix: the
+trainer-only `valid_mask` was built on CPU and the first learner-only PPO update
+indexed CUDA rows with it (`crforge_bridge/rollout.py`,
+`native_runner/training/v4/distributed_ppo.py`).  The phased C2 probe on the
+affected host reaches the recompile and still compiles **2896**, not the engine's
+**2848** (`FINDINGS.md` §3.92–§3.93).
+
+**The first C6 block is negative (2026-11-19).**  150 paired games, seeds
+101–250, both seats, X-Bow vs Hog 2.6 evo: **42–108, 28.0 % [21.4, 35.7]**,
+seats **22.7 % / 33.3 %**, illegal 0, truncated 0, **rejected 346 window events /
+10 unique**, all `card_still_in_slot` → **FAIL** on win rate, Wilson bound, seat
+floor and zero rejected.  C5 (4 games/point) was 2/3/4/2/1 wins for steps
+285/295/305/315/325; 305 was the only 4–0 and 325 the 1–3 point that carried the
+refusal.  The next gate is **305 on 150 games**; 325 is not promotable.  The
+refusal is the native two-micro collision: the producer's `plan_window_ticks`
+shifts it, the native `PolicySessionV4` path does not (`FINDINGS.md` §3.94–§3.96).
+The native block now runs in parallel (`PORT`/`ENGINE_INDEX`, 15 chunks on four
+boxes, 150 games in ~40 min); the org quota is four instances.
 
 ---
 
