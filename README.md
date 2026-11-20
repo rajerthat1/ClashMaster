@@ -1,9 +1,6 @@
 # ClashMaster
 
-ClashMaster is an offline Clash Royale AI research workspace, forked from
-[FirstLight CR](https://github.com/Jaasssoooonnnnn/FirstLight_CR). It runs
-Null's Royale without Supercell servers, exposes the battle as a Python
-environment, and trains and evaluates V4 actor-critic agents. The primary
+ClashMaster is a Clash Royale AI research workspace, that runs environment, and trains and evaluates V4 actor-critic agents. The primary
 research target is **16.635.1**; the build script defaults to the pinned
 **15.535.13** engine.
 
@@ -97,6 +94,4 @@ See the [policy service protocol](docs/policy_service.md).
 
 ## License
 
-ClashMaster is released under the [MIT License](LICENSE). It builds on FirstLight
-CR, which is Apache-2.0; the upstream copyright notice and attribution are
-preserved in this repository's history.
+ClashMaster is released under the [MIT License](LICENSE).
