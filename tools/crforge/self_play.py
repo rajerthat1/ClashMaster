@@ -32,6 +32,16 @@ sampled action, the behaviour log-probability and value, the native-shape
 reward, and the episode boundary.  ``--no-rollout`` runs the throughput probe
 without retaining tensors.
 
+An illegal action is **named**, not only counted.  The engine's per-seat header
+carries the episode's cumulative ``illegal`` count, ``last_refusal`` and
+``last_run_refusal``; the producer diffs it after every engine tick
+(``crforge_bridge.illegal_actions``) and writes up to eight
+``illegal_attribution.examples`` naming the segment, decision, window tick,
+lane, seat, engine action, micro-action step, hand slot, seat/game cell,
+candidate card, and both refusal codes.  A lane autoreset drops the counter and
+is not a refusal.  ``illegal_peak`` stays for the artifacts recorded before the
+attribution existed; the gate's ``rejected`` is the attributed count.
+
 The reward is ``BattleEnvV1._rewards`` rebuilt from the facts layer
 (``crforge_bridge.rollout``): the engine's terminal result plus potential-based
 shaping over crowns and tower damage.  A time-limit cut stores a zero shaping
@@ -106,6 +116,7 @@ import torch
 from crforge_bridge.catalog import TOWER_SELECTIONS, Catalog
 from crforge_bridge.decision_server import DecisionClient
 from crforge_bridge.fast_forward import DEFAULT_TOLERANCE, FastForwardV4
+from crforge_bridge.illegal_actions import IllegalActionTrace
 from crforge_bridge.jvm import DEFAULT_INSTALL, DEFAULT_TABLES
 from crforge_bridge.jvm import start as start_jvm
 from crforge_bridge.league import CrforgeOpponentLeague, OpponentDeck, OpponentPlan
@@ -1082,6 +1093,18 @@ def main(argv: list[str] | None = None) -> int:
     for item in rows.values():
         item.reset(batch)
     decoders = {seat: VectorActionDecoder(rows[seat].tensorizer, schema=vector.schema) for seat in seats}
+    # Illegal actions are attributed, not just counted: the engine's per-seat
+    # header carries the episode's cumulative illegal count plus the last
+    # refusal code, so a difference over one engine tick names the lane, seat,
+    # tick, card and reason (``crforge_bridge.illegal_actions``).  The trace is
+    # bounded to eight examples per run; ``illegal_peak`` stays beside it for
+    # the artifacts recorded before the attribution existed.
+    illegal_trace = IllegalActionTrace(
+        cols=int(config.board_width),
+        rows=int(config.board_height),
+        refusals=encoder.schema.refusals,
+    )
+    header_index = encoder.schema.header
 
     segment_opponent = None
     opponent_policy = None
@@ -1346,6 +1369,7 @@ def main(argv: list[str] | None = None) -> int:
         "forced_second_micro_actions": 0,
         "resets": 0,
         "illegal_peak": 0,
+        "illegal_actions": 0,
     }
     timing: dict[str, list[float]] = {
         "tensorize_ms": [],
@@ -1439,10 +1463,12 @@ def main(argv: list[str] | None = None) -> int:
                 "shifted_micro_actions": 0,
                 "dropped_micro_actions": 0,
                 "forced_second_micro_actions": 0,
+                "illegal_actions": 0,
             }
             samples: dict[str, list[float]] = {name: [] for name in timing}
             cpu_samples: dict[str, list[float]] = {name: [] for name in cpu_half}
             illegal_peak = 0
+            illegal_events: list[dict[str, Any]] = []
             rollout_store = None
             segment_policy_state_id = None
             boundary_wall = 0.0
@@ -1578,6 +1604,7 @@ def main(argv: list[str] | None = None) -> int:
                 inference_done = time.perf_counter()
 
                 plans = {}
+                seat_tables: dict[int, Any] = {}
                 eligible = np.zeros((args.count,), dtype=np.int64)
                 acted = np.zeros((args.count,), dtype=np.int64)
                 intra = {}
@@ -1595,6 +1622,7 @@ def main(argv: list[str] | None = None) -> int:
                         # duplicate probe and the previous-action record all read
                         # the same rows, and on a GPU each conversion copies.
                         tables = candidate_tables(candidates)
+                        seat_tables[seat] = tables
                         if forced_mode != "off":
                             # Decode the sample first: the duplicate is built from
                             # the action the policy actually chose.
@@ -1649,19 +1677,49 @@ def main(argv: list[str] | None = None) -> int:
                 terminated_lanes = np.zeros(args.count, dtype=bool)
                 truncated_lanes = np.zeros(args.count, dtype=bool)
                 terminal_reward = np.zeros((args.count, 2), dtype=np.float32)
+                # The baseline the first tick's illegal counters are compared
+                # with.  A lane that autoreset inside the window drops to zero;
+                # a drop is not a refusal and the trace ignores it.
+                illegal_trace.start(vector.observations[:, :, header_index["illegal"][0]])
+                given = {seat: np.zeros(args.count, dtype=np.int32) for seat in seats}
+                given_step = {seat: np.full(args.count, -1, dtype=np.int32) for seat in seats}
                 for tick in range(window):
                     actions = np.zeros((args.count, 2), dtype=np.int32)
                     for seat in seats:
+                        given[seat].fill(0)
+                        given_step[seat].fill(-1)
                         for step in range(int(intra[seat].shape[1])):
                             due = intra[seat][:, step] == tick
                             if due.any():
                                 actions[due, seat] = plans[seat].actions[due, step]
+                                given[seat][due] = plans[seat].actions[due, step]
+                                given_step[seat][due] = step
                     # A lane that already restarted this window is a new episode
                     # now: the actions decoded for the old one must not be sent
                     # into it.
                     if reset_mask.any():
                         actions[reset_mask] = 0
+                        for seat in seats:
+                            given[seat][reset_mask] = 0
+                            given_step[seat][reset_mask] = -1
                     vector.step(actions)
+                    observations = vector.observations
+                    refused_now = illegal_trace.observe(
+                        segment=segment,
+                        decision=decision,
+                        window_tick=tick,
+                        counters=observations[:, :, header_index["illegal"][0]],
+                        refusal_codes=observations[:, :, header_index["last_refusal"][0]],
+                        run_refusal_codes=observations[:, :, header_index["last_run_refusal"][0]],
+                        given=given,
+                        given_step=given_step,
+                        plans=plans,
+                        tables=seat_tables,
+                    )
+                    room = max(0, int(illegal_trace.limit) - len(illegal_events))
+                    if room:
+                        illegal_events.extend(refused_now[:room])
+                    counts["illegal_actions"] += sum(int(event["refused"]) for event in refused_now)
                     reset_mask |= vector.infos[:, info["reset"]].astype(bool)
                     done_now = vector.dones.astype(bool)
                     if done_now.any():
@@ -1878,6 +1936,8 @@ def main(argv: list[str] | None = None) -> int:
                 "forced_second_micro_actions": counts["forced_second_micro_actions"],
                 "resets": counts["resets"],
                 "illegal_peak": illegal_peak,
+                "illegal_actions": counts["illegal_actions"],
+                "illegal_examples": illegal_events,
                 "rollout": segment_rollout,
                 "updates": segment_updates,
                 **buckets,
@@ -1966,7 +2026,7 @@ def main(argv: list[str] | None = None) -> int:
         collection_wall_total = sum(item["collection_wall_s"] for item in segments)
         eligible_total = totals["eligible_lane_decisions"]
         act_rate = totals["act_lane_decisions"] / eligible_total if eligible_total else 0.0
-        rejected = totals["illegal_peak"] + sum(fault_delta.values())
+        rejected = totals["illegal_actions"] + sum(fault_delta.values())
         rollout_segments = [item["rollout"] for item in segments if item["rollout"] is not None]
         rollout_finite = all(bool(item["finite"]) for item in rollout_segments) if rollout_segments else True
         rollout_totals = {
@@ -2277,6 +2337,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             "gate": {
                 "rejected": rejected,
+                "illegal_actions": totals["illegal_actions"],
                 "illegal_peak": totals["illegal_peak"],
                 "fault_delta": fault_delta,
                 "eligible_act_rate": act_rate,
@@ -2329,6 +2390,16 @@ def main(argv: list[str] | None = None) -> int:
                 # What the learner would consume: one transition per actor row.
                 "policy_rows_per_s": (
                     totals["decisions"] * args.count * len(seats) / wall_total if wall_total else 0.0
+                ),
+            },
+            "illegal_attribution": {
+                "count": totals["illegal_actions"],
+                "examples": illegal_trace.examples,
+                "method": (
+                    "the engine's per-seat header (illegal cumulative, last_refusal, "
+                    "last_run_refusal) is diffed after every engine tick and bound to the "
+                    "engine action and micro-action step given that tick; a lane autoreset "
+                    "drops the counter and is not a refusal"
                 ),
             },
             "segments": segments,
