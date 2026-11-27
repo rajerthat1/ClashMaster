@@ -1,0 +1,484 @@
+f636a96 refs/heads/main@{2026-11-23 12:43:21 -0800}: commit: feat(crforge): name the lane, seat and card behind an illegal action
+f636a96 HEAD@{2026-11-23 12:43:21 -0800}: commit: feat(crforge): name the lane, seat and card behind an illegal action
+e9f401c refs/remotes/origin/main@{2026-11-19 17:00:25 -0800}: update by push
+e9f401c refs/heads/main@{2026-11-19 17:00:20 -0800}: commit: update
+e9f401c HEAD@{2026-11-19 17:00:20 -0800}: commit: update
+5be13cb refs/remotes/origin/main@{2026-11-19 15:32:39 -0800}: update by push
+5be13cb refs/heads/main@{2026-11-19 15:32:35 -0800}: commit: chore(repo): revamp docs and remove planning clutter
+5be13cb HEAD@{2026-11-19 15:32:35 -0800}: commit: chore(repo): revamp docs and remove planning clutter
+2ea1958 refs/heads/main@{2026-11-19 12:57:02 -0800}: commit: fix(native): space colliding micro-actions in the evaluator
+2ea1958 HEAD@{2026-11-19 12:57:02 -0800}: commit: fix(native): space colliding micro-actions in the evaluator
+40e7581 refs/heads/main@{2026-11-19 12:30:33 -0800}: commit: docs: drop the deleted snapshot from the handoff
+40e7581 HEAD@{2026-11-19 12:30:33 -0800}: commit: docs: drop the deleted snapshot from the handoff
+95a2a0e refs/heads/main@{2026-11-19 12:30:03 -0800}: commit: docs: record the session-53 overlap, league, and negative N4 gate
+498df51 refs/heads/main@{2026-11-19 12:30:03 -0800}: commit: feat(native): let native block runners take a port and device
+95a2a0e HEAD@{2026-11-19 12:30:03 -0800}: commit: docs: record the session-53 overlap, league, and negative N4 gate
+498df51 HEAD@{2026-11-19 12:30:03 -0800}: commit: feat(native): let native block runners take a port and device
+f275539 refs/heads/main@{2026-11-19 10:33:26 -0800}: commit: fix(crforge): keep the league rollout mask on the data device
+f275539 HEAD@{2026-11-19 10:33:26 -0800}: commit: fix(crforge): keep the league rollout mask on the data device
+1a5899f refs/remotes/origin/main@{2026-11-19 09:44:49 -0800}: update by push
+1a5899f refs/heads/main@{2026-11-19 09:44:47 -0800}: commit: feat(native): gate a match block on the N4 promotion criteria
+1a5899f HEAD@{2026-11-19 09:44:47 -0800}: commit: feat(native): gate a match block on the N4 promotion criteria
+f2094df refs/remotes/origin/main@{2026-11-19 09:43:37 -0800}: update by push
+f2094df refs/heads/main@{2026-11-19 09:43:35 -0800}: commit: feat(native): add the form-faithful A-hog26 gate config
+f2094df HEAD@{2026-11-19 09:43:35 -0800}: commit: feat(native): add the form-faithful A-hog26 gate config
+0ae63fd refs/remotes/origin/main@{2026-11-19 09:41:57 -0800}: update by push
+0ae63fd refs/heads/main@{2026-11-19 09:41:56 -0800}: commit: docs: record the first league run and the C5/C6 commands
+0ae63fd HEAD@{2026-11-19 09:41:56 -0800}: commit: docs: record the first league run and the C5/C6 commands
+ab633ee refs/remotes/origin/main@{2026-11-19 09:41:29 -0800}: update by push
+ab633ee refs/heads/main@{2026-11-19 09:41:28 -0800}: commit: test(crforge): pin the shared-deck league rule
+ab633ee HEAD@{2026-11-19 09:41:28 -0800}: commit: test(crforge): pin the shared-deck league rule
+17733e6 refs/remotes/origin/main@{2026-11-19 09:35:07 -0800}: update by push
+17733e6 refs/heads/main@{2026-11-19 09:35:05 -0800}: commit: feat(crforge): per-opponent decks and a fast league opponent
+17733e6 HEAD@{2026-11-19 09:35:05 -0800}: commit: feat(crforge): per-opponent decks and a fast league opponent
+afb65ca refs/remotes/origin/main@{2026-11-19 09:27:35 -0800}: update by push
+afb65ca refs/heads/main@{2026-11-19 09:27:33 -0800}: commit: feat(crforge): wire the opponent league into the producer
+afb65ca HEAD@{2026-11-19 09:27:33 -0800}: commit: feat(crforge): wire the opponent league into the producer
+88e7408 refs/heads/main@{2026-11-18 21:39:59 -0800}: commit: docs: fix the branch direction in the C2 fault-body listing
+88e7408 HEAD@{2026-11-18 21:39:59 -0800}: commit: docs: fix the branch direction in the C2 fault-body listing
+bd07088 refs/heads/main@{2026-11-18 21:39:45 -0800}: commit: fix(crforge): a phased run without the recompiled body is inconclusive
+bd07088 HEAD@{2026-11-18 21:39:45 -0800}: commit: fix(crforge): a phased run without the recompiled body is inconclusive
+bf0288a refs/heads/main@{2026-11-18 21:37:55 -0800}: commit: docs: close the producer-padding question with the recorded capture counts
+bf0288a HEAD@{2026-11-18 21:37:55 -0800}: commit: docs: close the producer-padding question with the recorded capture counts
+bb1fdfa refs/heads/main@{2026-11-18 21:36:15 -0800}: commit: fix(crforge): flip bci 120 in the phased reproducer, matching the engine's history
+bb1fdfa HEAD@{2026-11-18 21:36:15 -0800}: commit: fix(crforge): flip bci 120 in the phased reproducer, matching the engine's history
+aa550d7 refs/heads/main@{2026-11-18 21:26:05 -0800}: commit: feat(crforge): replay the engine's C2 compile history in the reproducer
+aa550d7 HEAD@{2026-11-18 21:26:05 -0800}: commit: feat(crforge): replay the engine's C2 compile history in the reproducer
+5072f07 refs/remotes/origin/main@{2026-11-18 20:59:35 -0800}: update by push
+5072f07 refs/heads/main@{2026-11-18 20:59:33 -0800}: commit: style(native_runner): reformat the remaining-runtime layout probe
+5072f07 HEAD@{2026-11-18 20:59:33 -0800}: commit: style(native_runner): reformat the remaining-runtime layout probe
+466a3ea refs/heads/main@{2026-11-18 20:27:01 -0800}: commit: feat(crforge): reproduce the C2 miscompile on a fresh A6000 and map the fault
+466a3ea HEAD@{2026-11-18 20:27:01 -0800}: commit: feat(crforge): reproduce the C2 miscompile on a fresh A6000 and map the fault
+634b7c0 refs/remotes/origin/main@{2026-11-18 12:45:58 -0800}: update by push
+634b7c0 refs/heads/main@{2026-11-18 12:45:57 -0800}: commit: docs: the native parity cadence is a ratio, measured at 27.9 updates per gate
+885fba6 refs/heads/main@{2026-11-18 12:45:57 -0800}: commit: feat(crforge): checkpoint every N updates and gate the curve
+634b7c0 HEAD@{2026-11-18 12:45:57 -0800}: commit: docs: the native parity cadence is a ratio, measured at 27.9 updates per gate
+885fba6 HEAD@{2026-11-18 12:45:57 -0800}: commit: feat(crforge): checkpoint every N updates and gate the curve
+46c66ef refs/remotes/origin/main@{2026-11-18 12:25:44 -0800}: update by push
+46c66ef refs/heads/main@{2026-11-18 12:25:42 -0800}: commit: docs: a fresh Thunder base is clean; the host CPU is what is left
+5cb137d refs/heads/main@{2026-11-18 12:25:42 -0800}: commit: fix(crforge): cap the C2 soak driver at 1000 kinds
+46c66ef HEAD@{2026-11-18 12:25:42 -0800}: commit: docs: a fresh Thunder base is clean; the host CPU is what is left
+5cb137d HEAD@{2026-11-18 12:25:42 -0800}: commit: fix(crforge): cap the C2 soak driver at 1000 kinds
+188a47d refs/remotes/origin/main@{2026-11-18 12:11:52 -0800}: update by push
+188a47d refs/heads/main@{2026-11-18 12:11:50 -0800}: commit: fix(tools): the release check no longer requires the removed NOTICE
+188a47d HEAD@{2026-11-18 12:11:50 -0800}: commit: fix(tools): the release check no longer requires the removed NOTICE
+78b591a refs/remotes/origin/main@{2026-11-18 12:00:32 -0800}: update by push
+78b591a refs/heads/main@{2026-11-18 12:00:30 -0800}: commit: docs: the C2 reproducer's negative, and the report it still needs
+78b591a HEAD@{2026-11-18 12:00:30 -0800}: commit: docs: the C2 reproducer's negative, and the report it still needs
+998d7a8 refs/heads/main@{2026-11-18 12:00:28 -0800}: commit: feat(crforge): reproduce the SeatIds.of C2 miscompile outside the engine
+998d7a8 HEAD@{2026-11-18 12:00:28 -0800}: commit: feat(crforge): reproduce the SeatIds.of C2 miscompile outside the engine
+2d68f02 refs/remotes/origin/main@{2026-11-18 11:45:18 -0800}: update by push
+2d68f02 refs/heads/main@{2026-11-18 11:38:08 -0800}: commit: docs: the producer crash is a C2 miscompile; the card's training gate closes
+2d68f02 HEAD@{2026-11-18 11:38:08 -0800}: commit: docs: the producer crash is a C2 miscompile; the card's training gate closes
+e8f45f5 refs/heads/main@{2026-11-18 11:38:02 -0800}: commit: fix(crforge): carry a JVM option to the engine from the producer and its harnesses
+e8f45f5 HEAD@{2026-11-18 11:38:02 -0800}: commit: fix(crforge): carry a JVM option to the engine from the producer and its harnesses
+941aa41 refs/heads/main@{2026-11-17 22:22:27 -0800}: commit: docs: record the card's server arm, the weight push and the shape bug
+7c1dd9b refs/heads/main@{2026-11-17 22:22:27 -0800}: commit: feat(crforge): push weights to the decision server and key the forward by shape
+8da6a62 refs/heads/main@{2026-11-17 22:22:27 -0800}: reset: moving to HEAD~1
+941aa41 HEAD@{2026-11-17 22:22:27 -0800}: commit: docs: record the card's server arm, the weight push and the shape bug
+7c1dd9b HEAD@{2026-11-17 22:22:27 -0800}: commit: feat(crforge): push weights to the decision server and key the forward by shape
+8da6a62 HEAD@{2026-11-17 22:22:27 -0800}: reset: moving to HEAD~1
+4a4d2c5 refs/heads/main@{2026-11-17 22:22:20 -0800}: commit: feat(crforge): push weights to the decision server and key the forward by shape
+4a4d2c5 HEAD@{2026-11-17 22:22:20 -0800}: commit: feat(crforge): push weights to the decision server and key the forward by shape
+8da6a62 refs/heads/main@{2026-11-17 21:08:56 -0800}: commit: docs: record the decision server's exact gate and its CPU-only negative
+b75096b refs/heads/main@{2026-11-17 21:08:56 -0800}: commit (amend): feat(crforge): serve every waiting producer from one decision server
+097c982 refs/heads/main@{2026-11-17 21:08:56 -0800}: reset: moving to HEAD~1
+8da6a62 HEAD@{2026-11-17 21:08:56 -0800}: commit: docs: record the decision server's exact gate and its CPU-only negative
+b75096b HEAD@{2026-11-17 21:08:56 -0800}: commit (amend): feat(crforge): serve every waiting producer from one decision server
+097c982 HEAD@{2026-11-17 21:08:56 -0800}: reset: moving to HEAD
+097c982 HEAD@{2026-11-17 21:08:56 -0800}: reset: moving to HEAD~1
+27384f3 refs/heads/main@{2026-11-17 21:08:07 -0800}: commit: docs: record the decision server's exact gate and its CPU-only negative
+27384f3 HEAD@{2026-11-17 21:08:07 -0800}: commit: docs: record the decision server's exact gate and its CPU-only negative
+097c982 refs/heads/main@{2026-11-17 21:08:02 -0800}: commit: feat(crforge): serve every waiting producer from one decision server
+097c982 HEAD@{2026-11-17 21:08:02 -0800}: commit: feat(crforge): serve every waiting producer from one decision server
+ce114ba refs/heads/main@{2026-11-17 20:12:44 -0800}: commit (amend): docs: record the flat row gather and the packed-write negative
+ce114ba HEAD@{2026-11-17 20:12:44 -0800}: commit (amend): docs: record the flat row gather and the packed-write negative
+079c950 refs/heads/main@{2026-11-17 20:12:26 -0800}: commit (amend): docs: record the flat row gather and the packed-write negative
+079c950 HEAD@{2026-11-17 20:12:26 -0800}: commit (amend): docs: record the flat row gather and the packed-write negative
+ac0bdfa refs/heads/main@{2026-11-17 20:12:14 -0800}: commit: docs: record the flat row gather and the packed-write negative
+116e621 refs/heads/main@{2026-11-17 20:12:14 -0800}: commit: feat(crforge): gather and scatter the row fields with one flat index
+ac0bdfa HEAD@{2026-11-17 20:12:14 -0800}: commit: docs: record the flat row gather and the packed-write negative
+116e621 HEAD@{2026-11-17 20:12:14 -0800}: commit: feat(crforge): gather and scatter the row fields with one flat index
+2f0f352 refs/heads/main@{2026-11-17 17:20:25 -0800}: commit (amend): docs: record the two-seat group build and its gates
+2f0f352 HEAD@{2026-11-17 17:20:25 -0800}: commit (amend): docs: record the two-seat group build and its gates
+3c5b943 refs/heads/main@{2026-11-17 17:20:16 -0800}: commit (amend): docs: record the two-seat group build and its gates
+3c5b943 HEAD@{2026-11-17 17:20:16 -0800}: commit (amend): docs: record the two-seat group build and its gates
+efd80de refs/heads/main@{2026-11-17 17:19:56 -0800}: commit: docs: record the two-seat group build and its gates
+b5befb6 refs/heads/main@{2026-11-17 17:19:56 -0800}: commit: feat(crforge): build both actor seats' group sections in one pass
+efd80de HEAD@{2026-11-17 17:19:56 -0800}: commit: docs: record the two-seat group build and its gates
+b5befb6 HEAD@{2026-11-17 17:19:56 -0800}: commit: feat(crforge): build both actor seats' group sections in one pass
+55ec4c1 refs/heads/main@{2026-11-17 15:57:49 -0800}: commit (amend): docs: record the compact entity rows and the build phase table
+55ec4c1 HEAD@{2026-11-17 15:57:49 -0800}: commit (amend): docs: record the compact entity rows and the build phase table
+4f53135 refs/heads/main@{2026-11-17 15:57:44 -0800}: commit: docs: record the compact entity rows and the build phase table
+6f08fd8 refs/heads/main@{2026-11-17 15:57:44 -0800}: commit: feat(crforge): pack the entity rows to the live width
+4f53135 HEAD@{2026-11-17 15:57:44 -0800}: commit: docs: record the compact entity rows and the build phase table
+6f08fd8 HEAD@{2026-11-17 15:57:44 -0800}: commit: feat(crforge): pack the entity rows to the live width
+601ff89 refs/heads/main@{2026-11-17 15:41:01 -0800}: commit: docs: record the group pad and the live-width record
+9b9d694 refs/heads/main@{2026-11-17 15:41:01 -0800}: commit: feat(crforge): keep the group record at the board's live width
+601ff89 HEAD@{2026-11-17 15:41:01 -0800}: commit: docs: record the group pad and the live-width record
+9b9d694 HEAD@{2026-11-17 15:41:01 -0800}: commit: feat(crforge): keep the group record at the board's live width
+075fd28 refs/remotes/origin/main@{2026-11-17 15:17:42 -0800}: update by push
+075fd28 refs/heads/main@{2026-11-17 15:17:40 -0800}: commit: docs: record the live-width sort keys and the empty-board fixture bug
+075fd28 HEAD@{2026-11-17 15:17:40 -0800}: commit: docs: record the live-width sort keys and the empty-board fixture bug
+733920d refs/heads/main@{2026-11-17 15:17:38 -0800}: commit: feat(crforge): sort the group rows at the width build reads
+733920d HEAD@{2026-11-17 15:17:38 -0800}: commit: feat(crforge): sort the group rows at the width build reads
+45ba027 refs/remotes/origin/main@{2026-11-17 15:04:29 -0800}: update by push
+45ba027 refs/heads/main@{2026-11-17 15:04:26 -0800}: commit: docs: record the live-row entity build and the session-41 gates
+45ba027 HEAD@{2026-11-17 15:04:26 -0800}: commit: docs: record the live-row entity build and the session-41 gates
+61a91bf refs/heads/main@{2026-11-17 15:04:23 -0800}: commit: feat(crforge): build the entity rows at the board's live width
+61a91bf HEAD@{2026-11-17 15:04:23 -0800}: commit: feat(crforge): build the entity rows at the board's live width
+21dadde refs/heads/main@{2026-11-17 14:34:27 -0800}: commit: docs: the 50-game native gate is negative
+21dadde HEAD@{2026-11-17 14:34:27 -0800}: commit: docs: the 50-game native gate is negative
+4876cb2 refs/heads/main@{2026-11-17 14:34:24 -0800}: commit: feat(native): run and aggregate native match blocks
+4876cb2 HEAD@{2026-11-17 14:34:24 -0800}: commit: feat(native): run and aggregate native match blocks
+adbd4ca refs/remotes/fork/main@{2026-11-17 10:39:27 -0800}: update by push
+adbd4ca refs/remotes/origin/main@{2026-11-17 10:39:19 -0800}: update by push
+adbd4ca refs/heads/main@{2026-11-17 10:36:41 -0800}: commit: docs: record the live-width groups, the bounded pilot and the native baseline
+adbd4ca HEAD@{2026-11-17 10:36:41 -0800}: commit: docs: record the live-width groups, the bounded pilot and the native baseline
+4e2719d refs/heads/main@{2026-11-17 10:36:39 -0800}: commit: feat(crforge): build the group section at its live width
+4e2719d HEAD@{2026-11-17 10:36:39 -0800}: commit: feat(crforge): build the group section at its live width
+f326e85 refs/heads/main@{2026-11-17 10:01:35 -0800}: commit: docs: add the full-graph six-producer sweep
+9632d67 refs/heads/main@{2026-11-17 10:01:35 -0800}: commit: feat(crforge): let the provider sweep run the full-call graph
+f326e85 HEAD@{2026-11-17 10:01:35 -0800}: commit: docs: add the full-graph six-producer sweep
+9632d67 HEAD@{2026-11-17 10:01:35 -0800}: commit: feat(crforge): let the provider sweep run the full-call graph
+48f0092 refs/heads/main@{2026-11-17 09:46:57 -0800}: commit: docs: record the A6000 re-measure and the full-call graph (session 38)
+12d3fb2 refs/heads/main@{2026-11-17 09:46:57 -0800}: commit: feat(crforge): probe the captured graph RNG and drive the forwarded pipeline
+48f0092 HEAD@{2026-11-17 09:46:57 -0800}: commit: docs: record the A6000 re-measure and the full-call graph (session 38)
+12d3fb2 HEAD@{2026-11-17 09:46:57 -0800}: commit: feat(crforge): probe the captured graph RNG and drive the forwarded pipeline
+56f2a07 refs/heads/main@{2026-11-17 08:11:38 -0800}: commit: docs: record the CPU-half profile and the full-call graph gate
+56f2a07 HEAD@{2026-11-17 08:11:38 -0800}: commit: docs: record the CPU-half profile and the full-call graph gate
+140c6b0 refs/heads/main@{2026-11-17 08:11:35 -0800}: commit: feat(crforge): write the action record in one pass and profile the CPU half
+140c6b0 HEAD@{2026-11-17 08:11:35 -0800}: commit: feat(crforge): write the action record in one pass and profile the CPU half
+bc32495 refs/heads/main@{2026-11-16 22:15:12 -0800}: commit: docs: record the A6000 forward measurement and the CPU-half gate
+bc32495 HEAD@{2026-11-16 22:15:12 -0800}: commit: docs: record the A6000 forward measurement and the CPU-half gate
+27ef48c refs/heads/main@{2026-11-16 21:52:06 -0800}: commit: feat(v4): cache the static effect/profile tables per weight version
+27ef48c HEAD@{2026-11-16 21:52:06 -0800}: commit: feat(v4): cache the static effect/profile tables per weight version
+6b8d518 refs/heads/main@{2026-11-16 21:26:09 -0800}: commit: docs: point the forward-port evidence at the recorded CPU runs
+6b8d518 HEAD@{2026-11-16 21:26:09 -0800}: commit: docs: point the forward-port evidence at the recorded CPU runs
+9754473 refs/heads/main@{2026-11-16 21:25:59 -0800}: commit: docs: record the forward port, its CPU control and the open GPU gate
+45bb0d8 refs/heads/main@{2026-11-16 21:25:59 -0800}: commit: feat(crforge): port the ever_server forward in-process with a numerical gate
+9754473 HEAD@{2026-11-16 21:25:59 -0800}: commit: docs: record the forward port, its CPU control and the open GPU gate
+45bb0d8 HEAD@{2026-11-16 21:25:59 -0800}: commit: feat(crforge): port the ever_server forward in-process with a numerical gate
+bf36380 refs/heads/main@{2026-11-16 21:13:02 -0800}: commit: docs: record the provider capacity equation and the 6-vCPU A6000 ceiling
+bf36380 HEAD@{2026-11-16 21:13:02 -0800}: commit: docs: record the provider capacity equation and the 6-vCPU A6000 ceiling
+2718114 refs/heads/main@{2026-11-16 21:12:59 -0800}: commit: feat(crforge): make the provider decision an executable capacity equation
+2718114 HEAD@{2026-11-16 21:12:59 -0800}: commit: feat(crforge): make the provider decision an executable capacity equation
+81d3ff4 refs/heads/main@{2026-11-16 20:24:31 -0800}: commit: docs: the horizon's return is a value fit, and the A6000's 228 ms was a statistic
+81d3ff4 HEAD@{2026-11-16 20:24:31 -0800}: commit: docs: the horizon's return is a value fit, and the A6000's 228 ms was a statistic
+fc4e967 refs/heads/main@{2026-11-16 20:24:29 -0800}: commit: feat(crforge): report the reward share and reconcile the producer's timing
+fc4e967 HEAD@{2026-11-16 20:24:29 -0800}: commit: feat(crforge): report the reward share and reconcile the producer's timing
+cc908bb refs/remotes/origin/main@{2026-11-16 16:54:12 -0800}: update by push
+cc908bb refs/heads/main@{2026-11-16 16:54:08 -0800}: commit: docs: record the three-seed horizon reversal and the scale-out arithmetic
+cc908bb HEAD@{2026-11-16 16:54:08 -0800}: commit: docs: record the three-seed horizon reversal and the scale-out arithmetic
+ac32ec4 refs/heads/main@{2026-11-16 16:54:05 -0800}: commit: feat(crforge): rank the horizon per seed and record reward_abs_max
+ac32ec4 HEAD@{2026-11-16 16:54:05 -0800}: commit: feat(crforge): rank the horizon per seed and record reward_abs_max
+afbc84e refs/heads/main@{2026-11-16 14:42:51 -0800}: commit: docs: record the overlapped loop and the 50-update horizon
+afbc84e HEAD@{2026-11-16 14:42:51 -0800}: commit: docs: record the overlapped loop and the 50-update horizon
+e4485a7 refs/heads/main@{2026-11-16 14:42:48 -0800}: commit: feat(crforge): overlap the C4 update with the next segment's collection
+e4485a7 HEAD@{2026-11-16 14:42:48 -0800}: commit: feat(crforge): overlap the C4 update with the next segment's collection
+63412fa refs/heads/main@{2026-11-16 13:50:44 -0800}: commit: docs: record the C4 cadence decision — reset trains, wave is a diagnostic
+63412fa HEAD@{2026-11-16 13:50:44 -0800}: commit: docs: record the C4 cadence decision — reset trains, wave is a diagnostic
+e815539 refs/heads/main@{2026-11-16 13:50:41 -0800}: commit: feat(crforge): compare the C4 update cadences on one shape
+e815539 HEAD@{2026-11-16 13:50:41 -0800}: commit: feat(crforge): compare the C4 update cadences on one shape
+fe36e01 refs/heads/main@{2026-11-16 13:14:15 -0800}: commit: docs: record the A6000 session — the producer is the ceiling, not the model
+fc0aeea refs/heads/main@{2026-11-16 13:14:15 -0800}: commit: fix(crforge): run the C4 loop on CUDA without the CPU-only assumptions
+fe36e01 HEAD@{2026-11-16 13:14:15 -0800}: commit: docs: record the A6000 session — the producer is the ceiling, not the model
+fc0aeea HEAD@{2026-11-16 13:14:15 -0800}: commit: fix(crforge): run the C4 loop on CUDA without the CPU-only assumptions
+5f1a59f refs/heads/main@{2026-11-16 12:42:43 -0800}: commit: docs: record the C4 resume gate and the forward scaling by row count
+a18c05f refs/heads/main@{2026-11-16 12:42:43 -0800}: commit: feat(crforge): resume a C4 run from its saved optimizer
+5f1a59f HEAD@{2026-11-16 12:42:43 -0800}: commit: docs: record the C4 resume gate and the forward scaling by row count
+a18c05f HEAD@{2026-11-16 12:42:43 -0800}: commit: feat(crforge): resume a C4 run from its saved optimizer
+4962aca refs/heads/main@{2026-11-16 12:24:15 -0800}: commit: docs: record the C4 training loop, its state policy and the two-update gate
+9baaadb refs/heads/main@{2026-11-16 12:24:15 -0800}: commit: feat(crforge): train the C4 loop with one optimizer and a stated state policy
+4962aca HEAD@{2026-11-16 12:24:15 -0800}: commit: docs: record the C4 training loop, its state policy and the two-update gate
+9baaadb HEAD@{2026-11-16 12:24:15 -0800}: commit: feat(crforge): train the C4 loop with one optimizer and a stated state policy
+92dd2b3 refs/heads/main@{2026-11-16 11:49:05 -0800}: commit (amend): docs: record the C4 update gate and the mid-segment autoreset
+92dd2b3 HEAD@{2026-11-16 11:49:05 -0800}: commit (amend): docs: record the C4 update gate and the mid-segment autoreset
+dd9aa8b refs/heads/main@{2026-11-16 11:48:58 -0800}: commit: docs: record the C4 update gate and the mid-segment autoreset
+179d82e refs/heads/main@{2026-11-16 11:48:58 -0800}: commit: feat(crforge): replay a multi-episode rollout and run the C4 update
+dd9aa8b HEAD@{2026-11-16 11:48:58 -0800}: commit: docs: record the C4 update gate and the mid-segment autoreset
+179d82e HEAD@{2026-11-16 11:48:58 -0800}: commit: feat(crforge): replay a multi-episode rollout and run the C4 update
+6b6687b refs/heads/main@{2026-11-16 11:19:21 -0800}: commit: docs: record the C4 rollout store and the second micro-action probe
+5933b0e refs/heads/main@{2026-11-16 11:19:21 -0800}: commit: feat(crforge): store the C4 rollout behind the native reward
+6b6687b HEAD@{2026-11-16 11:19:21 -0800}: commit: docs: record the C4 rollout store and the second micro-action probe
+5933b0e HEAD@{2026-11-16 11:19:21 -0800}: commit: feat(crforge): store the C4 rollout behind the native reward
+85efc84 refs/remotes/origin/main@{2026-11-16 10:55:29 -0800}: update by push
+85efc84 refs/heads/main@{2026-11-16 10:54:12 -0800}: commit: docs: record the upstream PR #12 merge in the handoff decisions
+85efc84 HEAD@{2026-11-16 10:54:12 -0800}: commit: docs: record the upstream PR #12 merge in the handoff decisions
+f5d9485 refs/heads/main@{2026-11-16 10:53:57 -0800}: merge f5d9485: Fast-forward
+f5d9485 HEAD@{2026-11-16 10:53:57 -0800}: merge f5d9485: Fast-forward
+5daf0ab refs/heads/pr12@{2026-11-16 10:51:27 -0800}: fetch -q upstream refs/pull/12/head:pr12: storing ref
+3d67224 refs/heads/main@{2026-11-16 10:48:30 -0800}: commit: docs: record the C4 producer loop and its gate
+3d67224 HEAD@{2026-11-16 10:48:30 -0800}: commit: docs: record the C4 producer loop and its gate
+736d48e refs/heads/main@{2026-11-16 10:48:28 -0800}: commit: feat(crforge): play the C4 self-play loop over the vector engine
+736d48e HEAD@{2026-11-16 10:48:28 -0800}: commit: feat(crforge): play the C4 self-play loop over the vector engine
+174eb54 refs/heads/main@{2026-11-16 08:30:11 -0800}: commit: docs: record the C4 action path in the handoff decisions
+174eb54 HEAD@{2026-11-16 08:30:11 -0800}: commit: docs: record the C4 action path in the handoff decisions
+e71fa6d refs/heads/main@{2026-11-16 08:29:53 -0800}: commit: feat(crforge): decode the stacked action row into engine actions
+e71fa6d HEAD@{2026-11-16 08:29:53 -0800}: commit: feat(crforge): decode the stacked action row into engine actions
+dcaaef4 refs/heads/main@{2026-11-15 21:46:49 -0800}: commit: fix(crforge): gate both seats and prove the game frame against native
+dcaaef4 HEAD@{2026-11-15 21:46:49 -0800}: commit: fix(crforge): gate both seats and prove the game frame against native
+2234c79 refs/heads/main@{2026-11-15 21:25:37 -0800}: commit: fix(crforge): feed the model game coordinates; seat-aware row builders
+2234c79 HEAD@{2026-11-15 21:25:37 -0800}: commit: fix(crforge): feed the model game coordinates; seat-aware row builders
+f49d814 refs/heads/main@{2026-11-15 21:05:46 -0800}: commit: feat(crforge): facts-only tensorize closes C3-B
+f49d814 HEAD@{2026-11-15 21:05:46 -0800}: commit: feat(crforge): facts-only tensorize closes C3-B
+da2e45d refs/remotes/origin/main@{2026-11-15 20:51:15 -0800}: update by push
+da2e45d refs/heads/main@{2026-11-15 20:51:14 -0800}: commit: perf(crforge): batch the match scalars and empty sections for C3-B
+da2e45d HEAD@{2026-11-15 20:51:14 -0800}: commit: perf(crforge): batch the match scalars and empty sections for C3-B
+663f7f2 refs/remotes/origin/main@{2026-11-15 20:43:52 -0800}: update by push
+663f7f2 refs/heads/main@{2026-11-15 20:43:50 -0800}: commit: perf(crforge): batch the explicit spatial planes for C3-B
+663f7f2 HEAD@{2026-11-15 20:43:50 -0800}: commit: perf(crforge): batch the explicit spatial planes for C3-B
+c14f35a refs/remotes/origin/main@{2026-11-15 20:35:40 -0800}: update by push
+c14f35a refs/heads/main@{2026-11-15 20:35:34 -0800}: commit: perf(crforge): batch the tower row build for C3-B
+c14f35a HEAD@{2026-11-15 20:35:34 -0800}: commit: perf(crforge): batch the tower row build for C3-B
+5517b53 refs/heads/main@{2026-11-15 20:19:41 -0800}: commit: perf(crforge): batch the candidate row build for C3-B
+5517b53 HEAD@{2026-11-15 20:19:41 -0800}: commit: perf(crforge): batch the candidate row build for C3-B
+ac8f0c1 refs/heads/main@{2026-11-15 20:01:21 -0800}: commit: perf(crforge): batch card and relation rows for C3-B
+ac8f0c1 HEAD@{2026-11-15 20:01:21 -0800}: commit: perf(crforge): batch card and relation rows for C3-B
+f6e0e21 refs/remotes/origin/main@{2026-11-15 18:39:19 -0800}: update by push
+f6e0e21 refs/heads/main@{2026-11-15 18:39:17 -0800}: commit: perf(crforge): batch the causal-group row build for C3-B
+f6e0e21 HEAD@{2026-11-15 18:39:17 -0800}: commit: perf(crforge): batch the causal-group row build for C3-B
+e8ea98d refs/heads/main@{2026-11-15 17:24:01 -0800}: commit: perf(crforge): vectorized observation facts for the C3-B row build
+e8ea98d HEAD@{2026-11-15 17:24:01 -0800}: commit: perf(crforge): vectorized observation facts for the C3-B row build
+d7a1a4c refs/remotes/origin/main@{2026-11-15 17:10:01 -0800}: update by push
+d7a1a4c refs/heads/main@{2026-11-15 17:09:58 -0800}: commit: fix(crforge): resolve hero rows and match-code run refusals
+d7a1a4c HEAD@{2026-11-15 17:09:58 -0800}: commit: fix(crforge): resolve hero rows and match-code run refusals
+4b207a0 refs/remotes/origin/main@{2026-11-15 16:27:40 -0800}: update by push
+4b207a0 refs/heads/main@{2026-11-15 16:27:38 -0800}: commit: docs: license the project under MIT
+4b207a0 HEAD@{2026-11-15 16:27:38 -0800}: commit: docs: license the project under MIT
+256e50d refs/remotes/origin/main@{2026-11-15 16:27:01 -0800}: update by push
+256e50d refs/heads/main@{2026-11-15 16:27:00 -0800}: commit: docs: strip the upstream title block and license sections from the README
+256e50d HEAD@{2026-11-15 16:27:00 -0800}: commit: docs: strip the upstream title block and license sections from the README
+20dc9c5 refs/heads/main@{2026-11-15 16:21:40 -0800}: commit (amend): feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+20dc9c5 HEAD@{2026-11-15 16:21:40 -0800}: commit (amend): feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+ddc0c52 refs/heads/main@{2026-11-15 16:21:33 -0800}: commit: feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+ddc0c52 HEAD@{2026-11-15 16:21:33 -0800}: commit: feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+d55c04c refs/heads/main@{2026-11-15 15:50:19 -0800}: commit: perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
+d55c04c HEAD@{2026-11-15 15:50:19 -0800}: commit: perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
+51e0f0b refs/remotes/fork/main@{2026-11-15 14:41:53 -0800}: update by push
+51e0f0b refs/heads/main@{2026-11-15 14:41:52 -0800}: commit: docs: record the clean 2-game C0 evaluate re-run
+51e0f0b HEAD@{2026-11-15 14:41:52 -0800}: commit: docs: record the clean 2-game C0 evaluate re-run
+678bbca refs/remotes/fork/main@{2026-11-15 14:40:35 -0800}: update by push
+678bbca refs/heads/main@{2026-11-15 14:40:33 -0800}: commit: docs: record the C0 soak state and the pending evaluate re-run precisely
+678bbca HEAD@{2026-11-15 14:40:33 -0800}: commit: docs: record the C0 soak state and the pending evaluate re-run precisely
+6171eb6 refs/remotes/fork/main@{2026-11-15 14:29:16 -0800}: update by push
+6171eb6 refs/heads/main@{2026-11-15 14:29:08 -0800}: commit: fix(crforge): validate legality at the give tick; add the C1 encoder spike
+6171eb6 HEAD@{2026-11-15 14:29:08 -0800}: commit: fix(crforge): validate legality at the give tick; add the C1 encoder spike
+bf9f3e8 refs/remotes/origin/main@{2026-11-15 11:22:09 -0800}: update by push
+bf9f3e8 refs/heads/main@{2026-11-15 11:22:04 -0800}: rebase (finish): refs/heads/main onto a9ab7418e16ede19da4b4e77d2e591514e402e57
+bf9f3e8 HEAD@{2026-11-15 11:22:04 -0800}: rebase (finish): returning to refs/heads/main
+bf9f3e8 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): perf(env): build policy observations without contract validation
+d350c39 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): profile: classify rich tower hits separately in the step profiler
+0533e60 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): profile: attribute BattleEnvV1.step and cut two measured costs
+d3eedf3 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): docs: quote the gate gap against the measured floors precisely
+ae8d8d0 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): docs: record the data-path decision across findings, handoff and roadmap
+29460f6 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): docs: correct the engine-count arithmetic in the throughput plan
+a662360 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): feat(ppo): pipeline the learner loop and measure its real floor
+8772bad HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): docs: brief session 8 on the loop-pipelining gates
+9641486 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): docs: record the batching negative result and the 16.635 gate evidence
+11912e5 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): fix(eval): bind the competitive release for 16.635 evaluation
+e70a7a7 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+3a8bef7 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): feat(tools): add the x86_64 engine host, parity and profiling harnesses
+dd33195 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): feat(training): honour delay-aware legality and 16.635 tensorization
+2a1df15 HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): feat(native): adopt the verified 16.635.1 competitive release
+3b50e5b HEAD@{2026-11-15 11:22:04 -0800}: rebase (pick): feat(native): port the 16.635.1 probe to x86_64
+a9ab741 HEAD@{2026-11-15 11:22:04 -0800}: rebase (start): checkout origin/main
+a9ab741 refs/remotes/origin/main@{2026-11-15 11:21:58 -0800}: fetch origin: fast-forward
+6b257e0 refs/heads/main@{2026-11-15 11:21:52 -0800}: commit: perf(env): build policy observations without contract validation
+6b257e0 HEAD@{2026-11-15 11:21:52 -0800}: commit: perf(env): build policy observations without contract validation
+1961627 refs/heads/main@{2026-11-15 10:39:59 -0800}: commit: profile: classify rich tower hits separately in the step profiler
+1961627 HEAD@{2026-11-15 10:39:59 -0800}: commit: profile: classify rich tower hits separately in the step profiler
+5d8b479 refs/heads/main@{2026-11-15 10:38:31 -0800}: commit: profile: attribute BattleEnvV1.step and cut two measured costs
+5d8b479 HEAD@{2026-11-15 10:38:31 -0800}: commit: profile: attribute BattleEnvV1.step and cut two measured costs
+0de296c refs/heads/main@{2026-11-15 10:01:55 -0800}: commit: docs: quote the gate gap against the measured floors precisely
+0de296c HEAD@{2026-11-15 10:01:55 -0800}: commit: docs: quote the gate gap against the measured floors precisely
+1010918 refs/heads/main@{2026-11-15 10:01:48 -0800}: commit: docs: record the data-path decision across findings, handoff and roadmap
+1010918 HEAD@{2026-11-15 10:01:48 -0800}: commit: docs: record the data-path decision across findings, handoff and roadmap
+bd81505 refs/heads/main@{2026-11-15 09:45:57 -0800}: commit: docs: correct the engine-count arithmetic in the throughput plan
+bd81505 HEAD@{2026-11-15 09:45:57 -0800}: commit: docs: correct the engine-count arithmetic in the throughput plan
+244578f refs/heads/main@{2026-11-15 09:45:40 -0800}: commit: feat(ppo): pipeline the learner loop and measure its real floor
+244578f HEAD@{2026-11-15 09:45:40 -0800}: commit: feat(ppo): pipeline the learner loop and measure its real floor
+9c81188 refs/heads/main@{2026-11-15 08:35:01 -0800}: commit: docs: brief session 8 on the loop-pipelining gates
+9c81188 HEAD@{2026-11-15 08:35:01 -0800}: commit: docs: brief session 8 on the loop-pipelining gates
+620ead5 refs/heads/main@{2026-11-14 21:26:30 -0800}: commit: docs: record the batching negative result and the 16.635 gate evidence
+620ead5 HEAD@{2026-11-14 21:26:30 -0800}: commit: docs: record the batching negative result and the 16.635 gate evidence
+6cf41a9 refs/heads/main@{2026-11-14 21:26:28 -0800}: commit: fix(eval): bind the competitive release for 16.635 evaluation
+6cf41a9 HEAD@{2026-11-14 21:26:28 -0800}: commit: fix(eval): bind the competitive release for 16.635 evaluation
+34cc2b1 refs/heads/main@{2026-11-14 17:58:05 -0800}: commit: docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+34cc2b1 HEAD@{2026-11-14 17:58:05 -0800}: commit: docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+2b589e5 refs/heads/main@{2026-11-14 17:58:01 -0800}: commit: feat(tools): add the x86_64 engine host, parity and profiling harnesses
+2b589e5 HEAD@{2026-11-14 17:58:01 -0800}: commit: feat(tools): add the x86_64 engine host, parity and profiling harnesses
+a5c732c refs/heads/main@{2026-11-14 17:57:56 -0800}: commit: feat(training): honour delay-aware legality and 16.635 tensorization
+a5c732c HEAD@{2026-11-14 17:57:56 -0800}: commit: feat(training): honour delay-aware legality and 16.635 tensorization
+5f059e5 refs/heads/main@{2026-11-14 17:57:52 -0800}: commit: feat(native): adopt the verified 16.635.1 competitive release
+5f059e5 HEAD@{2026-11-14 17:57:52 -0800}: commit: feat(native): adopt the verified 16.635.1 competitive release
+5df15d1 refs/heads/main@{2026-11-14 17:57:47 -0800}: commit: feat(native): port the 16.635.1 probe to x86_64
+5df15d1 HEAD@{2026-11-14 17:57:47 -0800}: commit: feat(native): port the 16.635.1 probe to x86_64
+a54ce54 refs/remotes/origin/main@{2026-11-13 20:43:50 -0800}: update by push
+a54ce54 refs/heads/main@{2026-11-13 20:43:48 -0800}: commit: docs: align crforge reference with the 16.635.1 primary track
+a54ce54 HEAD@{2026-11-13 20:43:48 -0800}: commit: docs: align crforge reference with the 16.635.1 primary track
+634a673 refs/remotes/origin/main@{2026-11-13 20:43:10 -0800}: update by push
+634a673 refs/heads/main@{2026-11-13 20:43:07 -0800}: commit: docs: retarget plan to Null's Royale 16.635.1 and retire R0
+634a673 HEAD@{2026-11-13 20:43:07 -0800}: commit: docs: retarget plan to Null's Royale 16.635.1 and retire R0
+f940143 refs/heads/main@{2026-11-13 20:03:07 -0800}: commit: docs: mark R0 tree adoption as done and retire old-contract references
+f940143 HEAD@{2026-11-13 20:03:07 -0800}: commit: docs: mark R0 tree adoption as done and retire old-contract references
+70d607d refs/heads/main@{2026-11-13 20:02:22 -0800}: commit: feat(native): adopt canonical R0 tree and add CPU batched-equivalence check
+70d607d HEAD@{2026-11-13 20:02:22 -0800}: commit: feat(native): adopt canonical R0 tree and add CPU batched-equivalence check
+a09b7c4 refs/remotes/origin/main@{2026-11-13 18:58:19 -0800}: update by push
+a09b7c4 refs/heads/main@{2026-11-13 18:58:13 -0800}: commit: PHASE 2 DONE
+a09b7c4 HEAD@{2026-11-13 18:58:13 -0800}: commit: PHASE 2 DONE
+489fde8 refs/heads/main@{2026-11-13 16:16:16 -0800}: commit: docs(handoff): next-session plan for Phase 0 results and A51 parity
+489fde8 HEAD@{2026-11-13 16:16:16 -0800}: commit: docs(handoff): next-session plan for Phase 0 results and A51 parity
+fbffb80 refs/heads/main@{2026-11-13 16:09:59 -0800}: commit: feat(native): detached Phase 0 gate runner and level-aware A51 parity probe
+fbffb80 HEAD@{2026-11-13 16:09:59 -0800}: commit: feat(native): detached Phase 0 gate runner and level-aware A51 parity probe
+55b90f6 refs/heads/main@{2026-11-13 16:03:09 -0800}: commit: feat(native): Phase 1 X-Bow deck, determinism harness and model smoke
+55b90f6 HEAD@{2026-11-13 16:03:09 -0800}: commit: feat(native): Phase 1 X-Bow deck, determinism harness and model smoke
+ede7367 refs/remotes/origin/main@{2026-11-13 15:35:59 -0800}: update by push
+ede7367 refs/heads/main@{2026-11-13 15:35:52 -0800}: commit: feat(native): cold-start the Bionic runtime via a local overlay
+ede7367 HEAD@{2026-11-13 15:35:52 -0800}: commit: feat(native): cold-start the Bionic runtime via a local overlay
+30ab76f refs/heads/main@{2026-11-13 15:35:49 -0800}: commit: feat(native): add A51 launch-and-wait and lane-sum throughput math
+30ab76f HEAD@{2026-11-13 15:35:49 -0800}: commit: feat(native): add A51 launch-and-wait and lane-sum throughput math
+af5ce14 refs/heads/main@{2026-11-13 12:19:32 -0800}: commit: docs: note the clash-royale-research simulator as a side resource
+af5ce14 HEAD@{2026-11-13 12:19:32 -0800}: commit: docs: note the clash-royale-research simulator as a side resource
+087927f refs/heads/main@{2026-11-13 12:08:05 -0800}: commit: docs: consolidate on the CR Native Linux runtime
+087927f HEAD@{2026-11-13 12:08:05 -0800}: commit: docs: consolidate on the CR Native Linux runtime
+13cde48 refs/heads/main@{2026-11-13 12:01:50 -0800}: commit: docs: evaluate the Linux Bionic runtime as the first Track B step
+13cde48 HEAD@{2026-11-13 12:01:50 -0800}: commit: docs: evaluate the Linux Bionic runtime as the first Track B step
+4433055 refs/heads/main@{2026-11-13 11:58:57 -0800}: commit: docs: set Track B as the current focus
+4433055 HEAD@{2026-11-13 11:58:57 -0800}: commit: docs: set Track B as the current focus
+7ac4142 refs/heads/main@{2026-11-13 11:49:25 -0800}: commit: docs: target 16.635.1 for the extracted-engine loader
+7ac4142 HEAD@{2026-11-13 11:49:25 -0800}: commit: docs: target 16.635.1 for the extracted-engine loader
+15e994f refs/heads/main@{2026-11-13 11:43:25 -0800}: commit: docs: add the extracted-engine Linux roadmap
+f950832 refs/heads/main@{2026-11-13 11:43:25 -0800}: commit: feat(native): add control-lane affinity override and cluster tooling
+15e994f HEAD@{2026-11-13 11:43:25 -0800}: commit: docs: add the extracted-engine Linux roadmap
+f950832 HEAD@{2026-11-13 11:43:25 -0800}: commit: feat(native): add control-lane affinity override and cluster tooling
+1a6f176 refs/remotes/origin/main@{2026-11-13 09:14:20 -0800}: update by push
+1a6f176 refs/heads/main@{2026-11-13 09:14:19 -0800}: commit: docs: record the resident batch action throughput session
+1a6f176 HEAD@{2026-11-13 09:14:19 -0800}: commit: docs: record the resident batch action throughput session
+ab94103 refs/heads/main@{2026-11-13 09:13:53 -0800}: commit: feat(native): drive real card actions through the resident batch channel
+ab94103 HEAD@{2026-11-13 09:13:53 -0800}: commit: feat(native): drive real card actions through the resident batch channel
+894b7bf refs/remotes/origin/main@{2026-11-13 09:11:25 -0800}: update by push
+894b7bf refs/heads/main@{2026-11-13 09:11:22 -0800}: commit: docs: record the scripted X-Bow, ability and Champion-layout session
+894b7bf HEAD@{2026-11-13 09:11:22 -0800}: commit: docs: record the scripted X-Bow, ability and Champion-layout session
+da27d5f refs/heads/main@{2026-11-13 09:11:17 -0800}: commit (amend): feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+da27d5f HEAD@{2026-11-13 09:11:17 -0800}: commit (amend): feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+7409cfe refs/heads/main@{2026-11-13 09:11:12 -0800}: commit: feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+7409cfe HEAD@{2026-11-13 09:11:12 -0800}: commit: feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+3360aa8 refs/remotes/origin/main@{2026-11-13 08:32:45 -0800}: update by push
+3360aa8 refs/heads/main@{2026-11-13 08:32:44 -0800}: commit: docs: record the 2026-11-13 session commits in the handoff
+3360aa8 HEAD@{2026-11-13 08:32:44 -0800}: commit: docs: record the 2026-11-13 session commits in the handoff
+c7ec5ea refs/remotes/origin/main@{2026-11-13 08:32:39 -0800}: update by push
+c7ec5ea refs/heads/main@{2026-11-13 08:32:38 -0800}: commit: docs(native): record the rebuilt 16.635 deployable and A51 re-verification
+c7ec5ea HEAD@{2026-11-13 08:32:38 -0800}: commit: docs(native): record the rebuilt 16.635 deployable and A51 re-verification
+ec2ca52 refs/heads/main@{2026-11-13 08:31:16 -0800}: commit (amend): feat(native): verify 16.635 two-sided matches, throughput and entity HP
+ec2ca52 HEAD@{2026-11-13 08:31:16 -0800}: commit (amend): feat(native): verify 16.635 two-sided matches, throughput and entity HP
+ba01283 refs/heads/main@{2026-11-13 08:30:34 -0800}: commit: feat(native): verify 16.635 two-sided matches, throughput and entity HP
+ba01283 HEAD@{2026-11-13 08:30:34 -0800}: commit: feat(native): verify 16.635 two-sided matches, throughput and entity HP
+3f7f0bd refs/remotes/origin/main@{2026-11-13 07:28:50 -0800}: update by push
+3f7f0bd refs/heads/main@{2026-11-13 07:28:49 -0800}: commit: feat(native): unblock 16.635 cold configure and live card actions
+3f7f0bd HEAD@{2026-11-13 07:28:49 -0800}: commit: feat(native): unblock 16.635 cold configure and live card actions
+5a1c576 refs/heads/main@{2026-11-12 21:29:23 -0800}: commit: docs(native): hand off the content-ready gate with a capture tool
+5a1c576 HEAD@{2026-11-12 21:29:23 -0800}: commit: docs(native): hand off the content-ready gate with a capture tool
+173b440 refs/heads/main@{2026-11-12 21:24:00 -0800}: commit: feat(native): resolve the four 16.635 core anchors
+173b440 HEAD@{2026-11-12 21:24:00 -0800}: commit: feat(native): resolve the four 16.635 core anchors
+31c109f refs/heads/main@{2026-11-12 21:07:03 -0800}: commit: fix(native): correct the 16.635 tick getter and record the A51 run
+31c109f HEAD@{2026-11-12 21:07:03 -0800}: commit: fix(native): correct the 16.635 tick getter and record the A51 run
+bd8ca99 refs/remotes/origin/main@{2026-11-12 20:29:56 -0800}: update by push
+bd8ca99 refs/heads/main@{2026-11-12 20:29:52 -0800}: commit: docs: refresh handoff for the 16.635 APK deploy
+bd8ca99 HEAD@{2026-11-12 20:29:52 -0800}: commit: docs: refresh handoff for the 16.635 APK deploy
+22dbef1 refs/heads/main@{2026-11-12 20:26:07 -0800}: commit: docs(native): record the 16.635.1 APK version code
+22dbef1 HEAD@{2026-11-12 20:26:07 -0800}: commit: docs(native): record the 16.635.1 APK version code
+0293a34 refs/heads/main@{2026-11-12 20:25:45 -0800}: commit: feat(build): add Linux probe/APK build and A51 deploy scripts
+0293a34 HEAD@{2026-11-12 20:25:45 -0800}: commit: feat(build): add Linux probe/APK build and A51 deploy scripts
+f255b35 refs/heads/main@{2026-11-12 20:16:51 -0800}: commit: feat(build): support a pinned 16.635.1 probe APK build
+f255b35 HEAD@{2026-11-12 20:16:51 -0800}: commit: feat(build): support a pinned 16.635.1 probe APK build
+cecf1a6 refs/heads/main@{2026-11-12 20:09:21 -0800}: commit: docs(native): fix Ghidra project wording
+cecf1a6 HEAD@{2026-11-12 20:09:21 -0800}: commit: docs(native): fix Ghidra project wording
+06fd53c refs/heads/main@{2026-11-12 20:09:16 -0800}: commit: docs: clarify recovered GameState constructor fields
+06fd53c HEAD@{2026-11-12 20:09:16 -0800}: commit: docs: clarify recovered GameState constructor fields
+df0e388 refs/heads/main@{2026-11-12 20:08:59 -0800}: commit (amend): fix(native): log the selected probe target build
+df0e388 HEAD@{2026-11-12 20:08:59 -0800}: commit (amend): fix(native): log the selected probe target build
+f2fa947 refs/heads/main@{2026-11-12 20:08:47 -0800}: commit: fix(native): log the selected probe target build
+f2fa947 HEAD@{2026-11-12 20:08:47 -0800}: commit: fix(native): log the selected probe target build
+27519de refs/heads/main@{2026-11-12 20:08:30 -0800}: commit: docs: record 16.635 probe wiring and Ghidra analysis status
+27519de HEAD@{2026-11-12 20:08:30 -0800}: commit: docs: record 16.635 probe wiring and Ghidra analysis status
+63b8a93 refs/heads/main@{2026-11-12 20:08:17 -0800}: commit: feat(native): wire 16.635 probe hooks and recover GameState store map
+63b8a93 HEAD@{2026-11-12 20:08:17 -0800}: commit: feat(native): wire 16.635 probe hooks and recover GameState store map
+bd05ec2 refs/heads/main@{2026-11-12 19:53:43 -0800}: commit: docs(native): correct replay vtable marker wording
+bd05ec2 HEAD@{2026-11-12 19:53:43 -0800}: commit: docs(native): correct replay vtable marker wording
+8f3beb8 refs/heads/main@{2026-11-12 19:53:34 -0800}: commit: docs: record replay-controller recovery commit in handoff
+8f3beb8 HEAD@{2026-11-12 19:53:34 -0800}: commit: docs: record replay-controller recovery commit in handoff
+3a7d308 refs/heads/main@{2026-11-12 19:53:27 -0800}: commit (amend): feat(native): recover replay controller and generate 16.635 layout header
+3a7d308 HEAD@{2026-11-12 19:53:27 -0800}: commit (amend): feat(native): recover replay controller and generate 16.635 layout header
+ee9b108 refs/heads/main@{2026-11-12 19:53:19 -0800}: commit: feat(native): recover replay controller and generate 16.635 layout header
+ee9b108 HEAD@{2026-11-12 19:53:19 -0800}: commit: feat(native): recover replay controller and generate 16.635 layout header
+ca6994f refs/remotes/origin/main@{2026-11-12 19:34:12 -0800}: update by push
+ca6994f refs/heads/main@{2026-11-12 19:34:08 -0800}: commit: feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling
+ca6994f HEAD@{2026-11-12 19:34:08 -0800}: commit: feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling
+98d94ad refs/remotes/origin/main@{2026-11-12 19:08:01 -0800}: update by push
+98d94ad refs/heads/main@{2026-11-12 19:07:59 -0800}: commit: docs: update handoff for the next session
+98d94ad HEAD@{2026-11-12 19:07:59 -0800}: commit: docs: update handoff for the next session
+40d9a45 refs/remotes/origin/main@{2026-11-12 19:04:50 -0800}: update by push
+40d9a45 refs/heads/main@{2026-11-12 19:04:45 -0800}: commit: docs: refocus roadmap on native 16.635 engine and X-Bow specialist
+40d9a45 HEAD@{2026-11-12 19:04:45 -0800}: commit: docs: refocus roadmap on native 16.635 engine and X-Bow specialist
+32d76f3 refs/heads/main@{2026-11-12 19:04:39 -0800}: commit: feat(crforge): add bridge, catalog, attestation, and F0 fixes
+32d76f3 HEAD@{2026-11-12 19:04:39 -0800}: commit: feat(crforge): add bridge, catalog, attestation, and F0 fixes
+4d4576b HEAD@{2026-11-12 19:04:37 -0800}: reset: moving to HEAD
+4d4576b HEAD@{2026-11-12 14:36:35 -0800}: reset: moving to HEAD
+4d4576b refs/remotes/origin/main@{2026-11-12 11:20:14 -0800}: update by push
+4d4576b refs/heads/main@{2026-11-12 11:19:49 -0800}: rebase (finish): refs/heads/main onto 83016026e330f0bfecd4e932208b5810357df82a
+4d4576b HEAD@{2026-11-12 11:19:49 -0800}: rebase (finish): returning to refs/heads/main
+4d4576b HEAD@{2026-11-12 11:19:49 -0800}: rebase (continue): commit
+8301602 HEAD@{2026-11-12 11:18:53 -0800}: pull --rebase origin main (start): checkout 83016026e330f0bfecd4e932208b5810357df82a
+8301602 refs/remotes/origin/main@{2026-11-12 11:18:43 -0800}: fetch --append --no-auto-gc --no-write-commit-graph --prune origin: fast-forward
+00dee8b refs/heads/main@{2026-11-12 08:39:01 -0800}: commit: commit
+00dee8b HEAD@{2026-11-12 08:39:01 -0800}: commit: commit
+e14d368 refs/remotes/origin/main@{2026-11-11 20:36:57 -0800}: update by push
+e14d368 refs/heads/main@{2026-11-11 20:36:54 -0800}: commit: test: normalize CRLF in native golden-bytes test; record Phase 1 status
+e14d368 HEAD@{2026-11-11 20:36:54 -0800}: commit: test: normalize CRLF in native golden-bytes test; record Phase 1 status
+88cd285 refs/heads/main@{2026-11-11 20:36:24 -0800}: pull --ff-only origin main: Fast-forward
+88cd285 HEAD@{2026-11-11 20:36:24 -0800}: pull --ff-only origin main: Fast-forward
+712423c HEAD@{2026-11-11 20:36:23 -0800}: reset: moving to HEAD
+4c82496 refs/remotes/fork/HEAD@{2026-11-11 20:36:17 -0800}: fetch
+4c82496 refs/remotes/fork/main@{2026-11-11 20:36:17 -0800}: fetch --append --no-auto-gc --no-write-commit-graph --prune fork: storing head
+88cd285 refs/remotes/origin/main@{2026-11-11 20:36:17 -0800}: fetch --append --no-auto-gc --no-write-commit-graph --prune origin: fast-forward
+712423c refs/remotes/origin/main@{2026-11-11 17:45:36 -0800}: update by push
+712423c refs/heads/main@{2026-11-11 17:45:35 -0800}: commit: docs: replace HPC with the $500 cloud-credit plan
+712423c HEAD@{2026-11-11 17:45:35 -0800}: commit: docs: replace HPC with the $500 cloud-credit plan
+8871938 refs/remotes/origin/main@{2026-11-11 17:35:11 -0800}: update by push
+8871938 refs/heads/main@{2026-11-11 17:35:10 -0800}: commit: docs: add the OS and compute matrix for each phase
+8871938 HEAD@{2026-11-11 17:35:10 -0800}: commit: docs: add the OS and compute matrix for each phase
+771804f refs/remotes/origin/main@{2026-11-11 17:07:32 -0800}: update by push
+771804f refs/heads/main@{2026-11-11 17:07:31 -0800}: commit: docs: drop the teacher/boss framing and tighten the training loop
+771804f HEAD@{2026-11-11 17:07:31 -0800}: commit: docs: drop the teacher/boss framing and tighten the training loop
+9de7e93 refs/remotes/origin/main@{2026-11-11 17:04:21 -0800}: update by push
+9de7e93 refs/heads/main@{2026-11-11 17:04:20 -0800}: commit: docs: add the learning loop, promotion gate and reward-hacking rules
+9de7e93 HEAD@{2026-11-11 17:04:20 -0800}: commit: docs: add the learning loop, promotion gate and reward-hacking rules
+f5cba3a refs/remotes/origin/main@{2026-11-11 16:54:38 -0800}: update by push
+f5cba3a refs/heads/main@{2026-11-11 16:54:37 -0800}: commit: docs: commit to V4 16.8M and add the smoke-test sequence
+f5cba3a HEAD@{2026-11-11 16:54:37 -0800}: commit: docs: commit to V4 16.8M and add the smoke-test sequence
+59d251d refs/remotes/origin/main@{2026-11-11 16:06:30 -0800}: update by push
+59d251d refs/heads/main@{2026-11-11 16:06:28 -0800}: commit: docs: make the rooted phone optional at Phase 9
+59d251d HEAD@{2026-11-11 16:06:28 -0800}: commit: docs: make the rooted phone optional at Phase 9
+42ab2e7 refs/remotes/origin/main@{2026-11-11 16:01:09 -0800}: update by push
+42ab2e7 refs/heads/main@{2026-11-11 16:01:08 -0800}: commit: docs: prioritize the Null's Royale path and defer the main bridge
+42ab2e7 HEAD@{2026-11-11 16:01:08 -0800}: commit: docs: prioritize the Null's Royale path and defer the main bridge
+cc84505 refs/remotes/origin/main@{2026-11-11 15:39:43 -0800}: update by push
+cc84505 refs/heads/main@{2026-11-11 15:39:42 -0800}: commit: docs: make memory reading the primary main-server path
+cc84505 HEAD@{2026-11-11 15:39:42 -0800}: commit: docs: make memory reading the primary main-server path
+81bcaf1 refs/remotes/origin/main@{2026-11-11 15:30:23 -0800}: update by push
+81bcaf1 refs/heads/main@{2026-11-11 15:30:22 -0800}: commit: docs: retarget roadmap to main-server Ultimate Champion with X-Bow 3.0
+81bcaf1 HEAD@{2026-11-11 15:30:22 -0800}: commit: docs: retarget roadmap to main-server Ultimate Champion with X-Bow 3.0
+a2cbf75 refs/remotes/origin/main@{2026-11-11 15:26:44 -0800}: update by push
+a2cbf75 refs/heads/main@{2026-11-11 15:26:42 -0800}: commit: docs: keep the upstream README and prepend the project header
+a2cbf75 HEAD@{2026-11-11 15:26:42 -0800}: commit: docs: keep the upstream README and prepend the project header
+230a3a2 refs/remotes/origin/main@{2026-11-11 15:26:22 -0800}: update by push
+d29716d refs/remotes/upstream/yes-delay@{2026-11-11 15:24:53 -0800}: fetch --unshallow upstream: storing head
+743a2d2 refs/remotes/origin/main@{2026-11-11 15:23:11 -0800}: fetch origin --prune: forced-update
+230a3a2 refs/heads/main@{2026-11-11 15:23:10 -0800}: commit: Flatten FirstLight_CR into the project root; add HoF roadmap
+230a3a2 HEAD@{2026-11-11 15:23:10 -0800}: commit: Flatten FirstLight_CR into the project root; add HoF roadmap
+4c82496 refs/remotes/origin/HEAD@{2026-11-11 15:08:04 -0800}: fetch
+4c82496 refs/remotes/origin/main@{2026-11-11 15:08:04 -0800}: fetch origin --prune: storing head
+4c82496 refs/heads/main@{2026-11-11 14:40:29 -0800}: clone: from https://github.com/Jaasssoooonnnnn/FirstLight_CR
+4c82496 refs/remotes/upstream/HEAD@{2026-11-11 14:40:29 -0800}: clone: from https://github.com/Jaasssoooonnnnn/FirstLight_CR
+4c82496 HEAD@{2026-11-11 14:40:29 -0800}: clone: from https://github.com/Jaasssoooonnnnn/FirstLight_CR

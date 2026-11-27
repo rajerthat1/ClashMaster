@@ -1,0 +1,287 @@
+{
+  "build": "16.635.1",
+  "libg_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
+  "note": "Offsets recovered from RoyaleFish probe_x86_64_16635.diff and verified against the ARM64 16.635.1 build by old-shape instruction comparison. See ROYALEFISH_CROSSCHECK.md. kJsonMemberFind is intentionally not overridden: the 16.635 wrapper 0x139cadc calls 0xe38d60 with a StringView, matching the old 0x1217934 -> 0xd0e100 chain; 0xc40d68 is a different map implementation.",
+  "overrides": [
+    {
+      "hook": "kActionSpawnMode1ChildCreateReturn",
+      "new_offset": "0x0108236c",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x010d2418->0x0108236c (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kActionSpawnToLocationStaticVtable",
+      "new_offset": "0x01a47298",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b0f058->0x01a47298 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kActionWaitRuntimeVtable",
+      "new_offset": "0x01a55418",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1d1d8->0x01a55418 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kActionWaitStaticVtable",
+      "new_offset": "0x01a48058",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b0fe18->0x01a48058 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kActionWaitUpdate",
+      "new_offset": "0x010b6110",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01105930->0x010b6110 (func); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAdditionalAttackReturn",
+      "new_offset": "0x010bfab4",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x0110f17b->0x010bfab4 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAreaEffectObjectVtable",
+      "new_offset": "0x01a4f9a0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b17760->0x01a4f9a0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAttackComponentVtable",
+      "new_offset": "0x01a558b0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1d670->0x01a558b0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAttackExecute",
+      "new_offset": "0x010bcddc",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x0110c1d0->0x010bcddc (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAttackScale",
+      "new_offset": "0x010b94c8",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01108b10->0x010b94c8 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAttackScaleReturn",
+      "new_offset": "0x010bfcec",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x0110f3cb->0x010bfcec (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kAttackStartReturn",
+      "new_offset": "0x010bf698",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x0110ed8b->0x010bf698 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kBuffAssetClassNameGetter",
+      "new_offset": "0x00ebf530",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x00f11530->0x00ebf530 (func); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kBuffAssetVtable",
+      "new_offset": "0x01a349f0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01afc7b0->0x01a349f0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kBuffComponentVtable",
+      "new_offset": "0x01a55838",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1d5f8->0x01a55838 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kCaptureCharacterActionDataVtable",
+      "new_offset": "0x01a3fab0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b07870->0x01a3fab0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kCaptureCharacterRuntimeVtable",
+      "new_offset": "0x01a51a20",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b197e0->0x01a51a20 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kChampionActionDataVtable",
+      "new_offset": "0x01a3fd60",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b07b20->0x01a3fd60 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kChampionControllerVtable",
+      "new_offset": "0x01a51c30",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b199f0->0x01a51c30 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kChangeGameObjectDataVtable",
+      "new_offset": "0x01a3feb8",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b07c78->0x01a3feb8 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kChangeMutationCall",
+      "new_offset": "0x00f93884",
+      "evidence": "Old 0xe58678 is the indirect blr through vtable+0x1e0; 0x1080784 is the function entry. 0xf93884 is the blr (the same call 0x10809c0 contains), matching the old call shape."
+    },
+    {
+      "hook": "kCharacterAbilityDataVtable",
+      "new_offset": "0x01a348e0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01afc6a0->0x01a348e0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kCharacterSpawnHelper",
+      "new_offset": "0x01081904",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x010d1710->0x01081904 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kCharacterVtable",
+      "new_offset": "0x01a4fbb8",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b17978->0x01a4fbb8 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kChefRuntimeVtable",
+      "new_offset": "0x01a51ec0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b19c80->0x01a51ec0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kChefStaticVtable",
+      "new_offset": "0x01a40168",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b07f28->0x01a40168 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kCombatDamage",
+      "new_offset": "0x010c1e50",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01111420->0x010c1e50 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kCombatHealAreaReturn",
+      "new_offset": "0x0108f1ac",
+      "evidence": "Return address (call+4) of the kCombatHeal call at 0x108f1a8. RF annotates 0x108f1b0, one instruction past the true return address."
+    },
+    {
+      "hook": "kCombatHealEffectReturn",
+      "unresolved": true,
+      "evidence": "Old 0xf20df0 is the return address of a third kCombatHeal call. The 16.635.1 build has only two call sites (0x108940c, 0x108f1a8); the effect-site call was inlined, so no equivalent return address exists."
+    },
+    {
+      "hook": "kCombatImpactFunction",
+      "new_offset": "0x01086dc0",
+      "evidence": "Old 0xf29514 body matches 0x1086dc0 after a 0x10 frame shrink (ldr x8,[x1]; mov x19,x0; mov x0,x1; mov w23,w4; mov w27,w3; mov w28,w2). The agreed kCombatImpactBoundary 0x10870fc lies inside 0x1086dc0, not inside our 0xcce0d0 prologue clone."
+    },
+    {
+      "hook": "kDaggerRuntimeVtable",
+      "new_offset": "0x01a51810",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b195d0->0x01a51810 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kDaggerStaticVtable",
+      "new_offset": "0x01a3f6a8",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b07468->0x01a3f6a8 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kDashingAttackChainDataVtable",
+      "new_offset": "0x01a42b10",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b0a8d0->0x01a42b10 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kDashingAttackChainRuntimeVtable",
+      "new_offset": "0x01a52428",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1a1e8->0x01a52428 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kDeathOwnerResourceCall",
+      "new_offset": "0x010c1278",
+      "evidence": "Old 0xf63714 is a bl to the whole-delta resource update; the 16.635 call at 0x10c1278 targets kResourceWholeDelta 0x1098b8c, with the return at 0x10c127c."
+    },
+    {
+      "hook": "kDeployScaleReturn",
+      "new_offset": "0x01077548",
+      "evidence": "Old 0xf1abc0 is `str w9,[x19,#0x15c]; b.le; b` and 0x1077548 matches exactly, so RF is right and this anchor is a body point, not a call return."
+    },
+    {
+      "hook": "kExecuteCallerReturn",
+      "new_offset": "0x010bf7fc",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x0110ec66->0x010bf7fc (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kGameAppGetter",
+      "new_offset": "0x007c2808",
+      "evidence": "Old 0x755818 is a GameApp accessor. 0x7c2808 is adrp/ldr x0,[global]/ret; our 0x7c27ac is a bare `b` thunk. The tiny accessor is the post-optimisation equivalent."
+    },
+    {
+      "hook": "kLibgStringFromUtf8",
+      "new_offset": "0x0153de30",
+      "evidence": "Old 0x138a800 is `movi d0; str xzr,[x0,#8]; str d0,[x0]; b ...` (a tiny string initialiser); 0x153de30 is identical. Our 0x15267f0 is a different, larger function."
+    },
+    {
+      "hook": "kMovementComponentVtable",
+      "new_offset": "0x01a55a18",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1d7d8->0x01a55a18 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kMovementScale",
+      "new_offset": "0x010b9300",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01108990->0x010b9300 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kPeriodicAttackModifierActionDataVtable",
+      "new_offset": "0x01a41998",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b09758->0x01a41998 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kPeriodicAttackModifierRuntimeVtable",
+      "new_offset": "0x01a52ca8",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1aa68->0x01a52ca8 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kPeriodicResourceCall",
+      "new_offset": "0x010775dc",
+      "evidence": "Old 0xf1acd0 is a bl to kResourceWholeDelta (old 0xf3ba4c); 0x10775dc targets the new kResourceWholeDelta 0x1098b8c, return 0x10775e0. Our 0x10775f4 targets a different helper."
+    },
+    {
+      "hook": "kPeriodicResourceReturn",
+      "new_offset": "0x010775e0",
+      "evidence": "Return address of the bl at 0x10775dc (call+4), consistent with kPeriodicResourceCall."
+    },
+    {
+      "hook": "kPrimaryAttackReturn",
+      "new_offset": "0x010bf944",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x0110ef91->0x010bf944 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kProjectileVtable",
+      "new_offset": "0x01a50348",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b18108->0x01a50348 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kReplayBattleControllerClock",
+      "new_offset": "0x00d9c278",
+      "evidence": "Old 0xc890bc is the guard entry `ldrb w8,[x0,#0x18c]; cbz; ret; sub sp,#0xe0`; 0xd9c278 is the identical guard entry (field +0x17c). Our 0xd9c284 is the body after the guard."
+    },
+    {
+      "hook": "kReplayManagerGetter",
+      "new_offset": "0x00da0658",
+      "evidence": "Old 0xc8c5b8 is `adrp; ldr x0,[global]; ret; ldr x0,[x0,#0x48]; ret`; 0xda0658 is the identical tiny getter. Our 0xda0670 is a large unrelated function."
+    },
+    {
+      "hook": "kSpawnAttachHelperCall",
+      "new_offset": "0x01076744",
+      "evidence": "Old 0xf18ff0 is a bl to kCharacterSpawnHelper (old 0xf19314); 0x1076744 targets the new kCharacterSpawnHelper 0x1081904. Our 0x1076758 is a `b.ne`, not a call."
+    },
+    {
+      "hook": "kSpawnAttachHelperReturn",
+      "new_offset": "0x01076748",
+      "evidence": "Return address of the bl at 0x1076744 (call+4)."
+    },
+    {
+      "hook": "kStateSnapshotDelete",
+      "new_offset": "0x011ccee8",
+      "evidence": "Old 0x105e8bc is the delete function entry (stp -0x20; str x19; mov x29,sp; adrp x8; mov x19,x0); 0x11ccee8 matches. Our 0x11cfb78 is a bl inside the snapshot serialiser."
+    },
+    {
+      "hook": "kThresholdRelocationActionDataVtable",
+      "new_offset": "0x01a41da0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b09b60->0x01a41da0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kThresholdRelocationRuntimeVtable",
+      "new_offset": "0x01a52fc0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b1ad80->0x01a52fc0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kWarpCharacterDataVtable",
+      "new_offset": "0x01a481b0",
+      "evidence": "RoyaleFish 16.635.1 x86 table maps 0x01b0ff70->0x01a481b0 (offset); old anchor is MISSING/AMBIGUOUS in our diff."
+    },
+    {
+      "hook": "kWarpPositionCommit",
+      "new_offset": "0x00fc019c",
+      "evidence": "Old 0xe82a34 opens `sub sp,#0x70; stp x29,x30,[sp,#0x10]; stp x28,x27,...; stp x20,x19,[sp,#0x60]`; 0xfc019c matches 9/14 instructions including the full frame. Our 0xfc01e4 is mid-body and RF 0xfc00a0 is a different 0x30-frame function."
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+Video 2: Reading Clash Royale Live Memory State
+
+Hello everyone, I'm JasonMoonW. This is a very special episode: after months of preparation, I wrote a program that directly reads Clash Royale's internal game state. Let's jump straight into a demo. First, I open my custom listener program alongside an Android emulator running a Clash Royale private server. Before a match starts, the listener window stays black. Once I queue into a match and the cards load, the listener screen lights up—displaying gray boxes for tower HP at the top, turning blue and red as soon as I deploy my first card, and rendering active troops as small dots on the arena. (Plays a match while watching the live visualizer track units in real time, joking about losing while commentating.)
+
+So what does this project actually do? By reading Clash Royale's memory, it locates where key match data is stored—giving us direct access to elixir, match timer, current hand cards, tower HP, and all active units on the field. Previously, getting game state required computer vision (taking screenshots for an AI to parse), which suffered from low accuracy in crowded fights and over a second of latency. My listener locates the exact object addresses in memory and polls the game state 30 times per second with zero latency or misclassification.
+
+This acts as a massive accelerator for bot development. For instance, if you want to script a Hog 2.6 or Golem beatdown bot, you can read exact unit positions directly from memory and automate card placements. Let me walk through how it works technically. First, I tested on Null's Royale—the largest global private server—since reverse engineering the official Supercell client would violate its Terms of Service, even though the underlying mechanics are identical.
+
+1. APK Static Analysis: Inspecting the APK's hash, package name, launch activity, and native libraries revealed that libg.so is the core game engine file where all future static analysis focuses.
+
+2. Network Traffic & Packet IDs: Monitoring network connections showed all traffic goes to a specific IP on port 9339. While packet payloads are encrypted, observing packet IDs during specific actions revealed patterns: client-to-server packets start with 1 (e.g., 18411 triggers when deploying a card), server-to-client packets start with 2 (e.g., 26915 and 23877 at match end, 26349 at match start), and heartbeat sync packets exchange every 5 seconds.
+
+3. Static Offsets in libg.so: Adding specific offsets to libg.so's base address locates packet handlers, encryption/decryption routines, and dispatchers, allowing us to inspect plaintext messages before encryption.
+
+4. Extracting Live Memory Structures:
+   - Elixir & Battle Clock: Elixir is stored as an integer internally (incrementing every 2.8 seconds at 1x speed), while the internal BattleClock runs roughly 5 seconds ahead of the displayed match timer.
+   - Tower HP & Hand Cards: Specific pointer chains yield King and Princess Tower HP. Adding 0x290 to a card holder pointer points to a 5-element array representing the 4 cards in hand plus the next queued card, storing their deck indices (e.g., shifting from 7613 to 5613 after playing the leftmost card).
+   - Arena Units & Entity IDs: Tracking active units requires checking alive/dead flags so dead units lingering in memory aren't read. Every card maps to a unique DataID: troops start with 26 (Knight is 26000000, Archers 26000001), and spells start with 28 (Fireball is 28000000, likely the first spell Supercell coded). Card levels are stored at a nearby offset (level_index + 1).
+
+Finally, I want to reiterate that this was tested strictly on the Null's Royale private server—running memory hooks on official servers will get your account banned. I plan to open-source the detailed reverse-engineering notes and listener source code soon.

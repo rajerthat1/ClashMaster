@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict, fields, replace
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Callable
 import torch
 
 from ...battle_env import ENTITY_LIMIT, EVENT_LIMIT, EVENT_WINDOW_TICKS, STANDARD_MATCH_TICKS, BattleEnvV1
+from ...competitive_release import load_release, use_release
 from ...contracts import ActionKind, ActionV1, EnvironmentConfigV1
 from ...cr_native_env import (
     DEFAULT_HOST,
@@ -77,7 +79,11 @@ def run_offline_match(
         result = {"stopped": True, "terminated": False, "decisions": 0}
         (artifact_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
         return result
-    bundle = production_semantic_bundle()
+    # The checkpoint selects its competitive release (16.635 models load next
+    # to the default 15.535 ones). Bind the same release to the engine catalog
+    # and ruleset, or a 16.635 model would drive a 15.535 environment.
+    release = getattr(loaded.model, "competitive_release", None)
+    bundle = production_semantic_bundle(release) if release else production_semantic_bundle()
     native = NativeClashEnv(host, port, timeout=30.0)
     # Bind the live device build explicitly. The local catalog is release-pinned
     # (15.535.86); the engine/probe/content identities come from the phone. A
@@ -87,24 +93,28 @@ def run_offline_match(
     client_version = str(status_fn().get("clientVersion") or "") if callable(status_fn) else ""
     native_profile = load_native_build_profile(client_version) if client_version else None
     ruleset_manifest = None
-    if native_profile is not None:
-        ruleset_manifest = build_native_ruleset_manifest(
-            client_version=client_version,
-            catalog=bundle.native_card_catalog,
-            environment_config=environment_config,
-        )
+    with use_release(load_release(release)) if release else nullcontext():
+        if native_profile is not None:
+            ruleset_manifest = build_native_ruleset_manifest(
+                client_version=client_version,
+                catalog=bundle.native_card_catalog,
+                environment_config=environment_config,
+            )
     # 16.635.1 omits the combat-ring card-play feed; requesting it fails closed
     # at reset. Model actions still emit action-executed events.
     combat_ring_hooks = bool(native_profile.get("combat_ring_hooks", False)) if native_profile else True
     if (ruleset_manifest is None or ruleset_manifest.config.get("engine") != "crforge") and combat_ring_hooks:
         native.public_card_play_events_from_combat_ring = True
-    environment = BattleEnvV1(
-        native=native,
-        card_catalog=bundle.native_card_catalog,
-        semantic_subset_contract=bundle.semantic_subset_contract,
-        effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
-        ruleset_manifest=ruleset_manifest,
-    )
+    # Verification resolves the active release's form evidence, so construct
+    # the environment inside the checkpoint's release scope.
+    with use_release(load_release(release)) if release else nullcontext():
+        environment = BattleEnvV1(
+            native=native,
+            card_catalog=bundle.native_card_catalog,
+            semantic_subset_contract=bundle.semantic_subset_contract,
+            effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
+            ruleset_manifest=ruleset_manifest,
+        )
     session = None
     decisions = actions = rejected = 0
     terminated = truncated = False

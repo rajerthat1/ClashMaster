@@ -1,0 +1,502 @@
+Daybreak CR
+An Open-Source Clash Royale AI Model
+Complete English translation of the presentation video
+
+Presented by JasonMoonW
+Source code: https://github.com/Jason-XII/daybreak-cr
+
+Headline claim. The first Clash Royale AI model to come close to global rank 3000, outperforming
+99.9% of human players. The screenshot on the cover was taken on 23 October 2026. (In the narration
+the rank is given as 3100th on the international server, computed against roughly 10 million monthly
+active players; elsewhere the slides say ``about 3000th.'')
+
+At a glance
+Item
+
+Value
+
+Parameters
+
+6.1 million (25 MB weight file)
+
+Training data
+
+177,000 human ladder matches
+
+Median inference time
+
+5.1 ms (on the author's Apple computer)
+
+Decision interval
+
+250 ms (4 decisions per second)
+
+Peak result
+
+about rank 3000 (3100 per narration), international
+server
+
+Final-round challenge (14,000-trophy
+account)
+
+Giant Skeleton Hammer 12--2, Mortar 12--2, Rage Electro Giant 9--3
+
+Compute used
+
+30,000 CPU-hours; 2,500 A100-hours; 850 RTX 5090hours
+
+Cost
+
+0 (free university platform)
+
+Time invested
+
+nearly 1,000 hours since March 2026
+
+Daybreak CR --- Video Summary
+
+English translation
+
+Cover and Introduction [00:30]
+
+Slide 1
+
+Hello everyone, I'm JasonMoonW. Today I'm very excited to present my latest research result: Daybreak
+CR. As shown on screen, my AI model has reached rank 3100 on the international server. Taking Clash
+Royale's roughly 10 million monthly active users as the base, my Clash Royale AI has surpassed 99.9%
+of human players. The training code is open-sourced on GitHub.
+• Code is open source: https://github.com/Jason-XII/daybreak-cr
+• The first Clash Royale AI model to approach global rank 3000, surpassing 99.9% of human players.
+• Author: JasonMoonW
+• The screenshot on the left of the cover was taken on 23 October 2026.
+Before the real-match video, there are some things you need to know, listed first.
+
+Real-Match Disclaimers [00:59]
+
+Slide 2
+
+The following section demonstrates the model in real matches.
+• To protect the account's safety, the author can only show the model's ladder matches next season.
+• The matches shown are excerpts from the model's ``ultimate challenge'' 12-win run (14,000 trophies,
+not a new account), and they do not use the model's strongest deck.
+
+Limitations of the model
+• It was trained on the August battle engine and therefore missed three balance patches. The model
+has never seen Elite Ice Wizard, Big Stomach Bag, Elite Electro Wizard, or Awakened Electro Giant
+(精英冰法，大胃袋，精英电法，觉醒电胖).
+• Because of a bug during training, the model almost never uses elite abilities. This is fixed in the
+next version, but the model shown in the recording still partially retains the problem.
+
+Gameplay Overlay [01:05]
+
+Slide 3
+
+• To avoid an overly long video, only the last game was cut from the match footage.
+The real-match demonstration runs from [01:04] to [04:11] without narration.
+
+Model Overview [04:11]
+
+Slide 4
+
+Daybreak CR is a Clash Royale AI developed by the community. It was built by the author together
+with a few other people, and its level exceeds that of most human players.
+• 6.1 million parameters; learned from 177,000 human ladder matches.
+• Median inference time 5.1 ms (on the author's Apple computer); decision interval 250 ms (four
+decisions per second).
+• Strengths and weaknesses. The model is good at mid-to-high elixir and tempo-style decks (Mortar,
+Electro Giant, ``Triple Rush'' 三冲, etc.). It performs comparatively worse on low-cost, high-skill
+2
+
+Daybreak CR --- Video Summary
+
+English translation
+
+decks such as Fast Hog cycle (速猪), Fast X-Bow (速弩), and Poison--Miner (毒钻; written 毒矿 in
+the narration), because it has trained on those less. Overall strength is still high.
+
+How a Clash Royale AI Works [04:49]
+
+Slide 5
+
+To explain the project, I first have to introduce the basic working principle of a Clash Royale AI.
+
+Game-state input
+(a) All entities in the game (troops, buildings, princess/king towers, spells and projectiles) and each
+entity's attributes (position, health, aggro/targeting, etc.; 47 in total), plus hero abilities.
+(b) The card currently being deployed, the player's own hand and deck-cycle status (inferred by the
+program), and the opponent's played-card history (used to infer the opponent's deck cycle).
+(c) The player's own and the opponent's elixir, the elapsed match time, the elixir multiplier, the Royal
+Chef tower progress bar (厨师塔进度条), and the current crown count.
+
+Decisions
+The model makes one decision every 250 ms: Should a card be played? Which card? At which position?
+Some of the inputs above (shown in bold) may be controversial, notably the elixir counts and the inferred opponent
+hand. Top human players can also do this mentally, but some will still say the AI is cheating. This is exactly what the
+model's input is, and the author does not want to hide it; viewers can judge for themselves. In the future the author
+may change the inputs so the model computes more itself and reads less.
+
+Model Architecture [05:56]
+
+Slide 6
+
+The diagram on the left is the full version; you do not need to understand it. (The author promises no
+such obscure diagrams will appear again.)
+
+The rough flow, in six steps
+1. Load card data.
+2. Organize unit information.
+3. Use 6 attention layers to infer relationships between units.
+4. Combine the information of the whole arena (via a convolutional neural network) to obtain spatial
+awareness of the arena.
+5. Compress the current situation into one vector and obtain historical memory (via an LSTM).
+6. Make decisions:
+(a) decide whether to play a card and whether to press the ability;
+(b) score each card in hand and choose which to play, or none;
+(c) score every cell of the arena and choose the final deployment position.
+
+Auxiliary prediction targets
+The model additionally predicts the current win rate, the interval until the next card play, and the
+time until the next play; the narration also lists which card will be played next. These help the model
+3
+
+Daybreak CR --- Video Summary
+
+English translation
+
+imitate human matches better.
+Reason given in the narration: in imitation learning, 96% or more of actions are simply ``wait.'' Without auxiliary targets
+the model would spend most of its time learning ``wait'' versus ``play now.'' Auxiliary targets give it something else to
+think about while waiting, so it generalizes better and imitates human matches more easily and more smoothly.
+
+Training Pipeline, Part 1: Simulating Matches [07:33]
+
+Slide 7
+
+Part 1 --- the prerequisite: how to simulate large numbers of Clash Royale matches accurately so
+the model can gather experience.
+May 2024: Bilibili user @wty-yy.
+Used image recognition to train a reinforcement-learning model to play Fast Hog. With only 8 hours of
+the author's own expert gameplay data, it applied offline reinforcement learning. This was pioneering,
+but experience gathering was limited and performance was mediocre; its win rate against 8,000-trophy
+bot opponents was low.
+March--July 2026: the author's own simulator.
+The author hand-wrote a Clash Royale battle environment to simulate matches (shown in an earlier
+video). With so many cards, evolutions (觉醒) and balance changes, the workload was too large and
+the accuracy of card interactions was low, so this project hit an obvious bottleneck.
+August 2026: reverse-engineering Nulls Royale.
+The author reverse-engineered the Clash Royale private server Nulls Royale and could read game state
+directly from the Android process, including unit positions and health. From this video on, training an
+AI went from completely infeasible to somewhat feasible: the program finally had a window into the
+battle engine.
+September 2026: FirstlightCR.
+FirstlightCR appeared, by Bilibili creator @真的无名呢. He completely reverse-engineered the Nulls
+Royale battle-engine interface and can read almost every battle-related detail accurately. For the first
+time a model could gather large amounts of experience from accurate matches on the native engine;
+it ultimately reached the private server's Hall of Fame and laid the foundation for Clash Royale AI
+training methods.
+
+Training Pipeline, Part 1 (continued) [09:34]
+
+Slide 8
+
+How can the model gather experience as fast as possible?
+• Firstlight's method. Plant a ``mole'' (内鬼) in the Nulls Royale client. It hides in the game process,
+reads memory, and sends it over the network to an external listener program; the external program
+can send commands in to control actions such as card placement. This requires the computer to
+run an Android emulator; without one the game process cannot run and simulation cannot start.
+• The author's constraint. The compute he can use is an x86_64 Linux system without KVM virtualization, meaning it cannot run virtual machines or an Android emulator.
+• The breakthrough. His collaborator Arron came up with an excellent idea: remove the emulator
+shell altogether and make the game engine run directly on Linux and talk directly to the program
+(a Python program, per the narration). He succeeded.
+• Result. Experience-gathering efficiency greatly exceeded Firstlight's. With the existing compute,
+simulating the engine alone yields 140,000 matches per hour, i.e. about 20 years of Clash Royale
+matches per day.
+
+4
+
+Daybreak CR --- Video Summary
+
+English translation
+
+Training Pipeline, Part 2: Imitation Learning [10:45]
+
+Slide 9
+
+Part 2 --- the key to training: imitation learning.
+Once data collection and accurate battle simulation are no longer bottlenecks, how to train the AI
+becomes the most important question.
+For a full month, before Firstlight appeared, the author tried to train an AI from scratch using his handbuilt Clash Royale engine (see his earlier video) and failed. The model's policy collapsed quickly
+from the very start of training and it completely abandoned the use of tank (胖子) and spell cards (a
+misplaced or mistimed play loses elixir and directly causes a loss), stalling in a local optimum.
+• Why: trial and error punishes the model too severely. If a tank or spell is played imperfectly, the
+opponent can easily answer it, for example with a Mini P.E.K.K.A (the narration also says ``or air'',
+空气), and the model loses elixir heavily and then the game. So the model's first lesson is to use
+these cards less, and it gradually uses them less and less until it never uses them. It never learned
+to attack with a tank or to use a spell to sweep an enemy Archer pair.
+• ``Trial and error from scratch is simply too slow.''
+• Self-play can fall into a local optimum: the opponent is weak and I am weak, we both flail around,
+and it feels fine.
+Why did firstlight-cr far exceed the author's own research? The secret is imitating the matches of top
+human players: Firstlight first had its model imitate 240,000 human expert matches, avoiding blind
+trial and error from scratch. The author says he regretted it deeply after seeing that video; with his
+own simulator he had no way of having the program reproduce human expert matches, so Firstlight's
+approach was highly forward-looking.
+
+Training Pipeline, Part 2 (continued) [12:18]
+
+Slide 10
+
+Imitation learning has two big steps.
+1. RoyaleAPI replay conversion and validation. The original replay files are very small; they only
+record when each side placed cards and used abilities (discrete actions, with the game tick). Conversion means following those discrete actions to rebuild the entire match with the battle engine
+and storing it in a format the model can read. Validation means checking the final result of every
+match, making sure tower health matches what the replay file recorded, so the model never learns
+from an incorrect situation or play.
+2. Actual imitation learning: the model learns how humans play. This takes roughly 10 hours of
+training (per narration). Daybreak CR's imitation results:
+Card accuracy
+
+Position top-1
+
+Position top-5
+
+Mean placement error
+
+Play-timing error
+
+72.1%
+
+32.4%
+
+69.3%
+
+2.85 tiles
+
+3.96% (human 3.89%)
+
+Per the narration, ``position top-1'' and ``top-5'' mean the probability that the human's chosen position ranks first, or
+within the first five, of the model's predictions.
+
+Training Pipeline, Part 3: Deep Reinforcement Learning [13:20]
+
+Slide 11
+
+• Hardware: 6× A100, 4× RTX 5090, 56 CPU cores (borrowed from the author's university compute
+platform at the University of Science and Technology of China).
+5
+
+Daybreak CR --- Video Summary
+
+English translation
+
+• After a series of optimizations, training throughput reached 33,000 matches per hour.
+• League training:
+– Deck sampling. In every match, both sides' decks are randomly sampled from the decks of human
+matches. For example, if 2% of matches use Giant Skeleton Hammer, the model has a 2% chance
+of being given that deck; if 4% use Fast Hog, a 4% chance.
+– Opponents. Half of the opponents are the model itself (self-play); the other half are several of
+the model's earlier checkpoints. The lower the model's relative win rate against a checkpoint,
+the larger that checkpoint's share.
+– Updates. Every 1,000 matches the weights are updated with the PPO algorithm; every 20 updates a new checkpoint is generated.
+– Champion rule. If a checkpoint wins more than 55% against the current ``champion'' over 800
+matches, with no large deterioration on other metrics, it becomes the new champion. If it is
+below 45%, training rolls back. If 10 consecutive checkpoints produce no new champion, the
+loop stops and the program ends (a sign the model has hit a bottleneck).
+• The model that reached around rank 3000 went through 360 PPO updates, i.e. 360,000 matches.
+
+Key Training Takeaways, Part 1: Details Decide [15:06]
+
+Slide 12
+
+The training process is simply imitation learning plus reinforcement learning, with nothing academically innovative. But every stage has many details, and every one is crucial: any oversight makes the
+model learn the wrong thing and performance drops sharply. Three of the bugs the author met (all
+now fixed, though see the third):
+1. Temperature. Training used Temperature = 1.0, which is fine, but in real-match testing Temperature = 0.05 was found to make the model much stronger. If you also test with Temperature = 1, the
+model looks terrible, but it is not actually that bad.
+2. Memory reader missing targeting. A small error in the memory-reading program meant each
+entity's target lock (索敌) could not be read, so the model played blind. After the fix the model went
+from about rank 5000 to about rank 3000 on the international server, a very large improvement.
+3. Headless engine card-placement logic. There is a forced 1.1 s delay between tapping the screen
+and the card actually being deployed, and during that window the engine wrongly rejected all
+subsequent card-placement events, so the interval between plays was forced to 1.1 s. This hurts
+low-cost play (which needs fast card cycling), so the model still does not play low-cost decks well.
+It can only be fixed in the next training run, which is now under way.
+
+Key Training Takeaways, Part 2: Imitation Sets the Ceiling [16:55]
+
+Slide 13
+
+Dataset of human matches, 240K, from @真的无名呢:
+https://huggingface.co/datasets/VanguardX101/IL_Replay
+
+• Always validate the data, so every step the model learns can be replayed accurately. After checking,
+only 177,000 of the 240,000 replays could be replayed accurately in the author's battle engine; he
+imitated those 177,000. If the data is correct, after imitation learning the model already plays Clash
+Royale with real strength.
+• Imitation can learn strategy that RL cannot. In several experiments the long PPO runs mainly
+improved the timing of card placement; progress in which card to choose and where to deploy it
+
+6
+
+Daybreak CR --- Video Summary
+
+English translation
+
+was very small. Current experience says that 160,000 human matches (the slide's figure; the model
+itself used 177,000) are still not enough to learn real card selection and placement.
+• New data. A fan shared 700,000 matches from the top 1,000 of the ladder, collected over more than
+a month, of which 96% replay accurately. This enlarges the dataset four to five times and also
+matches the latest balance patch. Learning how top players place cards should greatly help. A new
+multi-day round of imitation learning is in progress, with results to be shown later.
+
+Key Training Takeaways, Part 3: Search [18:50]
+
+Slide 14
+
+Search is the next thing a Clash Royale AI needs, and the only way for a model to surpass the ``Pharaoh''
+(法老; the video does not explain the term). Only one last decisive breakthrough remains. To exceed human strategy the model must use its advantages (counting elixir, tracking cards, running huge numbers
+of simulations) to find strategies better than a human's.
+• Search is possible. Because training is free from the Android emulator, the author implemented
+fork-based search for the battle engine. Fork the original process; the two engine versions have
+identical, complete game state, and from that position they can branch to explore what different
+card plays lead to. It is a bit slow, but with many such game processes, experience gathering is still
+quick overall.
+• Search is effective. Before the model places a card, re-ranking its candidate positions by search
+and playing against the same model without search raises the win rate to about 70% (from roughly
+50--50 to 70--30).
+• But the model struggles to learn search's choices. After accumulating many searched labels, the
+model can only memorize the specific correct answers in the training set; the knowledge does not
+generalize to unseen matches, so distillation efficiency is extremely low. The author suggests two
+possible reasons:
+(a) Not enough data. Search collects data much more slowly than self-play; with very much more
+data the model might learn better choices.
+(b) The model lacks real understanding of Clash Royale and cannot do internal reasoning. This
+shows in the critic's very low explained variance, only about 0.3: its judgment of a position
+is inaccurate, so its evaluation after a search is also inaccurate and the labels themselves are
+imperfect.
+
+Final Data and Resources [21:27]
+
+Slide 15
+
+• Continuous research of more than a month since taking the imitation-plus-reinforcement-learning
+route.
+• The author began researching Clash Royale AI in March, starting with the simulator, then the
+reverse engineering, and then, on seeing the news of FirstlightCR, joining the imitation-learning
+route. He has invested nearly 1,000 hours.
+CPU
+
+GPU --- A100
+
+GPU --- RTX 5090
+
+30,000 hours
+
+2,500 hours
+
+850 hours
+
+• Special thanks to the University of Science and Technology of China (USTC) undergraduate compute platform, which lets an ordinary undergraduate use compute at this scale for his own research.
+It provides this compute free to all ordinary undergraduates who apply.
+7
+
+Daybreak CR --- Video Summary
+
+English translation
+
+• Compute cost: 0 (elsewhere it would be at least five figures).
+• Without this compute the research could not have been completed.
+
+Final Model Results [22:45]
+
+Slide 16
+
+• 6.1 M parameters; the weight file occupies only 25 MB.
+• Reached about rank 3000 on the international server. (In the narration the author first says 3000,
+then corrects himself: 3100.)
+• Ultimate challenge with a 14,000-trophy international account:
+– Giant Skeleton Hammer (大骷髅锤): 12--2
+– Mortar (迫击炮): 12--2
+– Rage Electro Giant (狂暴电车): 9--3
+The narration adds that a few of these games ended in disconnections.
+
+Open-Source Policy [23:15]
+
+Slide 17
+
+The whole Clash Royale AI training pipeline has basically been made to work. The author has opensourced the complete training code (imitation learning, reinforcement learning, and replay conversion) at https://github.com/Jason-XII/daybreak-cr. However, some dependencies cannot
+be open-sourced for now, and he does not dare to.
+1. The model weights cannot be released. If they leaked, the consequences would be serious and
+hard to predict. Academically, training on top of this model would save a great deal of time on
+imitation and reinforcement learning, whether fine-tuning or retraining, and progress would be
+much faster. But would people really use the model only for AI research? The author thinks not. If
+the weights were released, the model would become the strongest Clash Royale cheat ever, which
+would also hit the paid-boosting industry (代打). From an ordinary player's point of view, he wants
+the opponent at the start of every match to be a real person like himself, not a cold machine that
+reliably plays the optimal move, and not to have to wonder whether the opponent is a cheating bot
+or a boosted account.
+He ran his international-server tests only to measure the model's ability, with a small, limited number of matches. So Daybreak CR is currently in closed internal testing: you can challenge the AI
+on the private server, but the weights will not be public for now. Nulls Royale clan: Daybreak CR
+(search that keyword).
+2. The reverse-engineering principle of the headless engine will not be published. The author asks
+for everyone's understanding.
+
+Final Acknowledgements [24:59]
+
+Slide 18
+
+• The University of Science and Technology of China and its undergraduate compute platform;
+without that compute the project could not have advanced.
+• The author of FirstlightCR, @真的无名呢: ``Your project and your videos inspired me greatly. After
+First Light comes Daybreak; may the sun of CR-AI rise ever higher, until the day it surpasses the
+Pharaoh.''
+
+8
+
+Daybreak CR --- Video Summary
+
+English translation
+
+• Arron, who reverse-engineered the headless battle engine, letting the author train on the compute
+platform; gathering combat experience is no longer a bottleneck.
+• Eric, who stayed up all night debugging the model and used his account to prove the model's
+strength.
+• @天亮我睡大觉, who supplied 700,000 top-ladder matches; the author will do his best to make them
+count.
+• All viewers and Bilibili followers, whose support and encouragement carried him to this day.
+• Claude Opus 5.5: in the 25 days since they met, it helped write a great deal of code and ran many
+experiments with him. ``Although you often write bugs too, I still greatly admire your programming ability.'' (The narration also thanks the model for not getting the account banned during that
+time.)
+
+Future Work: New Training Under Way [26:09]
+
+Slide 19
+
+• Use the latest October battle engine and load 700,000 human ladder matches.
+• Try better model architectures and search algorithms.
+• …
+• The author hopes the model can eventually iterate on itself and surpass the Pharaoh. Stay tuned!
+
+Outro [26:29]
+
+Slide 20
+
+Thanks for watching, see you next time! Could you give me a coin (Bilibili ``toss a coin'')? The author
+also asks viewers to like the video, toss a coin, and follow him.
+
+Translator's notes
+• Sources. This document merges two files: the slide text and the spoken narration transcript. Where
+the two differ, both values are given. The narration is an automatic transcript and is occasionally
+garbled; unclear phrases are flagged rather than guessed.
+• Rank. Slides say ``about 3000th''; the narration says 3100th (the author corrects himself at [22:45]).
+• Human matches. The model used 177,000 validated replays; one slide says ``160,000 matches are
+not enough,'' which is reproduced as written.
+• Card and deck names. Chinese community nicknames are translated literally with the original
+in parentheses where no standard English name was verified (for example 大胃袋, 三冲, 毒钻/毒矿,
+空气). ``Elite'' is the literal rendering of 精英.
+• ``Pharaoh'' (法老). Kept as in the video; it is not explained there.
+• Currency. The ``five figures'' compute-cost remark has no currency stated.
+
+9
+
+

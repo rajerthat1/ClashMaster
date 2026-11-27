@@ -1,0 +1,41 @@
+00:00 - Simulator Progress & A* Pathfinding
+
+Hello everyone, I'm Jason. In this video, I'll continue sharing how I developed my Clash Royale AI. In previous episodes, I covered how I designed the Clash Royale simulator and how I used Frida to read real-time battle data directly instead of relying on computer vision. Today's focus is completely different: with the groundwork laid, we've finally reached model training. The question I want to answer is: with zero prior game knowledge, if we treat Clash Royale as a classic reinforcement learning problem, how strong can a model get?
+
+First, let's look at simulator progress. Before training, my biggest worry was simulator accuracy. Where was it most inaccurate? First, the pathfinding mechanism. The real game uses the A* (A-star) search algorithm. Since I didn't master it back in my informatics olympiad days, I spent several days studying its mechanics and implementing it in the simulator in about 100 lines of code (open-sourced on my GitHub).
+
+Let's look at the demo: simulator on the left, real battle replay on the right. The simulator only takes the timestamps of each card deployment as input. I play Knight in the back, my roommate plays Archers in the back, and when my Knight reaches the tower, I support with a Musketeer. The opponent drops Mini P.E.K.K.A to cut off the Knight; the Mini P.E.K.K.A dies, and the two Musketeers duel. The interactions are completely accurate, almost identical to the real game. Of course, bugs still exist, so I profiled the code with Python's built-in profiler, cached redundant calculations, and sped up the simulator to 150× faster than the real game, completing a full match in 1.1 seconds.
+
+03:02 - Model Architecture: CNN vs. Transformer
+
+Let's discuss model architecture. The simplest approach feeds the current arena state, hand cards, and elixir into the model, outputting whether to play a card, which card slot to use, and where on the arena to place it. How do we encode the arena state? I tried two approaches:
+
+1. Grid Tensor + CNN: Assume each tile on the 32×18 arena holds at most one unit. Each tile encodes ~15 attributes (unit ID, HP, attack range, etc.), forming a 32×18×15 3D tensor. Treated like an image, this feeds directly into a Convolutional Neural Network (CNN) to capture spatial relationships. I implemented this in May.
+
+2. Entity Tokens + Transformer: Since unit counts vary dynamically, an LLM suggested treating every entity on the field as a token and feeding them into a Transformer-like architecture.
+
+Which worked better? The CNN won by a landslide. Our observation space has three parts: the 32×18×15 arena tensor, current hand + next card in cycle, and current elixir (omitting temporal history to keep complexity low). The action space is (5, 32, 18) - 5 card slots (including waiting) and the 32×18 grid. A tiny CNN flattens the arena features, concatenates them with fully-connected layers for hand and elixir, and feeds into PPO. The total model has 770,000 parameters, takes under 10 MB on disk, and runs inference in 0.3 milliseconds.
+
+06:06 - Training Iterations, Hyperparameter Tuning & Bugs
+
+Training was rough because Clash Royale is a two-player game, and a randomly initialized model needs a "teacher" to play against. Without a human pro to play 20,000 games against it, I built a baseline bot that picks a random card slot and random tile every 0.5 seconds. In May, after 3 million steps, reward reached +15 and win rate hit 78% before stalling.
+
+In August, I tried the LLM's order-invariant Transformer architecture. Despite 5× more code across the environment and training loop using Stable-Baselines3 PPO on a university server, reward hovered around 0 - worse than my hand-coded CNN. After four or five failed tuning attempts, I rolled back to my May GitHub commit, cutting 80% of the code.
+
+Re-running the CNN, reward hit +10 at 1M steps. To prevent it from stalling again, I inspected the training metrics and saw approx_kl and clip_fraction skyrocketing past 800k steps - meaning policy updates were too large and destabilizing training. I lowered the learning rate from 3e-4 to 1e-4, reduced the number of epochs per rollout (originally 10), and set a target_kl limit. Immediately, average reward climbed steadily to +28 (out of +30 for a clean three-crown win), achieving an 86.5% win rate against the random bot.
+
+Next, I discovered two environment bugs: the agent couldn't see incoming Arrows or Fireballs (so its elixir seemed to vanish randomly), and the opponent's observation tensor was scrambled during self-play. After fixing both and retraining from scratch, the agent hit a 96% win rate against the random bot. To push it further, I introduced self-play against past checkpoints (from 3M to 5M steps).
+
+I also noticed the bot never chose slot 0 ("do nothing") - it treated elixir as burning hot in its hand. To fix this, I added a penalty (equivalent to losing 50 tower HP) whenever it attempted an illegal placement due to insufficient elixir or invalid tiles. After 15M steps, the 12M and 15M checkpoints went undefeated (400-0) against the random bot. However, I noticed entropy_loss collapsing from -7 toward 0, reducing action exploration and causing it to repeatedly place troops on the exact same tiles, with match lengths shrinking to 60 seconds.
+
+17:44 - Live Gameplay Demos & Reflection
+
+Let's test the 2nd-run and 3rd-run models in real friendly battles from my phone.
+
+- Match 1 (2nd-run model): I open with Archers in the back; it immediately cycles Zap and throws a naked Fireball at my tower. It plays Giant in the back to build a push, ignores my bridge Knight, and throws another Fireball at the exact same spot. It lacks offensive coordination and defensive awareness.
+
+- Match 2 (3rd-run model with illegal-move penalty): I open with Giant in the back. Its Musketeer locks onto my tower, and it plays Mini P.E.K.K.A on the opposite lane. It manages to take my right tower and nearly three-crowns me - though it doesn't know to use its 5-elixir Fireball to finish off my 1-HP king tower before I take its tower. Overall, it plays like a decent human beginner.
+
+Limitations & Open Source:
+
+Looking back, the simulator still has minor discrepancies, the model lacks temporal history (so it can't track opponent card cycles or elixir), and it doesn't understand lethal spell damage. All code - the simulator, Frida memory-reading scripts, training loop, and model weights (~200 lines for the training script) - is open-sourced on my GitHub, and it trains fast even on a standard CPU. Thanks for watching!

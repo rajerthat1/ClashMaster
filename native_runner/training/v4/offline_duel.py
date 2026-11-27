@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict, fields
 import json
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 import torch
 
 from ...battle_env import BattleEnvV1
+from ...competitive_release import load_release, use_release
 from ...contracts import ActionKind, ActionV1
 from ...cr_native_env import DEFAULT_HOST, DEFAULT_PORT, NATIVE_RENDER_SPEEDS, NativeClashEnv, RunnerError
 from ...match_factory import MatchConfig
@@ -47,31 +49,43 @@ def run_ai_duel(
         result = {"stopped": True, "terminated": False, "decisions": [0, 0]}
         (artifact_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
         return result
-    bundle = production_semantic_bundle()
+    # Both seats share one engine, so they must agree on the competitive
+    # release. A mixed pairing would make one policy read the wrong catalogs.
+    release_a = getattr(first.model, "competitive_release", None)
+    release_b = getattr(second.model, "competitive_release", None)
+    if release_a != release_b:
+        raise ValueError(
+            f"checkpoints use different competitive releases ({release_a!r} vs {release_b!r}); "
+            "one native catalog must serve both seats"
+        )
+    release = release_a
+    bundle = production_semantic_bundle(release) if release else production_semantic_bundle()
     native = NativeClashEnv(host, port, timeout=30.0)
     environment_config = _native_environment_config()
     status_fn = getattr(native, "status", None)
     client_version = str(status_fn().get("clientVersion") or "") if callable(status_fn) else ""
     native_profile = load_native_build_profile(client_version) if client_version else None
     ruleset_manifest = None
-    if native_profile is not None:
-        ruleset_manifest = build_native_ruleset_manifest(
-            client_version=client_version,
-            catalog=bundle.native_card_catalog,
-            environment_config=environment_config,
-        )
+    with use_release(load_release(release)) if release else nullcontext():
+        if native_profile is not None:
+            ruleset_manifest = build_native_ruleset_manifest(
+                client_version=client_version,
+                catalog=bundle.native_card_catalog,
+                environment_config=environment_config,
+            )
     combat_ring_hooks = bool(native_profile.get("combat_ring_hooks", False)) if native_profile else True
     if (ruleset_manifest is None or ruleset_manifest.config.get("engine") != "crforge") and combat_ring_hooks:
         native.public_card_play_events_from_combat_ring = True
     timeline = load_game_mode_timeline(match.game_mode)
-    environment = BattleEnvV1(
-        native=native,
-        card_catalog=bundle.native_card_catalog,
-        semantic_subset_contract=bundle.semantic_subset_contract,
-        effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
-        ruleset_manifest=ruleset_manifest,
-        mode_timeline=timeline,
-    )
+    with use_release(load_release(release)) if release else nullcontext():
+        environment = BattleEnvV1(
+            native=native,
+            card_catalog=bundle.native_card_catalog,
+            semantic_subset_contract=bundle.semantic_subset_contract,
+            effect_catalog=RuntimeEffectCatalog.from_catalog(bundle.native_effect_catalog),
+            ruleset_manifest=ruleset_manifest,
+            mode_timeline=timeline,
+        )
     sessions = []
     decisions = [0, 0]
     actions = [0, 0]

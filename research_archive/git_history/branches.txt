@@ -1,0 +1,9 @@
+* main                       f636a96 [origin/main: ahead 1] feat(crforge): name the lane, seat and card behind an illegal action
+  pr12                       5daf0ab style: clean regression test whitespace
+  remotes/fork/HEAD          -> fork/main
+  remotes/fork/main          adbd4ca docs: record the live-width groups, the bounded pilot and the native baseline
+  remotes/origin/HEAD        -> origin/main
+  remotes/origin/main        e9f401c update
+  remotes/upstream/HEAD      -> upstream/main
+  remotes/upstream/main      4c82496 update readme
+  remotes/upstream/yes-delay d29716d update docs

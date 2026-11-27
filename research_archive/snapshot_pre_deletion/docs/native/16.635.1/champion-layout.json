@@ -1,0 +1,69 @@
+{
+  "version": "champion-layout.v1",
+  "client": "16.635.1",
+  "libg_sha256": "0b580222e5a3502cf153bb5e6297ec32d2b154b605b777c74873dd75722e4eaa",
+  "recorded": "2026-11-13",
+  "evidence": {
+    "tool": "tools/native_analysis/ability_action_probe.py + probe champion-diag",
+    "device": "SM-A515U (Android 13, arm64-v8a)",
+    "method": "Deployed the X-Bow deck's Hero Knight (runtime card id 203000000), then read the live Champion controller from player+0x3a0 with the probe's champion-diag command. The controller vtable matched the EXACT vtable-diff relocation; the action-data and ability-data vtables were read from the live objects because the static diff could only offer sibling LIKELY matches.",
+    "controllerVtableOffset": "0x01a51c30",
+    "actionDataVtableOffset": "0x01a3fd60",
+    "abilityDataVtableOffset": "0x01a348e0",
+    "abilityName": "Knight_hero_Ability",
+    "before": {
+      "buttonState": 2,
+      "buttonStateLabel": "Ready",
+      "remainingCharges": 1,
+      "maxCharges": 1,
+      "remainingCooldownMs": 0,
+      "configuredCooldownMs": 0
+    },
+    "after": {
+      "buttonState": 6,
+      "buttonStateLabel": "AllChargesConsumed",
+      "remainingCharges": 0,
+      "maxCharges": 1
+    },
+    "abilityDataWords": [
+      "0xa0=1200(CastTime)", "0xa4=150(TriggerDelay)", "0xa8=150",
+      "0xac=256(flags)", "0xb0=1(MaxCharges)", "0xb4=2(ManaCost)",
+      "0xb8=0(ability cooldown)"
+    ],
+    "elixirPaid": 1.644,
+    "elixirPaidNote": "2 printed ManaCost minus 20 ticks (~0.36) of single-elixir regen",
+    "secondActivationRefused": true
+  },
+  "anchors": {
+    "kChampionControllerVtableOffset": {
+      "offset": "0x01a51c30",
+      "confidence": "EXACT",
+      "source": "docs/native/16.635.1/vtable-diff.json + live champion-diag",
+      "resolved": true
+    },
+    "kChampionActionDataVtableOffset": {
+      "offset": "0x01a3fd60",
+      "confidence": "MANUAL",
+      "source": "live champion-diag (static diff only offered sibling LIKELY matches)",
+      "resolved": true
+    },
+    "kCharacterAbilityDataVtableOffset": {
+      "offset": "0x01a348e0",
+      "confidence": "MANUAL",
+      "source": "live champion-diag (static diff only offered sibling LIKELY matches)",
+      "resolved": true
+    }
+  },
+  "fields": {
+    "kCharacterAbilityMaxChargesOffset": {
+      "value": "0x00b0",
+      "was": "0x00ac",
+      "source": "live ability-data words: MaxCharges=1 at +0xb0, ManaCost=2 at +0xb4"
+    },
+    "kCharacterAbilityConfiguredCooldownOffset": {
+      "value": "0x00b8",
+      "was": "0x00b4",
+      "source": "the cooldown twin follows MaxCharges"
+    }
+  }
+}

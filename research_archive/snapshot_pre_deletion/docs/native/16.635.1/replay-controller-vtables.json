@@ -1,0 +1,196 @@
+[
+  {
+    "name": "replayController",
+    "old_offset": "0x0186e748",
+    "seed": {
+      "old_slot": 4,
+      "new_slot": 4,
+      "new_function": "0x00d9cc24"
+    },
+    "old_sub_vtable_marker_slot": 7,
+    "candidates": [
+      {
+        "new_offset": "0x01a20370",
+        "delta": "+0x1b1c28",
+        "sub_vtable_marker_slot": 9,
+        "missing_slots": [
+          9,
+          10
+        ],
+        "relocated_slots": [
+          "0x00d9a2cc",
+          "0x00d9a1e4",
+          "0x00d9bba0",
+          "0x00d9f2f4",
+          "0x00d9cc24",
+          "0x00d94fd8",
+          "0x00d9f7f8",
+          "0x00d9dfc4",
+          "0x00d9ccb0",
+          "0x00000000",
+          "0x00000000",
+          "0x00d991bc",
+          "0x00d991e8",
+          "0x011d1e5c",
+          "0x009f24fc",
+          "0x009f2500"
+        ],
+        "mapped_slots": [
+          {
+            "old_slot": 4,
+            "new_slots": [
+              4
+            ],
+            "function": "0x00d9cc24"
+          }
+        ]
+      },
+      {
+        "new_offset": "0x01a21308",
+        "delta": "+0x1b2bc0",
+        "sub_vtable_marker_slot": 9,
+        "missing_slots": [
+          9,
+          10
+        ],
+        "relocated_slots": [
+          "0x00d9a2cc",
+          "0x00d9a1e4",
+          "0x00dac54c",
+          "0x00d9f2f4",
+          "0x00d9cc24",
+          "0x00d94fd8",
+          "0x00dac6f4",
+          "0x00d9dfc4",
+          "0x00d9ccb0",
+          "0x00000000",
+          "0x00000000",
+          "0x00dac268",
+          "0x00dac294",
+          "0x011d1e5c",
+          "0x009f24fc",
+          "0x009f2500"
+        ],
+        "mapped_slots": [
+          {
+            "old_slot": 4,
+            "new_slots": [
+              4
+            ],
+            "function": "0x00d9cc24"
+          }
+        ]
+      }
+    ],
+    "confidence": "SEEDED"
+  },
+  {
+    "name": "replayControllerSubclass",
+    "old_offset": "0x0186f6d0",
+    "seed": {
+      "old_slot": 4,
+      "new_slot": 4,
+      "new_function": "0x00d9cc24"
+    },
+    "old_sub_vtable_marker_slot": 7,
+    "candidates": [
+      {
+        "new_offset": "0x01a20370",
+        "delta": "+0x1b0ca0",
+        "sub_vtable_marker_slot": 9,
+        "missing_slots": [
+          9,
+          10
+        ],
+        "relocated_slots": [
+          "0x00d9a2cc",
+          "0x00d9a1e4",
+          "0x00d9bba0",
+          "0x00d9f2f4",
+          "0x00d9cc24",
+          "0x00d94fd8",
+          "0x00d9f7f8",
+          "0x00d9dfc4",
+          "0x00d9ccb0",
+          "0x00000000",
+          "0x00000000",
+          "0x00d991bc",
+          "0x00d991e8",
+          "0x011d1e5c",
+          "0x009f24fc",
+          "0x009f2500"
+        ],
+        "mapped_slots": [
+          {
+            "old_slot": 4,
+            "new_slots": [
+              4
+            ],
+            "function": "0x00d9cc24"
+          },
+          {
+            "old_slot": 9,
+            "new_slots": [],
+            "function": "0x00dac268"
+          },
+          {
+            "old_slot": 10,
+            "new_slots": [],
+            "function": "0x00dac294"
+          }
+        ]
+      },
+      {
+        "new_offset": "0x01a21308",
+        "delta": "+0x1b1c38",
+        "sub_vtable_marker_slot": 9,
+        "missing_slots": [
+          9,
+          10
+        ],
+        "relocated_slots": [
+          "0x00d9a2cc",
+          "0x00d9a1e4",
+          "0x00dac54c",
+          "0x00d9f2f4",
+          "0x00d9cc24",
+          "0x00d94fd8",
+          "0x00dac6f4",
+          "0x00d9dfc4",
+          "0x00d9ccb0",
+          "0x00000000",
+          "0x00000000",
+          "0x00dac268",
+          "0x00dac294",
+          "0x011d1e5c",
+          "0x009f24fc",
+          "0x009f2500"
+        ],
+        "mapped_slots": [
+          {
+            "old_slot": 4,
+            "new_slots": [
+              4
+            ],
+            "function": "0x00d9cc24"
+          },
+          {
+            "old_slot": 9,
+            "new_slots": [
+              11
+            ],
+            "function": "0x00dac268"
+          },
+          {
+            "old_slot": 10,
+            "new_slots": [
+              12
+            ],
+            "function": "0x00dac294"
+          }
+        ]
+      }
+    ],
+    "confidence": "SEEDED"
+  }
+]

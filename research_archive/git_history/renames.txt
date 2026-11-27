@@ -1,0 +1,10 @@
+=== ca6994f 2026-11-12 feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling
+
+R100	Jason_Notes/6_18.txt	jason_notes/6_18.txt
+R100	Jason_Notes/7_28.txt	jason_notes/7_28.txt
+R100	Jason_Notes/8_10.txt	jason_notes/8_10.txt
+R100	Jason_Notes/8_28.txt	jason_notes/8_28.txt
+R100	Jason_Notes/9_12.txt	jason_notes/9_12.txt
+=== 390747b 2026-10-31 add new model
+
+R065	checkpoints/2_6hog_expert/hog26-specialist1.pt	checkpoints/Everlight/v15-general-il100-kl5e-2-v80.pt

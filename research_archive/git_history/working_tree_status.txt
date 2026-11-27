@@ -1,0 +1,19 @@
+ M README.md
+ M native_runner/offline_build.py
+ M native_runner/probe/cr_replay_probe.cpp
+ M native_runner/training/v4/offline_agent.py
+ M native_runner/training/v4/offline_duel.py
+?? README.md.bak
+?? daybreak.pdf
+?? docs/live_official_client.md
+?? native_runner/live/
+?? native_runner/probe/live_tick_mailbox.inc
+?? native_runner/tests/test_live_adapter.py
+?? research_archive/
+?? tools/extract_emotes.py
+?? tools/live/
+?? tools/make_telegram_video_stickers.py
+?? tools/run_open_models.sh
+?? tools/sc1_render.py
+?? tools/telegram_import_video_stickers.py
+?? tools/verify_telegram_video_stickers.py

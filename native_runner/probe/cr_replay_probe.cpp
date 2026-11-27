@@ -7046,10 +7046,14 @@ bool build_champion_diag_json(void *manager, char *out, std::size_t size) {
 
 #include "resident_multimatch.inc"
 #include "engine_instance.inc"
+#include "live_tick_mailbox.inc"
 
 void handle_control_command(int socket_fd, const char *command) {
   char response[kControlResponseBytes] = {};
   if (handle_engine_instance_command(socket_fd, command)) {
+    return;
+  }
+  if (handle_live_tick_mailbox_command(socket_fd, command)) {
     return;
   }
   std::int32_t resident_slot_id = -1;
@@ -8696,6 +8700,7 @@ void game_state_step_hook(void *manager) {
     LOGI("GameStateManager::step tid=%ld manager=%p call=%u tick=%d", static_cast<long>(syscall(__NR_gettid)), manager,
          manager_steps, tick);
   }
+  live_tick_mailbox_on_native_boundary(manager, tick);
 }
 
 void *native_controlled_worker_main(void *opaque) {

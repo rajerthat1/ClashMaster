@@ -1,0 +1,302 @@
+===== HANDOFF.md =====
+5be13cb 2026-11-19 chore(repo): revamp docs and remove planning clutter
+2ea1958 2026-11-19 fix(native): space colliding micro-actions in the evaluator
+40e7581 2026-11-19 docs: drop the deleted snapshot from the handoff
+95a2a0e 2026-11-19 docs: record the session-53 overlap, league, and negative N4 gate
+1a5899f 2026-11-19 feat(native): gate a match block on the N4 promotion criteria
+f2094df 2026-11-19 feat(native): add the form-faithful A-hog26 gate config
+0ae63fd 2026-11-19 docs: record the first league run and the C5/C6 commands
+ab633ee 2026-11-19 test(crforge): pin the shared-deck league rule
+17733e6 2026-11-19 feat(crforge): per-opponent decks and a fast league opponent
+afb65ca 2026-11-19 feat(crforge): wire the opponent league into the producer
+bd07088 2026-11-18 fix(crforge): a phased run without the recompiled body is inconclusive
+bf0288a 2026-11-18 docs: close the producer-padding question with the recorded capture counts
+bb1fdfa 2026-11-18 fix(crforge): flip bci 120 in the phased reproducer, matching the engine's history
+aa550d7 2026-11-18 feat(crforge): replay the engine's C2 compile history in the reproducer
+466a3ea 2026-11-18 feat(crforge): reproduce the C2 miscompile on a fresh A6000 and map the fault
+634b7c0 2026-11-18 docs: the native parity cadence is a ratio, measured at 27.9 updates per gate
+46c66ef 2026-11-18 docs: a fresh Thunder base is clean; the host CPU is what is left
+78b591a 2026-11-18 docs: the C2 reproducer's negative, and the report it still needs
+2d68f02 2026-11-18 docs: the producer crash is a C2 miscompile; the card's training gate closes
+941aa41 2026-11-17 docs: record the card's server arm, the weight push and the shape bug
+8da6a62 2026-11-17 docs: record the decision server's exact gate and its CPU-only negative
+ce114ba 2026-11-17 docs: record the flat row gather and the packed-write negative
+2f0f352 2026-11-17 docs: record the two-seat group build and its gates
+55ec4c1 2026-11-17 docs: record the compact entity rows and the build phase table
+601ff89 2026-11-17 docs: record the group pad and the live-width record
+075fd28 2026-11-17 docs: record the live-width sort keys and the empty-board fixture bug
+45ba027 2026-11-17 docs: record the live-row entity build and the session-41 gates
+21dadde 2026-11-17 docs: the 50-game native gate is negative
+adbd4ca 2026-11-17 docs: record the live-width groups, the bounded pilot and the native baseline
+f326e85 2026-11-17 docs: add the full-graph six-producer sweep
+48f0092 2026-11-17 docs: record the A6000 re-measure and the full-call graph (session 38)
+56f2a07 2026-11-17 docs: record the CPU-half profile and the full-call graph gate
+bc32495 2026-11-16 docs: record the A6000 forward measurement and the CPU-half gate
+6b8d518 2026-11-16 docs: point the forward-port evidence at the recorded CPU runs
+9754473 2026-11-16 docs: record the forward port, its CPU control and the open GPU gate
+bf36380 2026-11-16 docs: record the provider capacity equation and the 6-vCPU A6000 ceiling
+81d3ff4 2026-11-16 docs: the horizon's return is a value fit, and the A6000's 228 ms was a statistic
+cc908bb 2026-11-16 docs: record the three-seed horizon reversal and the scale-out arithmetic
+afbc84e 2026-11-16 docs: record the overlapped loop and the 50-update horizon
+63412fa 2026-11-16 docs: record the C4 cadence decision — reset trains, wave is a diagnostic
+fe36e01 2026-11-16 docs: record the A6000 session — the producer is the ceiling, not the model
+5f1a59f 2026-11-16 docs: record the C4 resume gate and the forward scaling by row count
+4962aca 2026-11-16 docs: record the C4 training loop, its state policy and the two-update gate
+92dd2b3 2026-11-16 docs: record the C4 update gate and the mid-segment autoreset
+6b6687b 2026-11-16 docs: record the C4 rollout store and the second micro-action probe
+85efc84 2026-11-16 docs: record the upstream PR #12 merge in the handoff decisions
+3d67224 2026-11-16 docs: record the C4 producer loop and its gate
+174eb54 2026-11-16 docs: record the C4 action path in the handoff decisions
+e71fa6d 2026-11-16 feat(crforge): decode the stacked action row into engine actions
+dcaaef4 2026-11-15 fix(crforge): gate both seats and prove the game frame against native
+2234c79 2026-11-15 fix(crforge): feed the model game coordinates; seat-aware row builders
+f49d814 2026-11-15 feat(crforge): facts-only tensorize closes C3-B
+da2e45d 2026-11-15 perf(crforge): batch the match scalars and empty sections for C3-B
+663f7f2 2026-11-15 perf(crforge): batch the explicit spatial planes for C3-B
+c14f35a 2026-11-15 perf(crforge): batch the tower row build for C3-B
+5517b53 2026-11-15 perf(crforge): batch the candidate row build for C3-B
+ac8f0c1 2026-11-15 perf(crforge): batch card and relation rows for C3-B
+f6e0e21 2026-11-15 perf(crforge): batch the causal-group row build for C3-B
+e8ea98d 2026-11-15 perf(crforge): vectorized observation facts for the C3-B row build
+d7a1a4c 2026-11-15 fix(crforge): resolve hero rows and match-code run refusals
+20dc9c5 2026-11-15 feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+d55c04c 2026-11-15 perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
+51e0f0b 2026-11-15 docs: record the clean 2-game C0 evaluate re-run
+678bbca 2026-11-15 docs: record the C0 soak state and the pending evaluate re-run precisely
+6171eb6 2026-11-15 fix(crforge): validate legality at the give tick; add the C1 encoder spike
+bf9f3e8 2026-11-15 perf(env): build policy observations without contract validation
+0533e60 2026-11-15 profile: attribute BattleEnvV1.step and cut two measured costs
+ae8d8d0 2026-11-15 docs: record the data-path decision across findings, handoff and roadmap
+29460f6 2026-11-15 docs: correct the engine-count arithmetic in the throughput plan
+a662360 2026-11-15 feat(ppo): pipeline the learner loop and measure its real floor
+8772bad 2026-11-15 docs: brief session 8 on the loop-pipelining gates
+9641486 2026-11-14 docs: record the batching negative result and the 16.635 gate evidence
+e70a7a7 2026-11-14 docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+a54ce54 2026-11-13 docs: align crforge reference with the 16.635.1 primary track
+634a673 2026-11-13 docs: retarget plan to Null's Royale 16.635.1 and retire R0
+f940143 2026-11-13 docs: mark R0 tree adoption as done and retire old-contract references
+70d607d 2026-11-13 feat(native): adopt canonical R0 tree and add CPU batched-equivalence check
+a09b7c4 2026-11-13 PHASE 2 DONE
+489fde8 2026-11-13 docs(handoff): next-session plan for Phase 0 results and A51 parity
+fbffb80 2026-11-13 feat(native): detached Phase 0 gate runner and level-aware A51 parity probe
+55b90f6 2026-11-13 feat(native): Phase 1 X-Bow deck, determinism harness and model smoke
+ede7367 2026-11-13 feat(native): cold-start the Bionic runtime via a local overlay
+af5ce14 2026-11-13 docs: note the clash-royale-research simulator as a side resource
+087927f 2026-11-13 docs: consolidate on the CR Native Linux runtime
+13cde48 2026-11-13 docs: evaluate the Linux Bionic runtime as the first Track B step
+4433055 2026-11-13 docs: set Track B as the current focus
+7ac4142 2026-11-13 docs: target 16.635.1 for the extracted-engine loader
+15e994f 2026-11-13 docs: add the extracted-engine Linux roadmap
+1a6f176 2026-11-13 docs: record the resident batch action throughput session
+ab94103 2026-11-13 feat(native): drive real card actions through the resident batch channel
+894b7bf 2026-11-13 docs: record the scripted X-Bow, ability and Champion-layout session
+da27d5f 2026-11-13 feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+3360aa8 2026-11-13 docs: record the 2026-11-13 session commits in the handoff
+c7ec5ea 2026-11-13 docs(native): record the rebuilt 16.635 deployable and A51 re-verification
+ec2ca52 2026-11-13 feat(native): verify 16.635 two-sided matches, throughput and entity HP
+3f7f0bd 2026-11-13 feat(native): unblock 16.635 cold configure and live card actions
+5a1c576 2026-11-12 docs(native): hand off the content-ready gate with a capture tool
+173b440 2026-11-12 feat(native): resolve the four 16.635 core anchors
+31c109f 2026-11-12 fix(native): correct the 16.635 tick getter and record the A51 run
+bd8ca99 2026-11-12 docs: refresh handoff for the 16.635 APK deploy
+0293a34 2026-11-12 feat(build): add Linux probe/APK build and A51 deploy scripts
+f255b35 2026-11-12 feat(build): support a pinned 16.635.1 probe APK build
+06fd53c 2026-11-12 docs: clarify recovered GameState constructor fields
+27519de 2026-11-12 docs: record 16.635 probe wiring and Ghidra analysis status
+63b8a93 2026-11-12 feat(native): wire 16.635 probe hooks and recover GameState store map
+8f3beb8 2026-11-12 docs: record replay-controller recovery commit in handoff
+3a7d308 2026-11-12 feat(native): recover replay controller and generate 16.635 layout header
+ca6994f 2026-11-12 feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling
+98d94ad 2026-11-12 docs: update handoff for the next session
+40d9a45 2026-11-12 docs: refocus roadmap on native 16.635 engine and X-Bow specialist
+===== ROADMAP.md =====
+5be13cb 2026-11-19 chore(repo): revamp docs and remove planning clutter
+95a2a0e 2026-11-19 docs: record the session-53 overlap, league, and negative N4 gate
+466a3ea 2026-11-18 feat(crforge): reproduce the C2 miscompile on a fresh A6000 and map the fault
+634b7c0 2026-11-18 docs: the native parity cadence is a ratio, measured at 27.9 updates per gate
+46c66ef 2026-11-18 docs: a fresh Thunder base is clean; the host CPU is what is left
+78b591a 2026-11-18 docs: the C2 reproducer's negative, and the report it still needs
+941aa41 2026-11-17 docs: record the card's server arm, the weight push and the shape bug
+21dadde 2026-11-17 docs: the 50-game native gate is negative
+bc32495 2026-11-16 docs: record the A6000 forward measurement and the CPU-half gate
+9754473 2026-11-16 docs: record the forward port, its CPU control and the open GPU gate
+bf36380 2026-11-16 docs: record the provider capacity equation and the 6-vCPU A6000 ceiling
+81d3ff4 2026-11-16 docs: the horizon's return is a value fit, and the A6000's 228 ms was a statistic
+cc908bb 2026-11-16 docs: record the three-seed horizon reversal and the scale-out arithmetic
+92dd2b3 2026-11-16 docs: record the C4 update gate and the mid-segment autoreset
+6b6687b 2026-11-16 docs: record the C4 rollout store and the second micro-action probe
+da2e45d 2026-11-15 perf(crforge): batch the match scalars and empty sections for C3-B
+6171eb6 2026-11-15 fix(crforge): validate legality at the give tick; add the C1 encoder spike
+bf9f3e8 2026-11-15 perf(env): build policy observations without contract validation
+0533e60 2026-11-15 profile: attribute BattleEnvV1.step and cut two measured costs
+ae8d8d0 2026-11-15 docs: record the data-path decision across findings, handoff and roadmap
+a662360 2026-11-15 feat(ppo): pipeline the learner loop and measure its real floor
+8772bad 2026-11-15 docs: brief session 8 on the loop-pipelining gates
+9641486 2026-11-14 docs: record the batching negative result and the 16.635 gate evidence
+e70a7a7 2026-11-14 docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+a54ce54 2026-11-13 docs: align crforge reference with the 16.635.1 primary track
+634a673 2026-11-13 docs: retarget plan to Null's Royale 16.635.1 and retire R0
+f940143 2026-11-13 docs: mark R0 tree adoption as done and retire old-contract references
+70d607d 2026-11-13 feat(native): adopt canonical R0 tree and add CPU batched-equivalence check
+a09b7c4 2026-11-13 PHASE 2 DONE
+fbffb80 2026-11-13 feat(native): detached Phase 0 gate runner and level-aware A51 parity probe
+55b90f6 2026-11-13 feat(native): Phase 1 X-Bow deck, determinism harness and model smoke
+ede7367 2026-11-13 feat(native): cold-start the Bionic runtime via a local overlay
+af5ce14 2026-11-13 docs: note the clash-royale-research simulator as a side resource
+087927f 2026-11-13 docs: consolidate on the CR Native Linux runtime
+15e994f 2026-11-13 docs: add the extracted-engine Linux roadmap
+ab94103 2026-11-13 feat(native): drive real card actions through the resident batch channel
+da27d5f 2026-11-13 feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+ec2ca52 2026-11-13 feat(native): verify 16.635 two-sided matches, throughput and entity HP
+ca6994f 2026-11-12 feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling
+40d9a45 2026-11-12 docs: refocus roadmap on native 16.635 engine and X-Bow specialist
+4d4576b 2026-11-12 commit
+8301602 2026-11-12 docs: drop the Track B -> C roadmap; keep Option D only
+69e302a 2026-11-12 docs: adopt crforge engine swap as Option D; add Track B -> C roadmap
+b669332 2026-11-12 feat(install): seed the APK asset pack so base content attests
+e14d368 2026-11-11 test: normalize CRLF in native golden-bytes test; record Phase 1 status
+b8b9fa1 2026-11-11 docs: tick the Phase 1 environment checkpoints
+712423c 2026-11-11 docs: replace HPC with the $500 cloud-credit plan
+8871938 2026-11-11 docs: add the OS and compute matrix for each phase
+771804f 2026-11-11 docs: drop the teacher/boss framing and tighten the training loop
+9de7e93 2026-11-11 docs: add the learning loop, promotion gate and reward-hacking rules
+f5cba3a 2026-11-11 docs: commit to V4 16.8M and add the smoke-test sequence
+59d251d 2026-11-11 docs: make the rooted phone optional at Phase 9
+42ab2e7 2026-11-11 docs: prioritize the Null's Royale path and defer the main bridge
+cc84505 2026-11-11 docs: make memory reading the primary main-server path
+81bcaf1 2026-11-11 docs: retarget roadmap to main-server Ultimate Champion with X-Bow 3.0
+230a3a2 2026-11-11 Flatten FirstLight_CR into the project root; add HoF roadmap
+===== ROADMAP_CRFORGE.md =====
+5be13cb 2026-11-19 chore(repo): revamp docs and remove planning clutter
+95a2a0e 2026-11-19 docs: record the session-53 overlap, league, and negative N4 gate
+bf0288a 2026-11-18 docs: close the producer-padding question with the recorded capture counts
+466a3ea 2026-11-18 feat(crforge): reproduce the C2 miscompile on a fresh A6000 and map the fault
+634b7c0 2026-11-18 docs: the native parity cadence is a ratio, measured at 27.9 updates per gate
+46c66ef 2026-11-18 docs: a fresh Thunder base is clean; the host CPU is what is left
+78b591a 2026-11-18 docs: the C2 reproducer's negative, and the report it still needs
+2d68f02 2026-11-18 docs: the producer crash is a C2 miscompile; the card's training gate closes
+941aa41 2026-11-17 docs: record the card's server arm, the weight push and the shape bug
+8da6a62 2026-11-17 docs: record the decision server's exact gate and its CPU-only negative
+2f0f352 2026-11-17 docs: record the two-seat group build and its gates
+55ec4c1 2026-11-17 docs: record the compact entity rows and the build phase table
+601ff89 2026-11-17 docs: record the group pad and the live-width record
+075fd28 2026-11-17 docs: record the live-width sort keys and the empty-board fixture bug
+45ba027 2026-11-17 docs: record the live-row entity build and the session-41 gates
+21dadde 2026-11-17 docs: the 50-game native gate is negative
+adbd4ca 2026-11-17 docs: record the live-width groups, the bounded pilot and the native baseline
+f326e85 2026-11-17 docs: add the full-graph six-producer sweep
+48f0092 2026-11-17 docs: record the A6000 re-measure and the full-call graph (session 38)
+56f2a07 2026-11-17 docs: record the CPU-half profile and the full-call graph gate
+bc32495 2026-11-16 docs: record the A6000 forward measurement and the CPU-half gate
+9754473 2026-11-16 docs: record the forward port, its CPU control and the open GPU gate
+bf36380 2026-11-16 docs: record the provider capacity equation and the 6-vCPU A6000 ceiling
+81d3ff4 2026-11-16 docs: the horizon's return is a value fit, and the A6000's 228 ms was a statistic
+cc908bb 2026-11-16 docs: record the three-seed horizon reversal and the scale-out arithmetic
+afbc84e 2026-11-16 docs: record the overlapped loop and the 50-update horizon
+63412fa 2026-11-16 docs: record the C4 cadence decision — reset trains, wave is a diagnostic
+fe36e01 2026-11-16 docs: record the A6000 session — the producer is the ceiling, not the model
+5f1a59f 2026-11-16 docs: record the C4 resume gate and the forward scaling by row count
+4962aca 2026-11-16 docs: record the C4 training loop, its state policy and the two-update gate
+92dd2b3 2026-11-16 docs: record the C4 update gate and the mid-segment autoreset
+6b6687b 2026-11-16 docs: record the C4 rollout store and the second micro-action probe
+3d67224 2026-11-16 docs: record the C4 producer loop and its gate
+e71fa6d 2026-11-16 feat(crforge): decode the stacked action row into engine actions
+dcaaef4 2026-11-15 fix(crforge): gate both seats and prove the game frame against native
+2234c79 2026-11-15 fix(crforge): feed the model game coordinates; seat-aware row builders
+f49d814 2026-11-15 feat(crforge): facts-only tensorize closes C3-B
+da2e45d 2026-11-15 perf(crforge): batch the match scalars and empty sections for C3-B
+663f7f2 2026-11-15 perf(crforge): batch the explicit spatial planes for C3-B
+c14f35a 2026-11-15 perf(crforge): batch the tower row build for C3-B
+5517b53 2026-11-15 perf(crforge): batch the candidate row build for C3-B
+ac8f0c1 2026-11-15 perf(crforge): batch card and relation rows for C3-B
+f6e0e21 2026-11-15 perf(crforge): batch the causal-group row build for C3-B
+e8ea98d 2026-11-15 perf(crforge): vectorized observation facts for the C3-B row build
+d7a1a4c 2026-11-15 fix(crforge): resolve hero rows and match-code run refusals
+20dc9c5 2026-11-15 feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+d55c04c 2026-11-15 perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
+6171eb6 2026-11-15 fix(crforge): validate legality at the give tick; add the C1 encoder spike
+e70a7a7 2026-11-14 docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+a54ce54 2026-11-13 docs: align crforge reference with the 16.635.1 primary track
+087927f 2026-11-13 docs: consolidate on the CR Native Linux runtime
+40d9a45 2026-11-12 docs: refocus roadmap on native 16.635 engine and X-Bow specialist
+===== docs/native/16.635.1/FINDINGS.md =====
+5be13cb 2026-11-19 chore(repo): revamp docs and remove planning clutter
+2ea1958 2026-11-19 fix(native): space colliding micro-actions in the evaluator
+95a2a0e 2026-11-19 docs: record the session-53 overlap, league, and negative N4 gate
+bd07088 2026-11-18 fix(crforge): a phased run without the recompiled body is inconclusive
+bf0288a 2026-11-18 docs: close the producer-padding question with the recorded capture counts
+bb1fdfa 2026-11-18 fix(crforge): flip bci 120 in the phased reproducer, matching the engine's history
+aa550d7 2026-11-18 feat(crforge): replay the engine's C2 compile history in the reproducer
+466a3ea 2026-11-18 feat(crforge): reproduce the C2 miscompile on a fresh A6000 and map the fault
+634b7c0 2026-11-18 docs: the native parity cadence is a ratio, measured at 27.9 updates per gate
+46c66ef 2026-11-18 docs: a fresh Thunder base is clean; the host CPU is what is left
+78b591a 2026-11-18 docs: the C2 reproducer's negative, and the report it still needs
+2d68f02 2026-11-18 docs: the producer crash is a C2 miscompile; the card's training gate closes
+941aa41 2026-11-17 docs: record the card's server arm, the weight push and the shape bug
+8da6a62 2026-11-17 docs: record the decision server's exact gate and its CPU-only negative
+ce114ba 2026-11-17 docs: record the flat row gather and the packed-write negative
+2f0f352 2026-11-17 docs: record the two-seat group build and its gates
+55ec4c1 2026-11-17 docs: record the compact entity rows and the build phase table
+601ff89 2026-11-17 docs: record the group pad and the live-width record
+075fd28 2026-11-17 docs: record the live-width sort keys and the empty-board fixture bug
+45ba027 2026-11-17 docs: record the live-row entity build and the session-41 gates
+21dadde 2026-11-17 docs: the 50-game native gate is negative
+adbd4ca 2026-11-17 docs: record the live-width groups, the bounded pilot and the native baseline
+f326e85 2026-11-17 docs: add the full-graph six-producer sweep
+48f0092 2026-11-17 docs: record the A6000 re-measure and the full-call graph (session 38)
+56f2a07 2026-11-17 docs: record the CPU-half profile and the full-call graph gate
+bc32495 2026-11-16 docs: record the A6000 forward measurement and the CPU-half gate
+6b8d518 2026-11-16 docs: point the forward-port evidence at the recorded CPU runs
+9754473 2026-11-16 docs: record the forward port, its CPU control and the open GPU gate
+bf36380 2026-11-16 docs: record the provider capacity equation and the 6-vCPU A6000 ceiling
+81d3ff4 2026-11-16 docs: the horizon's return is a value fit, and the A6000's 228 ms was a statistic
+cc908bb 2026-11-16 docs: record the three-seed horizon reversal and the scale-out arithmetic
+afbc84e 2026-11-16 docs: record the overlapped loop and the 50-update horizon
+63412fa 2026-11-16 docs: record the C4 cadence decision — reset trains, wave is a diagnostic
+fe36e01 2026-11-16 docs: record the A6000 session — the producer is the ceiling, not the model
+5f1a59f 2026-11-16 docs: record the C4 resume gate and the forward scaling by row count
+4962aca 2026-11-16 docs: record the C4 training loop, its state policy and the two-update gate
+92dd2b3 2026-11-16 docs: record the C4 update gate and the mid-segment autoreset
+6b6687b 2026-11-16 docs: record the C4 rollout store and the second micro-action probe
+3d67224 2026-11-16 docs: record the C4 producer loop and its gate
+e71fa6d 2026-11-16 feat(crforge): decode the stacked action row into engine actions
+dcaaef4 2026-11-15 fix(crforge): gate both seats and prove the game frame against native
+f49d814 2026-11-15 feat(crforge): facts-only tensorize closes C3-B
+da2e45d 2026-11-15 perf(crforge): batch the match scalars and empty sections for C3-B
+663f7f2 2026-11-15 perf(crforge): batch the explicit spatial planes for C3-B
+c14f35a 2026-11-15 perf(crforge): batch the tower row build for C3-B
+5517b53 2026-11-15 perf(crforge): batch the candidate row build for C3-B
+ac8f0c1 2026-11-15 perf(crforge): batch card and relation rows for C3-B
+f6e0e21 2026-11-15 perf(crforge): batch the causal-group row build for C3-B
+e8ea98d 2026-11-15 perf(crforge): vectorized observation facts for the C3-B row build
+d7a1a4c 2026-11-15 fix(crforge): resolve hero rows and match-code run refusals
+d55c04c 2026-11-15 perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
+bf9f3e8 2026-11-15 perf(env): build policy observations without contract validation
+0533e60 2026-11-15 profile: attribute BattleEnvV1.step and cut two measured costs
+d3eedf3 2026-11-15 docs: quote the gate gap against the measured floors precisely
+ae8d8d0 2026-11-15 docs: record the data-path decision across findings, handoff and roadmap
+29460f6 2026-11-15 docs: correct the engine-count arithmetic in the throughput plan
+a662360 2026-11-15 feat(ppo): pipeline the learner loop and measure its real floor
+9641486 2026-11-14 docs: record the batching negative result and the 16.635 gate evidence
+e70a7a7 2026-11-14 docs: record the x86_64 engine, 16.635.1 parity and delay-aware sessions
+30ab76f 2026-11-13 feat(native): add A51 launch-and-wait and lane-sum throughput math
+15e994f 2026-11-13 docs: add the extracted-engine Linux roadmap
+ab94103 2026-11-13 feat(native): drive real card actions through the resident batch channel
+da27d5f 2026-11-13 feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+c7ec5ea 2026-11-13 docs(native): record the rebuilt 16.635 deployable and A51 re-verification
+ec2ca52 2026-11-13 feat(native): verify 16.635 two-sided matches, throughput and entity HP
+3f7f0bd 2026-11-13 feat(native): unblock 16.635 cold configure and live card actions
+5a1c576 2026-11-12 docs(native): hand off the content-ready gate with a capture tool
+173b440 2026-11-12 feat(native): resolve the four 16.635 core anchors
+31c109f 2026-11-12 fix(native): correct the 16.635 tick getter and record the A51 run
+f255b35 2026-11-12 feat(build): support a pinned 16.635.1 probe APK build
+cecf1a6 2026-11-12 docs(native): fix Ghidra project wording
+63b8a93 2026-11-12 feat(native): wire 16.635 probe hooks and recover GameState store map
+bd05ec2 2026-11-12 docs(native): correct replay vtable marker wording
+3a7d308 2026-11-12 feat(native): recover replay controller and generate 16.635 layout header
+ca6994f 2026-11-12 feat(native): diff 15.535.13 against 16.635.1 and add analysis tooling
+===== docs/training_history.md =====
+5be13cb 2026-11-19 chore(repo): revamp docs and remove planning clutter
+390747b 2026-10-31 add new model
+77177f9 2026-09-23 docs: simplify setup and add original-game preflight
+28d66cc 2026-09-06 first commit

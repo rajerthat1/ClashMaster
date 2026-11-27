@@ -1,0 +1,16 @@
+# ClashMaster
+
+## Roadmap
+
+### Android Battle Anchor
+#### Memory Reader
+#### ADB Taps and Action
+### Training Engines
+#### Libg.so Native
+#### CRforge Simulation
+### Training Pipeline
+#### Immitation Learning
+##### Replay Conversion
+#### Reinforcement Learning
+##### PPO
+#### Search

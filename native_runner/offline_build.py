@@ -94,7 +94,7 @@ def prepare(input_apk: Path, update: Path | None, workspace: Path):
     print(f"Verified APK and all {len(manifest['source_files'])} pinned resource files", flush=True)
 
 
-def patch(source: Path):
+def patch(source: Path, *, probe_only: bool = False):
     game = source / "smali/com/supercell/clashroyale/GameApp.smali"
     text = game.read_text(encoding="utf-8")
     if '"crprobe"' in text:
@@ -103,8 +103,9 @@ def patch(source: Path):
     if text.count(anchor) != 1:
         raise ValueError("Unsupported GameApp.a() layout")
     bootstrap = '\n    const-string v0, "crprobe"\n    invoke-static {v0}, Ljava/lang/System;->loadLibrary(Ljava/lang/String;)V\n'
-    # Return false from the online-loader gate so Titan initializes libg and its renderer directly.
-    bootstrap += "    const/4 v0, 0x0\n    return v0\n"
+    if not probe_only:
+        # Return false from the online-loader gate so Titan initializes libg and its renderer directly.
+        bootstrap += "    const/4 v0, 0x0\n    return v0\n"
     game.write_text(text.replace(anchor, anchor + bootstrap), encoding="utf-8")
     titan = source / "smali/com/supercell/titan/GameApp.smali"
     text = titan.read_text(encoding="utf-8")
@@ -162,6 +163,11 @@ def main():
     p.add_argument("--workspace", type=Path, required=True)
     p = sub.add_parser("patch")
     p.add_argument("--source", type=Path, required=True)
+    p.add_argument(
+        "--probe-only",
+        action="store_true",
+        help="load the probe but keep the original online-loader gate (live client)",
+    )
     p = sub.add_parser("verify")
     p.add_argument("--apk", type=Path, required=True)
     p.add_argument("--probe", type=Path, required=True)
@@ -175,7 +181,7 @@ def main():
     elif args.command == "prepare":
         prepare(args.input_apk, args.runtime_update, args.workspace)
     elif args.command == "patch":
-        patch(args.source)
+        patch(args.source, probe_only=args.probe_only)
     else:
         verify(args.apk, args.probe, args.libg_sha256 or None)
 

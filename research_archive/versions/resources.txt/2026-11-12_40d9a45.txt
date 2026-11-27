@@ -1,0 +1,35 @@
+Main Clash Royale AI Repos:
+https://github.com/Jason-XII/clash-royale-simulator
+https://github.com/Jason-XII/daybreak-cr
+https://github.com/Jason-XII/cr-memory-reader
+https://github.com/Jaasssoooonnnnn/FirstLight-Zero
+https://github.com/Jaasssoooonnnnn/FL-Royale
+https://github.com/Jaasssoooonnnnn/FirstLight_CR
+https://github.com/vegetableleaf/ClashAI
+Dataset:
+https://huggingface.co/datasets/VanguardX101/IL_Replay
+RoyaleGym:
+https://github.com/RoyaleGym/RoyaleGym
+https://github.com/RoyaleGym/RoyaleSim
+https://github.com/RoyaleGym/RoyaleLearn
+https://github.com/RoyaleGym/RoyaleViser
+https://github.com/RoyaleGym/RoyaleImitate
+------------------------------------------------------------
+Utility:
+https://github.com/Pbatch/ClashRoyaleBuildABot
+https://github.com/krazyness/CRBot-public
+https://github.com/pyclashbot/py-clash-bot
+https://github.com/hastylmao/Hasty-CR
+https://github.com/voonhous/crforge
+https://royaleapi.com
+HuggingFace:
+https://huggingface.co/datasets/Cochon123/clash-royale-replays
+https://huggingface.co/Proxv/clash-royale-ai-checkpoints
+Reverse Engineering:
+https://github.com/morluto/REA
+https://github.com/3equals3/nulls-royale-script
+https://github.com/DemirCnq/Key-Deobfuscator
+Other:
+https://github.com/0xCyberstan/Royale-RL-A-Reinforcement-Learning-Agent
+https://github.com/Jaso1024/Real-Time-Strategy-RL-Clash-Royale
+https://github.com/wty-yy/KataCR

@@ -1,0 +1,24 @@
+Video 3: Project Retrospective, Architecture & LLM Reverse-Engineering Workflow
+
+Hello everyone, I'm JasonMoonW. On screen is my early Clash Royale AI battling inside the custom simulator I built from scratch. As a fan of both AI and Clash Royale, I've long wondered how to train an AI that rivals top human players, much like AlphaGo or Stockfish. Late last year, I saw a Bilibili video by a Xi'an Jiaotong University undergrad who trained a Clash Royale bot using computer vision. However, it only achieved a ~5% win rate against an 8,000-trophy bot because visual recognition is slow, inaccurate, and lacks sufficient match data.
+
+To solve this, I broke the problem into two parts:
+
+1. Speeding Up Experience Collection: A bot needs hundreds of thousands of games to learn, which would take over 200 days in real time. Writing my own headless simulator in ~3,000 lines of Python (without AI-generated spaghetti code) achieved 50× real-time speed, simulating 100,000 matches in four days.
+   - Simulator Design: I pulled base stats from RoyaleAPI into a Card class and encapsulated shared attributes (position, HP, shields, cooldowns, status effects) into an Entity class. Units use a 45-degree alignment pathing heuristic toward the bridge and straight-line movement afterward. A BattleState manager tracks troops, buildings, projectiles, and area spells, rendered via Pygame for visual verification. By isolating shared logic in Entity, unique mechanics like the Witch's 7-second skeleton spawn took only 20 lines of code, letting me implement 47 of 122 cards cleanly. I wrapped this in a Stable-Baselines3 RL environment, though the initial neural network design was too simplistic to perform well.
+
+2. Bridging to the Real Game via Reverse Engineering: Simulators inevitably differ from the real game, and computer vision is too slow for real-time deployment. I initially tried a computer vision model (KataCR), which misclassified newer troops like Evolved Giant as Royal Ghost and failed in cluttered swarms. Network packet sniffing also hit a wall due to encryption—until viewers sent me a 2019 blog series by Roca on reverse-engineering Supercell's protocol, giving me the confidence to tackle it with LLM assistance.
+
+How I Cracked the Live Memory State (on Null's Royale):
+
+- Using packet ID 18411 (card deployment) as an anchor, I traced backward to locate UI objects for match time, elixir, hand cards, and tower HP. (Note: GPT-5.6/Codex refused to assist due to cybersecurity guardrails, so I switched back to GPT-5.5.)
+- GPT eventually located an HPComponentAccessor function called every tick to query entity health. By hooking its entry and exit points with Frida, I extracted all living arena entities in real time—later rewriting GPT's bloated 2,000-line script down to ~400 clean lines of JavaScript and Python.
+- Windows Compatibility Issue: Frida relies on native ARM instructions, which break under the x86-64 translation layer of Windows Android emulators. For Windows users, I built an alternative memory-scanning prototype, though reading UI elements like elixir and hand cards suffers from a ~400 ms delay.
+
+Tips for Collaborating with LLMs on Complex Reverse Engineering:
+
+1. Protect Context & Document Progress: Write a Markdown spec upfront defining goals and rules, and force the LLM to log every finding into a knowledge file using Pólya's problem-solving method.
+
+2. Move Slowly & Provide Human Ground Truth: Don't let the LLM brute-force packet captures. Start with static APK analysis, and feed it clean human-controlled inputs (like exact card drop coordinates) so it can isolate memory patterns.
+
+3. Avoid Over-Thinking & Context Bloat: Keep reasoning effort on medium rather than xhigh (which causes the model to go off-script and waste tokens), clear context when it loops on a dead end, and explicitly ask for alternative approaches.

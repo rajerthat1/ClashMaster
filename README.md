@@ -8,6 +8,22 @@ The repository includes the native probe, the battle environment, imitation and
 self-play training, evaluation, a local policy service, the desktop interface,
 and five pretrained checkpoints.
 
+matches/s ≈ 0.211 × min( N_proc , G × E / g ) / T
+T = packet
+0.211 = 256 lane decision step / 1214 per match or (2428)
+N_proc = processess/cores
+G = GPUS
+g = forward_ms / T
+E = effective GPU concurrency (MPS + batching)
+
+Today = 0.211 x min(8, 1 x 1 / 0.243) / 0.647 = 1.34 m/s
+
+min because:
+ - below cap: CPU-bound
+ - above cap: GPU-bound
+
+
+
 ## Repository layout
 
 | Path | Contents |
@@ -90,6 +106,7 @@ See the [policy service protocol](docs/policy_service.md).
 | [Training](docs/training.md) | Replay caches, IL, PPO, and engine clusters |
 | [Validation](docs/validation.md) | Installation checks, tests, and manual acceptance |
 | [Policy service](docs/policy_service.md) | Request and response protocol |
+| [Official live bridge](docs/live_official_client.md) | Memory frames to V4 observations and ADB taps |
 | [Models](checkpoints/README.md) | Checkpoint selection and evaluation |
 
 ## License

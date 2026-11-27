@@ -1,0 +1,115 @@
+Skipping Null's and going straight to the official client: feasibility and cost
+=============================================================================
+
+Status: analysis, 2026-11-11
+Context: ClashMaster is pinned to Null's Royale 15.535.13 / content 15.535.86.
+Null's now forces client 16.635.1, so the pinned content is no longer delivered.
+Question: should we skip Null's and build directly against Supercell's official
+client (16.635.001)?
+
+
+Short answer
+------------
+
+It can work, and it has been done (daybreak-cr runs on the official international
+server with a private reader; Proxv targets official 16.635.001). But it is
+strictly harder than the Null's path, and it does not remove the blocker - it
+swaps a missing content snapshot for a missing engine harness on a protected
+binary. Ban risk is not the constraint; validation speed and unknown anti-tamper
+surface are.
+
+It is not true that there is "no training engine either way". Null's is one
+missing artifact away from a working training engine; the official client is
+missing the whole harness for its binary.
+
+
+What is actually available on each side
+---------------------------------------
+
+| Item                          | Null's 15.535.13                                      | Official 16.635.001                                  |
+| ----------------------------- | ----------------------------------------------------- | ---------------------------------------------------- |
+| Engine binary                 | yes, exact libg.so, hash-verified                     | yes, inside the split APKs                           |
+| Probe / harness code          | yes: 151 offsets + 33 hooks matched to that build,   | no: exists only for the Null's binary; official is a |
+|                               | builds and signs                                      | different, obfuscated 28 MB library                  |
+| Observation + action contract | yes: ObservationV1, action decoding, evaluator,       | no mapping from official memory to V4's contract     |
+|                               | cache builder, PPO                                    |                                                      |
+| Content                       | missing: 15.535.86 (the only blocker)                 | extractable from the user's own APK (Proxv did this) |
+| Card catalog for the model    | yes: 122 cards / 62 forms                             | needs extension (~123 cards, new heroes) + fine-tune |
+| Live bridge                   | roadmap design + probe                                | possible (daybreak proves it); needs its own reader  |
+| Anti-tamper                   | essentially none                                      | Quago telemetry, hashed RTTI, string encryption      |
+
+The expensive part of this project is not the data. It is the ~150 offsets, the
+hooks, the memory layouts, and the observation adapter. On the official client
+that all has to be rebuilt from zero, against a harder target.
+
+
+What "straight to official" really costs
+----------------------------------------
+
+1. Probe port to the official libg. Same class of work as the Null's 16.635 port
+   (measured: 4 of 24 hooks relocate automatically, 20 have changed bodies), but
+   on a binary with an integrity/anti-bot surface that has not been measured.
+   Unknown-unknowns are the real risk: if injection or bootstrap patching trips
+   something, it is discovered weeks in.
+
+2. Observation adapter. Official memory -> ObservationV1, then re-validate every
+   feature encoding. Weeks.
+
+3. Catalog and fine-tune. Required on both paths: 16.635 contains cards and hero
+   forms that V4 has never seen.
+
+4. No sandbox. Every mismatch is debugged on a live client. Ban risk is accepted,
+   but the real cost is iteration speed: no repeatable 40-game evaluations, no
+   replay roundtrip, no "truncated: 0" checks.
+
+Realistic estimate: 3-6 months before the first trustworthy official training
+match, with a real chance of a structural blocker. The Null's 16.635 port is
+2-4 months, does the same RE work on an easier binary, and has content available
+today from Null's server.
+
+
+Why the Null's work is not throwaway
+------------------------------------
+
+- The probe/hook/offset methodology, the relocation work, the observation
+  contract, the cache builder, the evaluator and the PPO loop are
+  client-agnostic. Porting to Null's 16.635 rehearses exactly the loop that will
+  be repeated on official.
+- The live bridge is separate from the training engine. Build and debug it on
+  Null's (free mistakes), then point it at official; daybreak's client.json
+  abstraction is precisely that design.
+- IL_Replay is official-ladder data, so training is already on the right
+  distribution. Moving the engine to official first does not add training
+  realism; having an engine that can load that data at all is the missing piece
+  on both sides.
+
+
+Recommended sequence
+--------------------
+
+1. Now (days, near-zero cost): hunt the 15.535.86 update folder and wait on the
+   upstream issue thread. This unblocks the stack exactly as built.
+
+2. If that fails (2-4 months): port the probe to Null's 16.635.1. Content is
+   downloadable from Null's server today, so this yields a real training engine,
+   a live sandbox, and the full RE rehearsal.
+
+3. In parallel, cheap and useful regardless: extract official 16.635.001 assets
+   and diff the catalog against V4's 122 cards / 62 forms; run a half-day reader
+   feasibility spike on the official libg (/proc/pid/mem under MuMu 5's ARM
+   translation, or a used rooted ARM64 phone at roughly $60-100 if translation
+   is the problem). That establishes whether the official engine is reachable
+   before spending a month on it.
+
+4. Commit to official engine work only once step 3 shows reads and bootstrap
+   patching are viable. If they are not, "skip Null's" becomes "build a private
+   reimplementation engine" - what Proxv did - which costs far more than the
+   Null's port.
+
+
+One correction to the premise
+-----------------------------
+
+The reason to do Null's first was never ban risk. It is the only place to
+validate a policy and a reader cheaply. Removing the ban constraint does not
+remove the validation-speed constraint, and that is what costs months.

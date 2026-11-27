@@ -1,0 +1,15 @@
+Video 4: Using Clash Royale's Native Engine for High-Speed RL
+
+Hello everyone, I'm Jason. In this new series, I'll show you how to hook directly into Clash Royale's native game engine. On the right is the Android emulator, and on the left is my Python control script. What you're seeing isn't two humans playing, nor my old custom simulator—it's a Python script directly driving the actual Clash Royale engine.
+
+First, I initialize the engine and reset the match, pausing at the 4.5-second mark (the earliest timestamp a card can be played). Running a single line of Python commands native_0 to deploy Archers and advances the engine by one full second, returning a clean, structured JSON-like game state. We can also pause and resume the engine on demand via engine.resume() and engine.pause(), or command native_1 to drop a Mini P.E.K.K.A to intercept the Archers.
+
+How to Set It Up & How It Works:
+
+1. Setup: Download my open-source repository from GitHub (link in the description) and pass it to your coding agent—it will read the included skills file and configure the environment automatically.
+
+2. Under the Hood: We inject custom native code into the Null's Royale APK. When launched on an Android emulator, our injected code opens a local LAN port that streams structured game state to our Python script while listening for action commands, calling the game's internal combat engine functions directly.
+
+3. Performance: Internally, the native engine runs at nearly 200,000 ticks per second. Even factoring in Python IPC overhead, it sustains ~20,000 ticks per second—allowing you to collect three full years of gameplay data in a single day.
+
+This repository builds upon and improves the existing open-source project FirstLight_CR by drastically simplifying its Python API and packaging the setup into an agent-friendly skill. Thanks for watching—like, subscribe, and see you in the next video!

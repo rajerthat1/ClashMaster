@@ -1,0 +1,14 @@
+Crforge repo: (make sure to pull latest first)
+/home/raj/Desktop/ClashMaster/.resource/crforge
+ is this what your asking?
+
+I will play on 16.635 later when on windows machine.
+Mumu ADB access later when on windows machine.
+lmk if really needed to progress.
+
+royale api token: 
+- no official api key
+office developer.clashroyale.com token:
+- requires ip address (give)
+ a. give me current one (school)
+ b. give me home one (i was at home earlier)

@@ -1,0 +1,26 @@
+00dee8b6a2db9e28e95672205515950879421d40	2026-11-12	commit
+079c950785e577bbec4656036772f414c9136dfa	2026-11-17	docs: record the flat row gather and the packed-write negative
+27384f39d18b7d52f3bce9e84480eb3487db6871	2026-11-17	docs: record the decision server's exact gate and its CPU-only negative
+2e7a356db6c1d8d8fc14783cd2aacdcc2fe441cd	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+3c5b94332abff1525b3a044b02f0412025ba7f7e	2026-11-17	docs: record the two-seat group build and its gates
+4a4d2c55fffaf95efc29d2f9a65f16cc77cfcb5d	2026-11-17	feat(crforge): push weights to the decision server and key the forward by shape
+4f5313561c040dd2e799e2c5b0ee322215cf5401	2026-11-17	docs: record the compact entity rows and the build phase table
+69526f1e1a5a2d6a86984aa985d07fac4e6d2003	2026-11-15	WIP on main: d55c04c perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
+6b257e03c6d99f881f87e44c1d21ded57bba6b46	2026-11-15	perf(env): build policy observations without contract validation
+6ba62ba04f452666456e3b261a6d68b7fe1237c4	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+7409cfe4639653190a3af878d29eb3abdb480a3c	2026-11-13	feat(native): verify scripted X-Bow, abilities and Champion layout on 16.635.1
+743a2d2f2ea225cec9b83328ddbc2c708c0459cf	2026-11-11	docs: fetch Everlight from the upstream remote
+762c1593bd304d139b6c8d7084c1b5d358c56b97	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+ac0bdfa6c53c0844181722199ff6f990544c84ba	2026-11-17	docs: record the flat row gather and the packed-write negative
+ba0128304f61c78649a3ef88eb21eb2bb946b7ff	2026-11-13	feat(native): verify 16.635 two-sided matches, throughput and entity HP
+c9028fb805d8039e48eba54fbb755f5ad7c0906a	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+dc05c87177ef553ea2c35f8ce8235cc24f6d8e57	2026-11-11	On main: local wip before pull
+dd9aa8bcc28d5e380d51f4d845289da810031d79	2026-11-16	docs: record the C4 update gate and the mid-segment autoreset
+ddc0c5258931023a20c51859fd06ba525427d75d	2026-11-15	feat(crforge): resident adapter; parity holds, the 2x gate belongs to C3
+ee5f5a45a772048acd5a94b79d82ebc3fe3c5d67	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+ee9b1085da807269504f1fa7bc07aac4107f01cc	2026-11-12	feat(native): recover replay controller and generate 16.635 layout header
+efd80de5572ed42feeb4eb0373e7e0e63e90ea52	2026-11-17	docs: record the two-seat group build and its gates
+f2fa9472d91a74eda1acdc31edea25aab19827fc	2026-11-12	fix(native): log the selected probe target build
+f3737be869b6ec9305b39eecab21a6ce803af016	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+fe5bf75b3926b782acd6aaa03e42709297ce5a22	2026-11-15	WIP on main: 51e0f0b docs: record the clean 2-game C0 evaluate re-run
+ff5aa73ad1c6e181ad2297f72794cce81f56e5ea	2026-11-15	WIP on main: d55c04c perf(v4): trim per-decision tensorizer work; add the C3 attribution tools
